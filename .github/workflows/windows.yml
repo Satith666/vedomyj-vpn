@@ -1,0 +1,69 @@
+# Проверка на настоящей Windows в облаке GitHub — то, чего не видно на Linux:
+#   • самопроверка программы на Windows;
+#   • настоящие ядра Xray и sing-box (скачиваются тем же кодом, что в программе) проверяют настройки, которые
+#     собирает программа: обычные серверы, маршруты, маскировку, TUN, Hysteria2, мост sing-box для TUIC и AnyTLS;
+#   • официальный клиент AmneziaWG: туннель включается и выключается так же, как в программе (туннель — только
+#     в документационную сеть 10.250.0.0/24, интернет машины GitHub он не трогает).
+# Никаких настоящих серверов и ключей: только поддельные адреса 203.0.113.x. Итог — галочка у коммита,
+# отчёт — в разделе Artifacts страницы запуска.
+name: Проверка на Windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    paths-ignore:
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - "android/**"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Самопроверка на Windows
+        run: python -m pult.selftest
+
+      - name: Клиент AmneziaWG (официальный, из его выпусков на GitHub)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $rel = Invoke-RestMethod -Uri https://api.github.com/repos/amnezia-vpn/amneziawg-windows-client/releases/latest -Headers @{ Authorization = "Bearer $env:GH_TOKEN" }
+          $asset = $rel.assets | Where-Object { $_.name -match '^amneziawg-amd64-[\d.]+\.msi$' } | Select-Object -First 1
+          if (-not $asset) {
+            Write-Host "::warning::В выпуске $($rel.tag_name) нет amneziawg-amd64-*.msi: $($rel.assets.name -join ', ')"
+            exit 0
+          }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile awg.msi
+          $p = Start-Process msiexec.exe -ArgumentList '/i', 'awg.msi', '/qn', '/norestart' -Wait -PassThru
+          Write-Host "Установка $($asset.name): код $($p.ExitCode)"
+          Get-ChildItem -Path $env:ProgramFiles -Filter amneziawg.exe -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "Клиент: $($_.FullName)" }
+
+      - name: Настоящие ядра, движки и туннель AmneziaWG
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python field_check.py --ci
+
+      - name: Отчёт
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-report
+          path: data/reports/
+          if-no-files-found: ignore

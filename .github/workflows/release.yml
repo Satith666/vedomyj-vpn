@@ -1,0 +1,89 @@
+# Выпуск новой версии: создай метку вида v1.6.0 (Releases → Draft a new release → Choose a tag → v1.6.0 → Publish)
+# или запусти вручную (Actions → «Выпуск» → Run workflow). Собирает APK и архив для ПК, создаёт latest.json,
+# подписывает его ключом из секрета RELEASE_KEY и выкладывает всё в выпуск GitHub. Программы на ПК и телефоне
+# сами найдут обновление по адресу …/releases/latest/download/latest.json.
+#
+# Секреты (Settings → Secrets and variables → Actions) — ключи НИКОГДА не кладутся в репозиторий:
+#   RELEASE_KEY        — закрытый ключ подписи выпусков (build/release_keys.py);
+#   ANDROID_KEYSTORE   — ключ подписи APK в base64 (base64 -w0 release.jks);
+#   ANDROID_KS_PASS    — пароль от него (storePassword), алиас — pult.
+name: Выпуск
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Проверка секретов
+        env:
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KS_PASS: ${{ secrets.ANDROID_KS_PASS }}
+        run: |
+          [ -n "$RELEASE_KEY" ] || { echo "::error::Нет секрета RELEASE_KEY — выпуск без подписи не делаем."; exit 1; }
+          [ -n "$ANDROID_KEYSTORE" ] && [ -n "$ANDROID_KS_PASS" ] || { echo "::error::Нет секретов ANDROID_KEYSTORE / ANDROID_KS_PASS."; exit 1; }
+          mkdir -p android/keystore
+          echo "$ANDROID_KEYSTORE" | base64 -d > android/keystore/release.jks
+          printf 'storePassword=%s\nkeyAlias=pult\n' "$ANDROID_KS_PASS" > android/keystore/keystore.properties
+
+      - name: Самопроверка
+        run: |
+          python3 -m pult.selftest
+          sh android/coretest/run.sh
+          python3 build/changelog_notes.py "$(python3 -c 'import pult; print(pult.APP_VERSION)')" --check
+
+      - name: Сборка APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Архив для ПК и файл выпуска
+        env:
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+          REPO: ${{ github.repository }}
+        run: |
+          VER=$(python3 -c "import pult; print(pult.APP_VERSION)")
+          AVER=$(grep -oP "versionName '\K[^']+" android/app/build.gradle)
+          TAG="v$VER"
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/*universal*.apk "out/VedomyjVPN-$AVER.apk"
+          git archive --format=zip --prefix=VedomyjVPN/ -o "out/VedomyjVPN-$VER.zip" HEAD -- . ':!android' ':!.github'
+          PC_SHA=$(sha256sum "out/VedomyjVPN-$VER.zip" | cut -d' ' -f1)
+          APK_SHA=$(sha256sum "out/VedomyjVPN-$AVER.apk" | cut -d' ' -f1)
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          python3 build/changelog_notes.py "$VER" > out/notes.md
+          NOTES=$(python3 build/changelog_notes.py "$VER" --plain)
+          python3 - "$VER" "$AVER" "$BASE" "$PC_SHA" "$APK_SHA" "$NOTES" <<'PY'
+          import json, sys
+          ver, aver, base, pc, apk, notes = sys.argv[1:]
+          json.dump({"version": ver, "notes": notes, "pc": {"url": f"{base}/VedomyjVPN-{ver}.zip", "sha256": pc},
+                     "android": {"version": aver, "url": f"{base}/VedomyjVPN-{aver}.apk", "sha256": apk}},
+                    open("out/latest.json", "w"), ensure_ascii=False)
+          PY
+          python3 build/sign_release.py out/latest.json
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          ls -la out
+
+      - name: Выложить выпуск
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "VEDOMYJ VPN $TAG" --notes-file out/notes.md
+          rm -f out/notes.md
+          gh release upload "$TAG" out/* --clobber

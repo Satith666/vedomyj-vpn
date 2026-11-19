@@ -1,0 +1,23 @@
+youtube.com
+https://www.Example.COM/path?x=1
+*.cdn.net
+1.2.3.4
+10.0.0.0/8
+2001:db8::/32
+[2001:db8::1]
+geosite:ru-blocked
+geoip:ru
+domain:Test.com
+regexp:^Ab.*$
+keyword:google
+full:a.b.c
+# comment
+
+  spaced.com  # tail
+bad entry here
+пример.рф
+localhost
+http://user@host.example:8080/
+a..b
+999.1.1.1
+www.site.org

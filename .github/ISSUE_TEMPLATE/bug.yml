@@ -1,0 +1,38 @@
+name: Ошибка
+description: Что-то работает не так
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Проще всего — кнопка **«Отправить заявку на GitHub»** в «Журнале ошибок» программы (на ПК: «Ещё → Журнал ошибок», на телефоне: «Настройки → Журнал ошибок»). Она сама впишет версию и записи журнала, из которых уже убраны ссылки, ключи и адреса.
+
+        ⚠️ **Не вставляй сюда ссылки на подписку, ключи `vless://` и адреса серверов** — заявку видят все.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Где
+      options:
+        - Windows
+        - Android
+        - И там и там
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: Видна внизу «Настроек» (на ПК — в заголовке окна).
+      placeholder: "1.9.0 / Android 1.7.0"
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось и что ты делал перед этим
+      placeholder: "Включил VPN, открыл сайт… — пишет «…»"
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Записи из журнала ошибок или отчёт проверки
+      description: "«Скопировать текст заявки» в журнале ошибок или файл из «Проверки программы». В них уже нет ссылок и ключей."

@@ -1,0 +1,49 @@
+# Самопроверка при каждом изменении: программа для ПК (на Linux — всё, что не зависит от Windows) и ядро
+# Android-версии. Итог — зелёная или красная галочка у коммита на GitHub; что именно сломалось — в логе запуска.
+name: Самопроверка
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    paths-ignore:
+      - "**.md"
+      - ".github/ISSUE_TEMPLATE/**"
+
+permissions:
+  contents: read
+
+jobs:
+  pc:
+    name: Программа для ПК
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Самопроверка
+        run: python3 -m pult.selftest
+
+      - name: Изменения версии описаны
+        run: |
+          VER=$(python3 -c "import pult; print(pult.APP_VERSION)")
+          python3 build/changelog_notes.py "$VER" --check
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Самопроверка ядра и сверка с программой для ПК
+        run: sh android/coretest/run.sh

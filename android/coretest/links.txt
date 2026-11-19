@@ -1,0 +1,49 @@
+vless://11111111-2222-3333-4444-555555555555@nl.example.com:443?type=tcp&security=reality&pbk=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde&fp=chrome&sni=www.microsoft.com&sid=0123abcd&flow=xtls-rprx-vision#%F0%9F%87%B3%F0%9F%87%B1%20Нидерланды
+vless://11111111-2222-3333-4444-555555555555@[2001:db8::1]:8443?type=xhttp&path=%2Fabc&mode=auto&security=reality&pbk=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde&sni=a.com&sid=ab&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D#XHTTP+v6
+vless://11111111-2222-3333-4444-555555555555@ws.example.com:443/?type=ws&security=tls&host=ws.example.com&path=%2Fpath%3Fed%3D2048&sni=ws.example.com&alpn=h2%2Chttp%2F1.1&allowInsecure=1#WS%20TLS
+vless://11111111-2222-3333-4444-555555555555@grpc.example.com:443?type=grpc&serviceName=gsvc&mode=multi&security=tls&sni=grpc.example.com&authority=a.example.com#gRPC
+vless://11111111-2222-3333-4444-555555555555@hu.example.com:80?type=httpupgrade&host=hu.example.com&path=%2Fup&security=none#plain%20vless%20(insecure)
+vless://11111111-2222-3333-4444-555555555555@10.0.0.5:1080?type=tcp&security=none#home
+vless://11111111-2222-3333-4444-555555555555@kcp.example.com:443?type=kcp&headerType=wechat-video&seed=s3&security=none&encryption=mlkem768x25519plus.xyz#kcp
+vless://11111111-2222-3333-4444-555555555555@h2.example.com:443?type=h2&host=a.com%2Cb.com&path=%2Fh2&security=tls#h2
+vless://11111111-2222-3333-4444-555555555555@tcphttp.example.com:80?type=tcp&headerType=http&host=x.com&path=%2F&security=tls#tcp-http
+vless://11111111-2222-3333-4444-555555555555@0.0.0.0:1?type=tcp#Включите HWID
+vless://00000000-0000-0000-0000-000000000000@1.2.3.4:443?security=reality&pbk=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde#zero
+vless://11111111-2222-3333-4444-555555555555@bad.example.com:443?type=quic&security=tls#quic
+vless://11111111-2222-3333-4444-555555555555@r.example.com:443?security=reality#no pbk
+vless://11111111-2222-3333-4444-555555555555@stub.example.com:443?security=none#Подписка истекла
+vmess://eyJ2IjogIjIiLCAicHMiOiAi8J+HqfCfh6og0JPQtdGA0LzQsNC90LjRjyBWTWVzcyIsICJhZGQiOiAiZGUuZXhhbXBsZS5uZXQiLCAicG9ydCI6ICI0NDMiLCAiaWQiOiAiMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1IiwgImFpZCI6ICIwIiwgInNjeSI6ICJhdXRvIiwgIm5ldCI6ICJ3cyIsICJ0eXBlIjogIm5vbmUiLCAiaG9zdCI6ICJjZG4uZXhhbXBsZS5uZXQiLCAicGF0aCI6ICIvd3M/ZWQ9MjA0OCIsICJ0bHMiOiAidGxzIiwgInNuaSI6ICJjZG4uZXhhbXBsZS5uZXQiLCAiYWxwbiI6ICJoMixodHRwLzEuMSIsICJmcCI6ICJjaHJvbWUifQ==
+vmess://eyJ2IjogIjIiLCAicHMiOiAiZ3JwYyB2bWVzcyIsICJhZGQiOiAiZGUuZXhhbXBsZS5uZXQiLCAicG9ydCI6ICI0NDMiLCAiaWQiOiAiMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1IiwgImFpZCI6ICIwIiwgInNjeSI6ICJhdXRvIiwgIm5ldCI6ICJncnBjIiwgInR5cGUiOiAibXVsdGkiLCAiaG9zdCI6ICJjZG4uZXhhbXBsZS5uZXQiLCAicGF0aCI6ICJzdmMiLCAidGxzIjogIiIsICJzbmkiOiAiY2RuLmV4YW1wbGUubmV0IiwgImFscG4iOiAiaDIsaHR0cC8xLjEiLCAiZnAiOiAiY2hyb21lIn0
+vmess://11111111-2222-3333-4444-555555555555@new.example.com:443?type=ws&security=tls&path=%2F#new%20vmess
+trojan://pa%40ss@tr.example.com:443?sni=tr.example.com&type=ws&path=%2Ft#Trojan
+trojan://secret@tr2.example.com:8443#trojan default tls
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwYXNz@ss.example.com:8388#SS%20SIP002
+ss://YWVzLTI1Ni1nY206cEBzczp3QHNzLmV4YW1wbGUub3JnOjQ0Mw==#legacy ss
+ss://2022-blake3-aes-128-gcm:a%2Bb%3D@ss3.example.com:443/?#plain ss2022
+ss://YWVzLTI1Ni1nY206cA==@ss4.example.com:443?plugin=obfs-local%3Bobfs%3Dhttp#plugin
+socks://dXNlcjpwYXNz@s.example.com:1080#socks b64
+socks5://user:p%3Ass@s2.example.com:1080
+hy2://pass@h.example.com:443#hy2
+tuic://x@t.example.com:443
+happ://crypt3/abcdef
+happ://routing/onadd/xyz
+https://t.me/proxy?server=1.2.3.4&port=443&secret=ee
+just text
+vless://broken
+vless://11111111-2222-3333-4444-555555555555@noport.example.com?security=tls
+vless://11111111-2222-3333-4444-555555555555@xh.example.com:443?type=splithttp&path=%2Fsp&security=tls&ech=AEX%2B&pcs=abc&fp=firefox#splithttp ech
+vless://11111111-2222-3333-4444-555555555555@pq.example.com:443?type=raw&security=reality&pbk=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde&sni=x.com&sid=&spx=%2Fspider&pqv=QQ#pq
+hysteria2://p%40ss@h2.example.com:8443/?sni=s.example.com&obfs=salamander&obfs-password=op&insecure=1&pinSHA256=AB:CD#H2
+hy2://secret@h3.example.com#Short
+hy2://secret@[2001:db8::5]:443?alpn=h3,h2#v6
+hy2://x@h4.example.com:443?obfs=gfw#z
+hysteria://x@h.example.com:443#v1
+wireguard://key@wg.example.com:51820#WG
+tuic://3f1a0000-0000-4000-8000-000000000001:pw@t2.example.com:443?sni=t#T
+tuic://:pw@t3.example.com:443#NoUUID
+anytls://pw@a.example.com:443#A
+anytls://pw@a2.example.com:443
+awg://W0ludGVyZmFjZV0KUHJpdmF0ZUtleSA9IGNISnBkbUYwWld0bGVYQnlhWFpoZEdWclpYbHdjbWwyWVhSbGEyVjVNVEk9CkFkZHJlc3MgPSAxMC44LjEuNy8zMgpKYyA9IDQKCltQZWVyXQpQdWJsaWNLZXkgPSBjSFZpYkdsamEyVjVjSFZpYkdsamEyVjVjSFZpYkdsamEyVjVjSFZpTVRJPQpFbmRwb2ludCA9IGF3Zy5leGFtcGxlLmNvbTo1MTgyMA#%D0%94%D0%BE%D0%BC
+awg://W0ludGVyZmFjZV0KUHJpdmF0ZUtleSA9IGNISnBkbUYwWld0bGVYQnlhWFpoZEdWclpYbHdjbWwyWVhSbGEyVjVNVEk9CkFkZHJlc3MgPSAxMC44LjEuNy8zMgoKW1BlZXJdClB1YmxpY0tleSA9IGNIVmliR2xqYTJWNWNIVmliR2xqYTJWNWNIVmliR2xqYTJWNWNIVmlNVEk9CkVuZHBvaW50ID0gYXdnLmV4YW1wbGUuY29tOjUxODIw
+awg://!!!#bad
+xrayjson://eyJyZW1hcmtzIjogItCY0Lcg0LrQu9GO0YfQsCIsICJvdXRib3VuZHMiOiBbeyJwcm90b2NvbCI6ICJ2bGVzcyIsICJzZXR0aW5ncyI6IHsidm5leHQiOiBbeyJhZGRyZXNzIjogImouZXhhbXBsZS5jb20iLCAicG9ydCI6IDQ0MywgInVzZXJzIjogW3siaWQiOiAiMTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1IiwgImVuY3J5cHRpb24iOiAibm9uZSJ9XX1dfSwgInN0cmVhbVNldHRpbmdzIjogeyJuZXR3b3JrIjogInRjcCIsICJzZWN1cml0eSI6ICJyZWFsaXR5IiwgInJlYWxpdHlTZXR0aW5ncyI6IHsic2VydmVyTmFtZSI6ICJhLmNvbSIsICJmaW5nZXJwcmludCI6ICJjaHJvbWUiLCAicHVibGljS2V5IjogIksiLCAic2hvcnRJZCI6ICIiLCAic3BpZGVyWCI6ICIvIn19fV19

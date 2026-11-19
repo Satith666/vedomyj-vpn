@@ -1,0 +1,3 @@
+example-ads.com\n0.0.0.0 hosts.example\n*.wild.example\nbad domain\n||xy.example^
+||an.yandex.ru^\n||site.example^$third-party\n||ok.example^$important
+# comment\n127.0.0.1 a.example # tail\nUPPER.Example.COM.\n!x\n[Adblock]

@@ -1,0 +1,130 @@
+plugins {
+    id 'com.android.application'
+}
+
+// ---------- ядро Xray для Android (AndroidLibXrayLite) ----------
+// Скачивается при первой сборке в app/libs и заново — когда здесь меняется версия (coreTag).
+def coreTag = 'v26.7.31'
+def coreAar = file('libs/libv2ray.aar')
+def coreMark = file('libs/libv2ray.version')
+if (!coreAar.exists() || !coreMark.exists() || coreMark.text.trim() != coreTag) {
+    coreAar.delete()
+    coreAar.parentFile.mkdirs()
+    def urls = ["https://github.com/2dust/AndroidLibXrayLite/releases/download/${coreTag}/libv2ray.aar",
+                'https://github.com/2dust/AndroidLibXrayLite/releases/latest/download/libv2ray.aar']
+    def done = false
+    for (u in urls) {
+        if (done) break
+        try {
+            println "VEDOMYJ VPN: скачиваю ядро Xray: ${u}"
+            def conn = new URL(u).openConnection()
+            conn.instanceFollowRedirects = true
+            conn.connectTimeout = 30000
+            conn.readTimeout = 300000
+            def tmp = new File(coreAar.path + '.part')
+            conn.inputStream.withStream { input -> tmp.withOutputStream { out -> out << input } }
+            if (tmp.length() < 1000000) throw new GradleException('слишком маленький файл')
+            tmp.renameTo(coreAar)
+            done = true
+        } catch (Exception e) {
+            println "VEDOMYJ VPN: не удалось (${e.message})"
+        }
+    }
+    if (!done) throw new GradleException('Не удалось скачать ядро Xray (libv2ray.aar). Проверь интернет или положи файл в app/libs вручную.')
+    coreMark.text = coreTag
+}
+
+// ---------- ключ подписи ----------
+// Обновить приложение поверх старой версии можно, только если ключ тот же. Ключ создаётся один раз
+// в папке keystore и потом всегда используется. Не теряй его и не публикуй.
+def ksDir = rootProject.file('keystore')
+def ksFile = new File(ksDir, 'release.jks')
+def ksPropsFile = new File(ksDir, 'keystore.properties')
+if (!ksFile.exists()) {
+    ksDir.mkdirs()
+    def pass = UUID.randomUUID().toString().replace('-', '')
+    def win = System.getProperty('os.name').toLowerCase().contains('windows')
+    def keytool = new File(System.getProperty('java.home'), 'bin/keytool' + (win ? '.exe' : '')).absolutePath
+    def proc = [keytool, '-genkeypair', '-keystore', ksFile.absolutePath, '-storetype', 'PKCS12',
+                '-storepass', pass, '-keypass', pass, '-alias', 'pult', '-keyalg', 'RSA', '-keysize', '2048',
+                '-validity', '10000', '-dname', 'CN=VEDOMYJ VPN'].execute()
+    proc.waitForProcessOutput(System.out, System.err)
+    if (proc.exitValue() != 0) throw new GradleException('Не удалось создать ключ подписи.')
+    ksPropsFile.text = "storePassword=${pass}\nkeyAlias=pult\n"
+}
+def ksProps = new Properties()
+ksPropsFile.withInputStream { ksProps.load(it) }
+
+android {
+    namespace 'com.pultvpn.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.vedomyj.vpn'
+        minSdk 26
+        targetSdk 35
+        versionCode 15
+        versionName '1.9.0'
+    }
+
+    signingConfigs {
+        release {
+            storeFile ksFile
+            storeType 'pkcs12'
+            storePassword ksProps.getProperty('storePassword')
+            keyAlias ksProps.getProperty('keyAlias')
+            keyPassword ksProps.getProperty('storePassword')
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    // отдельный APK под каждый процессор (меньше весит) и один общий на все
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+            universalApk true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+        // служебные файлы библиотек (одинаковые имена в разных библиотеках ломают сборку)
+        resources {
+            excludes += ['META-INF/versions/**', 'META-INF/LICENSE*', 'META-INF/NOTICE*', 'META-INF/DEPENDENCIES',
+                         'META-INF/INDEX.LIST', 'META-INF/*.kotlin_module', 'module-info.class']
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+dependencies {
+    implementation files('libs/libv2ray.aar')
+    implementation 'com.github.mwiede:jsch:0.2.22'
+    implementation 'com.journeyapps:zxing-android-embedded:4.3.0'
+}

@@ -1,0 +1,70 @@
+# Сборка VEDOMYJ VPN для Android в облаке GitHub. Запуск: вкладка Actions → «Android APK» → Run workflow,
+# или сам — при изменениях в папке android. Готовые APK — внизу страницы запуска, в разделе Artifacts.
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ключ подписи APK — только из секретов GitHub (репозиторий может быть публичным).
+      # Без секретов собирается APK с временным ключом: поставить его поверх старой версии не выйдет.
+      - name: Ключ подписи из секретов
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          ANDROID_KS_PASS: ${{ secrets.ANDROID_KS_PASS }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE" ] && [ -n "$ANDROID_KS_PASS" ]; then
+            mkdir -p android/keystore
+            echo "$ANDROID_KEYSTORE" | base64 -d > android/keystore/release.jks
+            printf 'storePassword=%s\nkeyAlias=pult\n' "$ANDROID_KS_PASS" > android/keystore/keystore.properties
+          else
+            echo "::warning::Нет секретов ANDROID_KEYSTORE и ANDROID_KS_PASS — APK подписан временным ключом."
+          fi
+
+      - name: Самопроверка ядра
+        run: sh android/coretest/run.sh
+
+      - name: Сборка APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Понятные имена файлов
+        run: |
+          VER=$(grep -oP "versionName '\K[^']+" android/app/build.gradle)
+          mkdir -p out
+          for f in android/app/build/outputs/apk/release/*.apk; do
+            n=$(basename "$f" .apk)
+            case "$n" in
+              *universal*) cp "$f" "out/VedomyjVPN-$VER-universal.apk" ;;
+              *arm64*) cp "$f" "out/VedomyjVPN-$VER-arm64.apk" ;;
+              *armeabi*) cp "$f" "out/VedomyjVPN-$VER-arm32.apk" ;;
+              *x86_64*) cp "$f" "out/VedomyjVPN-$VER-x86_64.apk" ;;
+            esac
+          done
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VedomyjVPN-Android
+          path: out/*.apk
+          if-no-files-found: error

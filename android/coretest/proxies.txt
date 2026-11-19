@@ -1,0 +1,18 @@
+socks5://u:p%40ss@1.2.3.4:1080
+http://user:pw@Proxy.Example.com:8080/
+https://u:p@px.example:443
+1.2.3.4:5000:login:pa:ss
+login:pass:5.6.7.8:3128
+login:pass@[2001:db8::1]:1080
+9.9.9.9:1080
+socks5://1.2.3.4:1080:u:p
+
+vless://x@h.example:443
+ftp://h.example:21
+1.2.3.4
+h o s t:1
+1.2.3.4:99999
+just-text
+a:b:c
+socks5h://user@host.example:1080
+user:pass@host.example:1080

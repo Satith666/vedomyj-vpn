@@ -1,0 +1,16 @@
+name: Идея
+description: Что добавить или сделать удобнее
+labels: ["idea"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Что хочется
+      placeholder: "Чтобы программа сама…"
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем
+      description: Какую задачу это решит. Можно коротко.

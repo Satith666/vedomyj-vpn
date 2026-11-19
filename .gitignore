@@ -1,0 +1,18 @@
+# свои данные: подписки и настройки — никогда не публикуй
+data/
+dist/
+__pycache__/
+*.pyc
+bin/*
+!bin/README.txt
+# Android: результаты сборки и скачанное ядро
+android/.gradle/
+android/build/
+android/app/build/
+android/app/libs/*.aar
+android/local.properties
+android/.idea/
+*.iml
+# ключи подписи — только в секретах GitHub, никогда в репозитории
+android/keystore/
+build/release_key.json

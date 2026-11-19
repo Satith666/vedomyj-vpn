@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VEDOMYJ VPN</title>
+  <link rel="icon" id="favicon" href="/icons/monogram.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <button class="icon-btn back-btn" id="backBtn" type="button" hidden></button>
+      <span class="brand" id="brand">
+        <img class="brand-mark" src="/icons/monogram.svg" alt="" width="26" height="26">
+        <span id="brandName">VEDOMYJ VPN</span>
+      </span>
+      <h1 class="top-title" id="topTitle" hidden></h1>
+      <button class="problems-btn" id="problemsBtn" type="button" hidden></button>
+      <span class="grow"></span>
+      <button class="lang-btn" id="langBtn" type="button">EN</button>
+      <button class="btn more-nav" id="moreBtn" type="button"></button>
+    </header>
+    <div class="busy" id="busy" hidden>
+      <span class="busy-spinner" aria-hidden="true"></span>
+      <span class="busy-text" id="busyText"></span>
+      <button class="btn btn-small" id="busyStop" type="button">Стоп</button>
+    </div>
+    <main class="main" id="main">
+      <div class="page" id="page"></div>
+    </main>
+  </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="overlay" id="overlay" hidden></div>
+  <div class="popover" id="popover" hidden></div>
+  <script src="/i18n.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
