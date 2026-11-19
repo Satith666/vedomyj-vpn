@@ -165,6 +165,46 @@ public final class Certs {
         }
     }
 
+    /** SHA-256 сертификата сервера (hex), который он показывает этому SNI — без проверки: отпечаток и станет проверкой
+     *  (так приложение заменяет allowInsecure, которое новые ядра Xray не принимают). Напрямую: приложение вне VPN. */
+    public static String pinOf(String host, int port, String sni, int timeoutMs) throws Exception {
+        TrustManager all = new X509TrustManager() {
+            @Override
+            public void checkClientTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public void checkServerTrusted(X509Certificate[] chain, String authType) {
+            }
+
+            @Override
+            public X509Certificate[] getAcceptedIssuers() {
+                return new X509Certificate[0];
+            }
+        };
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(null, new TrustManager[]{all}, null);
+        Socket raw = Http.openRaw(host, port, 0, timeoutMs);
+        SSLSocket ss = (SSLSocket) ctx.getSocketFactory().createSocket(raw, host, port, true);
+        try {
+            if (sni != null && !sni.isEmpty() && !sni.matches("[0-9.]+|.*:.*")) {
+                SSLParameters prm = ss.getSSLParameters();
+                prm.setServerNames(java.util.Collections.<javax.net.ssl.SNIServerName>singletonList(
+                        new javax.net.ssl.SNIHostName(sni)));
+                ss.setSSLParameters(prm);
+            }
+            ss.setSoTimeout(timeoutMs);
+            ss.startHandshake();
+            return sha256(ss.getSession().getPeerCertificates()[0].getEncoded());
+        } finally {
+            try {
+                ss.close();
+            } catch (Exception ignored) {
+                // всё равно закрываем
+            }
+        }
+    }
+
     private static String sha256(byte[] der) {
         try {
             byte[] h = MessageDigest.getInstance("SHA-256").digest(der);

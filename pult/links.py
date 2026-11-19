@@ -51,6 +51,7 @@ class Server:
     sb_outbound: dict = field(default_factory=dict)  # настройки sing-box (engine="singbox")
     awg_conf: str = ""      # текст конфига AmneziaWG (engine="awg"); содержит закрытый ключ
     sidecar_port: int = 0   # порт моста sing-box для основного подключения (выставляет движок)
+    tls_unverified: bool = False  # ссылка просит не проверять сертификат (allowInsecure): программа закрепляет его сама
 
     @property
     def key(self) -> str:
@@ -85,8 +86,42 @@ def is_private_host(host: str) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
+def drop_allow_insecure(ob: dict) -> bool:
+    """Ядра Xray с 1 июня 2026 не принимают allowInsecure («не проверять сертификат»): настройки с ним не запускаются.
+    Убирает его; True — проверку просили отключить, а отпечатка сертификата (pinnedPeerCertSha256) нет."""
+    tls = (ob.get("streamSettings") or {}).get("tlsSettings")
+    if not isinstance(tls, dict) or "allowInsecure" not in tls:
+        return False
+    asked = bool(tls.pop("allowInsecure"))
+    return asked and not tls.get("pinnedPeerCertSha256")
+
+
+def _hy2_via_singbox(srv: "Server") -> None:
+    """Hysteria2 с самоподписанным сертификатом без отпечатка: Xray так не умеет (его по QUIC и не снять заранее),
+    а sing-box — умеет. Такой сервер идёт через мост sing-box (на компьютере)."""
+    st = srv.outbound.get("settings") or {}
+    ss = srv.outbound.get("streamSettings") or {}
+    tls = ss.get("tlsSettings") or {}
+    ob: dict = {"type": "hysteria2", "server": st.get("address", srv.address), "server_port": int(st.get("port", srv.port)),
+                "password": (ss.get("hysteriaSettings") or {}).get("auth", ""),
+                "tls": {"enabled": True, "server_name": tls.get("serverName") or srv.address, "insecure": True,
+                        "alpn": tls.get("alpn") or ["h3"]}}
+    for m in (ss.get("finalmask") or {}).get("udp") or []:
+        if m.get("type") == "salamander":
+            ob["obfs"] = {"type": "salamander", "password": (m.get("settings") or {}).get("password", "")}
+    srv.engine = "singbox"
+    srv.sb_outbound = ob
+
+
 def mark_flags(srv: "Server") -> "Server":
-    """Помечает заглушки провайдера и серверы без шифрования."""
+    """Помечает заглушки провайдера и серверы без шифрования; убирает allowInsecure (см. drop_allow_insecure)."""
+    unverified = drop_allow_insecure(srv.outbound)
+    for ex in srv.extra_outbounds:
+        drop_allow_insecure(ex)
+    if unverified and srv.engine == "xray":
+        srv.tls_unverified = True
+        if (srv.outbound.get("streamSettings") or {}).get("network") == "hysteria":
+            _hy2_via_singbox(srv)
     host = (srv.address or "").strip("[]").lower()
     uid = ""
     st = srv.outbound.get("settings") or {}
@@ -716,12 +751,13 @@ def parse_link(line: str) -> Server | None:
 
 
 def kind_of(srv: Server) -> str:
-    """Движок для «Движок» на главной: xray, hy2 (Hysteria2 в Xray), singbox (мост: TUIC, AnyTLS), awg."""
-    if srv.engine in ("awg", "singbox"):
-        return srv.engine
+    """Движок для «Движок» на главной: xray, hy2 (Hysteria2 — в Xray или, с самоподписанным сертификатом, через мост),
+    singbox (мост: TUIC, AnyTLS), awg."""
+    if srv.engine == "awg":
+        return "awg"
     if srv.protocol in ("hysteria2", "hy2", "hysteria"):
         return "hy2"
-    return "xray"
+    return "singbox" if srv.engine == "singbox" else "xray"
 
 
 # ---------- JSON-конфиги ----------

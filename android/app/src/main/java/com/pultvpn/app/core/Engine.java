@@ -299,6 +299,8 @@ public final class Engine {
         settingsFile = new File(dir, "settings.json");
         serversFile = new File(dir, "servers.json");
         settings = Store.loadSettings(settingsFile);
+        XrayConfig.CERT_PINS.clear();
+        loadPins();
         errors = new ErrorLog(dir, platform.appVersion(), "Android " + platform.osVersion(), new ErrorLog.Scrubber() {
             @Override
             public String scrub(String text) {
@@ -1185,10 +1187,103 @@ public final class Engine {
     }
 
     /** Проверяет серверы параллельно. onlyKeys — только эти (null — все рабочие). */
+    // ---------- отпечатки сертификатов вместо allowInsecure (как certpin.py) ----------
+
+    /** Как снимать отпечаток (в тестах — подмена без сети). */
+    public interface PinSource {
+        String pin(String host, int port, String sni) throws Exception;
+    }
+
+    public static volatile PinSource PINS = new PinSource() {
+        @Override
+        public String pin(String host, int port, String sni) throws Exception {
+            return Certs.pinOf(host, port, sni, 8000);
+        }
+    };
+
+    /** {адрес, порт, SNI} сервера с TLS поверх TCP, которому нужен отпечаток; null — снимать нечего. */
+    static Object[] pinTarget(Server s) {
+        if (!s.tlsUnverified || !"xray".equals(s.engine)) {
+            return null;
+        }
+        Map<String, Object> ss = Json.map(s.outbound, "streamSettings");
+        String net = Json.str(ss, "network");
+        if (!"tls".equalsIgnoreCase(Json.str(ss, "security")) || net.equals("hysteria") || net.equals("kcp")
+                || net.equals("mkcp") || net.equals("quic")) {
+            return null;
+        }
+        String host = s.pinnedIp != null && !s.pinnedIp.isEmpty() ? s.pinnedIp : s.address;
+        if (host == null || host.isEmpty() || s.port <= 0) {
+            return null;
+        }
+        String sni = Json.str(Json.map(ss, "tlsSettings"), "serverName");
+        return new Object[]{host.replace("[", "").replace("]", ""), s.port, sni.isEmpty() ? s.address : sni};
+    }
+
+    /** Снимает отпечатки параллельно (не дольше ~10 с на всё); refresh — и тем, что уже известны. */
+    int fillPins(List<Server> list, boolean refresh) {
+        Map<String, Object> store = Json.child(settings, "cert_pins");
+        List<Thread> threads = new ArrayList<Thread>();
+        final Map<String, String> got = new java.util.concurrent.ConcurrentHashMap<String, String>();
+        for (final Server s : list) {
+            final Object[] t = pinTarget(s);
+            final String key = s.key();
+            if (t == null || (!refresh && XrayConfig.CERT_PINS.containsKey(key))) {
+                continue;
+            }
+            Thread th = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        String pin = PINS.pin((String) t[0], (Integer) t[1], (String) t[2]);
+                        if (pin != null && pin.matches("[0-9a-f]{64}")) {
+                            got.put(key, pin);
+                        }
+                    } catch (Exception ignored) {
+                        // не ответил — остаётся прежний отпечаток (или никакого)
+                    }
+                }
+            });
+            th.setDaemon(true);
+            th.start();
+            threads.add(th);
+            if (threads.size() >= 64) {
+                break;
+            }
+        }
+        long deadline = System.currentTimeMillis() + 10000;
+        for (Thread th : threads) {
+            try {
+                th.join(Math.max(1, deadline - System.currentTimeMillis()));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        if (!got.isEmpty()) {
+            synchronized (lock) {
+                XrayConfig.CERT_PINS.putAll(got);
+                store.putAll(got);
+            }
+            saveSettings();
+        }
+        return got.size();
+    }
+
+    void loadPins() {
+        Map<String, Object> store = Json.child(settings, "cert_pins");
+        for (Map.Entry<String, Object> en : store.entrySet()) {
+            if (en.getValue() instanceof String) {
+                XrayConfig.CERT_PINS.put(en.getKey(), (String) en.getValue());
+            }
+        }
+    }
+
     void testList(List<Server> list) {
         if (list.isEmpty()) {
             return;
         }
+        fillPins(list, false); // «не проверять сертификат»: ядро так не умеет — отпечатки, которых ещё нет
         final Lane lane = here();
         List<Future<?>> fs = new ArrayList<Future<?>>();
         for (final Server s : list) {
@@ -1358,6 +1453,7 @@ public final class Engine {
         }
         progress(Text.t("Проверяю серверы", "Testing servers") + " (" + list.size() + ")");
         pinServerDns(list);
+        fillPins(list, true); // сертификат сервера мог смениться — снимаем заново
         testList(list);
         lastTestAt = System.currentTimeMillis();
         int ok = 0;
@@ -1478,6 +1574,7 @@ public final class Engine {
         checkStop();
         progress(Text.t("Подключаюсь: ", "Connecting: ") + Text.shorten(s.name, 40));
         pinServerDns(Collections.singletonList(s));
+        fillPins(Collections.singletonList(s), false);
         appPort = 30000 + rnd.nextInt(9000);
         Http.setProxyAuth(appPort, appUser, appPass);
         String cfg;

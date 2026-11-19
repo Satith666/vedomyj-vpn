@@ -292,6 +292,9 @@ def set_fingerprint(ob: dict, fp: str) -> bool:
     return done
 
 
+CERT_PINS: dict = {}  # ключ сервера → SHA-256 его сертификата (для серверов «не проверять сертификат»; заполняет движок)
+
+
 def tagged_outbounds(server: Server, tag: str) -> list[dict]:
     """Outbound сервера с нужным тегом плюс вспомогательные (фрагментация и т.п.) с переименованными тегами.
     Отпечаток TLS, который подобрала программа (result["fp"]), заменяет отпечаток из ссылки."""
@@ -303,6 +306,11 @@ def tagged_outbounds(server: Server, tag: str) -> list[dict]:
         raise XrayError("AmneziaWG запускается своим клиентом, а не ядром Xray")
     main = copy.deepcopy(server.outbound)
     main["tag"] = tag
+    if getattr(server, "tls_unverified", False):
+        pin = CERT_PINS.get(server.key)
+        tls = (main.get("streamSettings") or {}).get("tlsSettings")
+        if pin and isinstance(tls, dict):
+            tls["pinnedPeerCertSha256"] = pin  # вместо allowInsecure: закреплённый сертификат этого сервера
     if getattr(server, "pinned_ip", ""):
         pin_address(main, server.address, server.pinned_ip)
     fp = (getattr(server, "result", None) or {}).get("fp")

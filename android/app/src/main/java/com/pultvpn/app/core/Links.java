@@ -60,7 +60,35 @@ public final class Links {
     }
 
     /** Помечает заглушки провайдера и серверы без шифрования. */
+    /** Ядра Xray с 1 июня 2026 не принимают allowInsecure («не проверять сертификат»): настройки с ним не запускаются.
+     *  Убирает его; true — проверку просили отключить, а отпечатка сертификата нет. Как links.drop_allow_insecure. */
+    public static boolean dropAllowInsecure(Map<String, Object> ob) {
+        Map<String, Object> tls = Json.map(Json.map(ob, "streamSettings"), "tlsSettings");
+        if (tls == null || !tls.containsKey("allowInsecure")) {
+            return false;
+        }
+        Object v = tls.remove("allowInsecure");
+        boolean asked = v instanceof Boolean ? (Boolean) v : v instanceof Number ? ((Number) v).doubleValue() != 0
+                : v != null && !String.valueOf(v).isEmpty();
+        return asked && Json.str(tls, "pinnedPeerCertSha256").isEmpty();
+    }
+
     static Server markFlags(Server srv) {
+        boolean unverified = dropAllowInsecure(srv.outbound);
+        for (Map<String, Object> ex : srv.extraOutbounds) {
+            dropAllowInsecure(ex);
+        }
+        if (unverified && "xray".equals(srv.engine)) {
+            srv.tlsUnverified = true;
+            if ("hysteria".equals(Json.str(Json.map(srv.outbound, "streamSettings"), "network"))) {
+                // самоподписанный сертификат без отпечатка: по QUIC его заранее не снять, а sing-box на телефоне нет
+                srv.engine = "singbox";
+                srv.supported = false;
+                srv.note = Text.t("самоподписанный сертификат без отпечатка (pinSHA256) — на телефоне так нельзя, "
+                        + "работает в программе для компьютера", "self-signed certificate without a pin (pinSHA256) — "
+                        + "not possible on the phone, works in the desktop app");
+            }
+        }
         String host = srv.address.replace("[", "").replace("]", "").toLowerCase();
         String uid = "";
         Map<String, Object> st = Json.map(srv.outbound, "settings");
@@ -945,13 +973,13 @@ public final class Links {
 
     /** Движок сервера: xray, hy2 (Hysteria2 в ядре Xray), singbox (TUIC/AnyTLS — только компьютер), awg. */
     public static String kindOf(Server s) {
-        if ("awg".equals(s.engine) || "singbox".equals(s.engine)) {
-            return s.engine;
+        if ("awg".equals(s.engine)) {
+            return "awg";
         }
         if ("hysteria2".equals(s.protocol) || "hy2".equals(s.protocol) || "hysteria".equals(s.protocol)) {
             return "hy2";
         }
-        return "xray";
+        return "singbox".equals(s.engine) ? "singbox" : "xray";
     }
 
     private static String nameOf(String line, String scheme) {

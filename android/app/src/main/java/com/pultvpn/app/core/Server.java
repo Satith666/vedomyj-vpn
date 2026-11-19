@@ -24,6 +24,7 @@ public final class Server {
     public String pinnedIp = "";    // DNS провайдера не знает имя сервера — адрес из защищённого DNS (на ключ не влияет)
     public String engine = "xray";  // xray; awg — AmneziaWG (своё приложение); singbox — TUIC/AnyTLS (только компьютер)
     public String awgConf = "";     // конфиг AmneziaWG (берётся из ссылки awg://, отдельно не хранится)
+    public boolean tlsUnverified;   // ссылка просит не проверять сертификат: вместо этого закрепляется его отпечаток
 
     // результаты проверки
     public long pingMs = -1;        // -1 — не проверяли или не отвечает
@@ -88,6 +89,7 @@ public final class Server {
         c.pinnedIp = pinnedIp;
         c.engine = engine;
         c.awgConf = awgConf;
+        c.tlsUnverified = tlsUnverified;
         c.pingMs = pingMs;
         c.ok = ok;
         c.whitelist = whitelist;
@@ -108,6 +110,9 @@ public final class Server {
         }
         if (!extraOutbounds.isEmpty()) {
             m.put("extra", extraOutbounds);
+        }
+        if (tlsUnverified) {
+            m.put("unverified", true);
         }
         return m;
     }
@@ -143,6 +148,10 @@ public final class Server {
         s.whitelist = Json.bool(m, "wl", false);
         s.error = Json.str(m, "error");
         s.testedAt = Json.num(m, "tested", 0);
+        s.tlsUnverified = Json.bool(m, "unverified", false);
+        if (Links.dropAllowInsecure(s.outbound)) {
+            s.tlsUnverified = true; // сохранено старой версией: allowInsecure новые ядра Xray не принимают
+        }
         if ("amneziawg".equals(s.protocol)) {
             s.engine = "awg";  // ключ AmneziaWG — только в ссылке awg:// (её же хранят свои серверы)
             try {

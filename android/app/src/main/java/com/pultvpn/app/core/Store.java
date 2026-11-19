@@ -44,6 +44,7 @@ public final class Store {
                 "selected", "",
                 "engine_pick", "auto",   // «Движок»: auto, xray, hy2; awg — AmneziaWG в своём приложении
                 "last_awg_key", "",
+                "cert_pins", new LinkedHashMap<String, Object>(), // ключ сервера → SHA-256 сертификата (вместо allowInsecure)
                 "auto_update_hours", 12L,
                 "geo_updated", 0L,
                 "was_on", false,

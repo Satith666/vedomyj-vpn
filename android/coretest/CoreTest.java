@@ -664,6 +664,13 @@ public class CoreTest {
         startHttp();
         Text.lang = "ru";
         Certs.FETCH = CLEAN_CERTS; // в проверке интернета нет: «контрольные сайты» отвечают как настоящие
+        Engine.PINS = (h, p, sni) -> { // отпечаток сертификата без сети: «мёртвые» серверы не отвечают
+            if (h.contains("dead")) throw new java.io.IOException("не отвечает");
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256").digest((h + "|" + sni).getBytes(StandardCharsets.UTF_8));
+            StringBuilder b = new StringBuilder();
+            for (byte x : d) b.append(String.format("%02x", x));
+            return b.toString();
+        };
         Engine.CERT_WATCH_DELAY_MS = 0;
 
         test("JSON: разбор, запись, экранирование и копии", () -> {
@@ -2119,6 +2126,20 @@ public class CoreTest {
             check(got.size() == 1 && "Ключ".equals(Links.parseLink(got.get(0)).name), "ключ vpn:// → AmneziaWG: " + got);
             String rep = ed.report();
             check(!rep.contains("cHJpdmF0ZWtle") && !rep.contains("awg://") && !rep.contains("awg.example.com"), "в отчёте нет ключей AmneziaWG");
+            // «не проверять сертификат»: новые ядра Xray не принимают allowInsecure — приложение закрепляет сертификат
+            ed.setEnginePick("auto");
+            ed.addServers("vless://" + U + "@fast11.example.com:443?type=ws&security=tls&sni=s.example.com&allowInsecure=1#Self");
+            waitIdle(ed);
+            Server self = ed.find(Json.str(serverByName(ed, "Self"), "key"));
+            check(self.tlsUnverified && !Json.write(self.outbound).contains("allowInsecure"), "allowInsecure убран из настроек ядра");
+            ed.testServersTask();
+            waitIdle(ed);
+            String pin = XrayConfig.CERT_PINS.get(self.key());
+            check(pin != null && pin.length() == 64 && Json.write(ed.settings).contains(pin), "отпечаток снят и сохранён");
+            check(Json.write(XrayConfig.runConfig(self, ed.settings, new XrayConfig.Options())).contains(pin), "ядро получает отпечаток");
+            Server hyi = Links.parseLink("hysteria2://pw@h9.example.com:443?insecure=1#HyI");
+            check(!hyi.supported && "hy2".equals(Links.kindOf(hyi)) && hyi.note.contains("компьютер"),
+                    "Hysteria2 с самоподписанным сертификатом без отпечатка — только на компьютере");
         });
 
         test("Отключение системой и неудачный запуск ядра", () -> {

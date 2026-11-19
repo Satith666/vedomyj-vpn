@@ -57,6 +57,7 @@ DEFAULTS: dict = {
     "data_watch": True,   # сторож данных: «уходит, но не приходит» — проверить, идут ли данные
     "net_memory": True,   # память сетей: что работало у этого провайдера или в этой сети Wi-Fi
     "net_ways": {},       # хеш сети → {"server", "fp", "mask", "at"}
+    "cert_pins": {},      # ключ сервера → SHA-256 его сертификата (серверы «не проверять сертификат», см. certpin.py)
     "engine_pick": "auto",  # «Движок» на главной: auto, xray, hy2 (Hysteria2), singbox (TUIC, AnyTLS), awg (AmneziaWG)
     "last_awg_key": "",     # какой конфиг AmneziaWG был включён (чтобы показать его после перезапуска программы)
     "background": True,  # закрыл окно — программа работает дальше, значок у часов

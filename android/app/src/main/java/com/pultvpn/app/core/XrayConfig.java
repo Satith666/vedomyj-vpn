@@ -126,9 +126,19 @@ public final class XrayConfig {
         }
     }
 
+    /** Ключ сервера → SHA-256 его сертификата (серверы «не проверять сертификат»; заполняет Engine). */
+    public static final Map<String, String> CERT_PINS = new java.util.concurrent.ConcurrentHashMap<String, String>();
+
     static List<Map<String, Object>> taggedOutbounds(Server server, String tag) {
         Map<String, Object> main = Json.copy(server.outbound);
         main.put("tag", tag);
+        if (server.tlsUnverified) {
+            String pin = CERT_PINS.get(server.key());
+            Map<String, Object> tls = Json.map(Json.map(main, "streamSettings"), "tlsSettings");
+            if (pin != null && tls != null) {
+                tls.put("pinnedPeerCertSha256", pin); // вместо allowInsecure: закреплённый сертификат этого сервера
+            }
+        }
         if (server.pinnedIp != null && !server.pinnedIp.isEmpty()) {
             pinAddress(main, server.address, server.pinnedIp);
         }

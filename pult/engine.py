@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, countries, errorlog, ladder, leaks, netprofile, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, errorlog, ladder, leaks, netprofile, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -470,7 +470,14 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
                 os.replace(legacy, self._sub_cache(sid))
         self.settings["subscription_url"] = ""
 
+    def _pins(self) -> dict:
+        """Отпечатки сертификатов серверов «не проверять сертификат» — общие для движка и сборки настроек ядра."""
+        pins = self.settings.setdefault("cert_pins", {})
+        xray.CERT_PINS = pins
+        return pins
+
     def _rebuild_servers(self) -> None:
+        self._pins()
         servers: list[Server] = []
         for meta in self.settings["subscriptions"]:
             obj = self.sub_objs.get(meta["id"])
@@ -795,6 +802,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         if not servers:
             self.log("Конфиги AmneziaWG проверяются включением: выбери его и нажми большую кнопку.")
             return 0
+        if certpin.fill(servers, self._pins(), refresh=True):  # сертификат сервера мог смениться — снимаем заново
+            self.save()
         if singbox.bridged(servers) and not self._ensure_singbox():
             servers = [x for x in servers if x.engine != "singbox"]
             self.log("TUIC и AnyTLS сейчас не проверить: sing-box не скачался.")
@@ -1009,6 +1018,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             raise RuntimeError(f"«{server.name}» — {server.note}.")
         if self.awg_active:
             self.disconnect_awg(quiet=True, restore_filter=False)  # два VPN сразу не нужны: AmneziaWG выключается
+        if certpin.target(server) and certpin.fill([server], self._pins()):
+            self.save()
         if server.engine == "singbox" and not self._ensure_singbox():
             raise RuntimeError("Для TUIC и AnyTLS нужен sing-box, а он не скачался. Проверь интернет или выбери другой сервер.")
         if server.insecure:

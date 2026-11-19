@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import hashlib
 import http.server
 import json
 import os
@@ -37,7 +38,7 @@ if APP_DIR not in sys.path:
 for _k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"):
     os.environ.pop(_k, None)
 
-from pult import (autostart, diagnostics, dpi, engine as engmod, happ, hotspot, i18n, links, netutil, qr,  # noqa: E402
+from pult import (autostart, certpin, diagnostics, dpi, engine as engmod, happ, hotspot, i18n, links, netutil, qr,  # noqa: E402
                   routing, services, share, subscription, tester, tray, tun, vps, xray)
 from pult.webui import UIServer  # noqa: E402
 
@@ -309,7 +310,16 @@ def _addr_behavior(addr: str, masked: bool = False, fp: str | None = "") -> str:
 def install_fakes():
     def fake_check(paths, cfg, path=None, exe=None):
         json.dumps(cfg)  # конфиг должен сериализоваться
+        if "allowInsecure" in json.dumps(cfg):
+            return False, "allowInsecure больше не поддерживается ядром"  # как настоящий Xray с июня 2026
         return True, ""
+
+    def fake_pin(host, port, sni, timeout=8.0):
+        if host in DEAD or host == "dead.example":
+            raise OSError("сервер не отвечает")
+        return hashlib.sha256(f"{host}|{sni}".encode()).hexdigest()
+
+    certpin.fetch = fake_pin
 
     def fake_start(self, config, config_path, wait_for, timeout=8.0, exe=None):
         self.stop()
@@ -1381,7 +1391,7 @@ def t_lanes():
         check(not e.run_task("Обновляю списки", lambda: None), "вторая долгая задача ждёт")
         check(e.run_task("Подключаюсь", e.connect, fast, lane="conn"), "подключение не ждёт долгую задачу")
         t0 = time.time()
-        while not e.connected and time.time() - t0 < 5:
+        while (not e.connected or e.conn_busy()) and time.time() - t0 < 5:  # очередь подключения освободилась
             time.sleep(0.02)
         check(e.connected and e.bg_busy(), "подключено, пока долгая задача ещё идёт")
         st = e.state()
@@ -3302,8 +3312,12 @@ def t_whitelist():
         # белые списки отключились — возвращаемся к лучшему серверу
         mode["v"] = "open"
         DEAD.difference_update({"fast.example", "slow.example"})
-        e._whitelist_watch()
-        wait_idle(e)
+        for _ in range(3):  # занята другая задача (на медленной машине бывает) — сторож пропускает ход, как и в программе
+            wait_idle(e)
+            e._whitelist_watch()
+            wait_idle(e)
+            if e.current.key != wl.key:
+                break
         check(not e.whitelist_mode and not any(p["key"] == "whitelist" for p in e.problems_list()),
               "после белых списков предупреждение должно уйти")
         check(e.current.key != wl.key, f"нужно вернуться к лучшему обычному серверу: {e.current.name}")
@@ -4045,16 +4059,44 @@ def _amnezia_key(obj: dict) -> str:
 @case("Движки: ссылки Hysteria2, TUIC, AnyTLS, конфиг и ключ AmneziaWG, секреты не попадают в отчёт")
 def t_engine_links():
     from pult import diagnostics
-    s = links.parse_link("hysteria2://p%40ss@h2.example:8443/?sni=s.example&obfs=salamander&obfs-password=op&insecure=1#H2")
+    s = links.parse_link("hysteria2://p%40ss@h2.example:8443/?sni=s.example&obfs=salamander&obfs-password=op#H2")
     ob = s.outbound
     ss = ob["streamSettings"]
     check(s.supported and ob["protocol"] == "hysteria" and ob["settings"] == {"version": 2, "address": "h2.example", "port": 8443},
           f"Hysteria2 → Xray: {ob}")
     check(ss["network"] == "hysteria" and ss["hysteriaSettings"] == {"version": 2, "auth": "p@ss"}, f"пароль: {ss}")
-    check(ss["tlsSettings"]["serverName"] == "s.example" and ss["tlsSettings"]["alpn"] == ["h3"]
-          and ss["tlsSettings"].get("allowInsecure"), f"TLS: {ss['tlsSettings']}")
+    check(ss["tlsSettings"]["serverName"] == "s.example" and ss["tlsSettings"]["alpn"] == ["h3"], f"TLS: {ss['tlsSettings']}")
     check(ss["finalmask"]["udp"][0] == {"type": "salamander", "settings": {"password": "op"}}, "маскировка Salamander")
-    check(links.kind_of(s) == "hy2" and xray.fingerprint_of(ob) is None, "движок hy2, отпечатка TLS у QUIC нет")
+    check(links.kind_of(s) == "hy2" and xray.fingerprint_of(ob) is None and s.engine == "xray", "движок hy2, отпечатка TLS у QUIC нет")
+    # «не проверять сертификат»: новые ядра Xray так не умеют (с 1.06.2026 allowInsecure — ошибка настроек)
+    hi = links.parse_link("hysteria2://p%40ss@h2.example:8443/?sni=s.example&obfs=salamander&obfs-password=op&insecure=1#H2i")
+    check(hi.engine == "singbox" and hi.tls_unverified and links.kind_of(hi) == "hy2"
+          and hi.sb_outbound == {"type": "hysteria2", "server": "h2.example", "server_port": 8443, "password": "p@ss",
+                                 "tls": {"enabled": True, "server_name": "s.example", "insecure": True, "alpn": ["h3"]},
+                                 "obfs": {"type": "salamander", "password": "op"}},
+          f"Hysteria2 с самоподписанным сертификатом — через мост sing-box: {hi.sb_outbound}")
+    hp = links.parse_link("hy2://pw@h5.example:443?insecure=1&pinSHA256=" + "ab" * 32 + "#pinned")
+    check(hp.engine == "xray" and not hp.tls_unverified
+          and "allowInsecure" not in hp.outbound["streamSettings"]["tlsSettings"], "с отпечатком — прямо в Xray")
+    v = links.parse_link("vless://71111111-1111-4111-8111-111111111111@self.example:443?type=ws&security=tls&sni=s.example"
+                         "&allowInsecure=1#Self")
+    check(v.tls_unverified and "allowInsecure" not in json.dumps(v.outbound), "allowInsecure убран из настроек ядра")
+    from pult import certpin
+    pins: dict = {}
+    check(certpin.fill([v, s], pins) == 1 and len(pins[v.key]) == 64, f"отпечаток снят только у нужного: {pins}")
+    old = dict(xray.CERT_PINS)
+    try:
+        xray.CERT_PINS.clear()
+        xray.CERT_PINS.update(pins)
+        tls = xray.tagged_outbounds(v, "proxy")[0]["streamSettings"]["tlsSettings"]
+        check(tls.get("pinnedPeerCertSha256") == pins[v.key] and "allowInsecure" not in tls, f"в ядро — отпечаток: {tls}")
+    finally:
+        xray.CERT_PINS.clear()
+        xray.CERT_PINS.update(old)
+    cfg = links.servers_from_json({"outbounds": [{"protocol": "trojan", "settings": {"servers": [
+        {"address": "j.example", "port": 443, "password": "p"}]}, "streamSettings": {"security": "tls", "tlsSettings": {
+            "serverName": "j.example", "allowInsecure": True}}}]})
+    check(cfg[0].tls_unverified and "allowInsecure" not in json.dumps(cfg[0].outbound), "и в JSON-подписках")
     s2 = links.parse_link("hy2://secret@h3.example#Short")
     check(s2.port == 443 and s2.name == "Short", "hy2:// без порта — 443")
     check(not links.parse_link("hy2://x@h.example:443?obfs=gfw#z").supported, "неизвестная маскировка — не поддерживается")
@@ -4129,17 +4171,26 @@ def t_engines():
             "hysteria2://pw@hy.example:443?sni=h.example#Hy",
         ]))
         e.add_servers("# Дом\n" + AWG_CONF)
+        e.add_servers("vless://75555555-5555-4555-8555-555555555555@selfsigned.example:443?type=ws&security=tls"
+                      "&sni=s.example&allowInsecure=1#Self")
         wait_idle(e)
         by = {x.name: x for x in e.servers}
-        check(set(by) == {"Vless", "Tuic", "TuicDead", "Hy", "Дом"}, f"серверы: {sorted(by)}")
+        check(set(by) == {"Vless", "Tuic", "TuicDead", "Hy", "Дом", "Self"}, f"серверы: {sorted(by)}")
         SINGBOX_CONFIGS.clear()
         e.test_all()
         check(by["Tuic"].result.get("ok") and not by["TuicDead"].result.get("ok") and by["Hy"].result.get("ok"),
               f"проверка через мост: {by['Tuic'].result} / {by['TuicDead'].result}")
         check(SINGBOX_CONFIGS and {o["type"] for o in SINGBOX_CONFIGS[0]["outbounds"]} >= {"tuic"}, "временный мост sing-box")
         check(not by["Дом"].result, "AmneziaWG не проверяется ядром")
+        pin = e.settings["cert_pins"].get(by["Self"].key, "")
+        check(by["Self"].result.get("ok") and len(pin) == 64, f"«не проверять сертификат» → отпечаток снят: {by['Self'].result}")
+        e.connect(by["Self"])
+        with open(e.paths.run_config, encoding="utf-8") as f:
+            run_cfg = f.read() if not xray.WIPE_CONFIGS else ""
+        check(e.connected and (not run_cfg or (pin in run_cfg and "allowInsecure" not in run_cfg)), "ядро получило отпечаток")
+        e.disconnect()
         st = e.state()
-        check(st["engine"]["counts"] == {"auto": 4, "xray": 1, "hy2": 1, "singbox": 2, "awg": 1}, f"счёт: {st['engine']}")
+        check(st["engine"]["counts"] == {"auto": 5, "xray": 2, "hy2": 1, "singbox": 2, "awg": 1}, f"счёт: {st['engine']}")
         info = {x["name"]: x for x in st["servers"]}
         check(info["Tuic"]["kind"] == "singbox" and info["Дом"]["code"] == "awg" and info["Hy"]["protocol"] == "Hysteria2",
               f"окно: {info['Tuic']['kind']} {info['Дом']['code']} {info['Hy']['protocol']}")
@@ -4166,7 +4217,7 @@ def t_engines():
         check(not e.bridge.alive(), "мост выключается вместе с VPN")
         # движок «Xray» и «Авто»: в «Авто» нет AmneziaWG; лестница сначала пробует другой транспорт
         e.set_engine_pick("xray")
-        check([x.name for x in e.pool()] == ["Vless"], f"пул Xray: {[x.name for x in e.pool()]}")
+        check([x.name for x in e.pool()] == ["Vless", "Self"], f"пул Xray: {[x.name for x in e.pool()]}")
         e.set_engine_pick("auto")
         check("Дом" not in {x.name for x in e.pool()}, "AmneziaWG не входит в «Авто»")
         check(ladder.transport_of(by["Hy"]) == "udp" and ladder.transport_of(by["Vless"]) == "tcp", "транспорт для лестницы")

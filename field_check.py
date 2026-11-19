@@ -255,12 +255,14 @@ BRIDGE_LINKS = [
     "tuic://11111111-2222-3333-4444-777777777777:check-pass@203.0.113.30:443?sni=www.example.com&alpn=h3"
     "&congestion_control=bbr#Check-TUIC",
     "anytls://check-pass@203.0.113.31:443?sni=www.example.com#Check-AnyTLS",
+    # самоподписанный сертификат без отпечатка: Xray так не умеет — через мост
+    "hysteria2://check-pass@203.0.113.23:443?sni=www.example.com&insecure=1&obfs=salamander&obfs-password=x#Check-Hy2-self",
 ]
 HY2_LINKS = [
     ("Hysteria2", "hysteria2://check-pass@203.0.113.20:443?sni=www.example.com#Check-Hy2", "error"),
     (T("Hysteria2 с маскировкой Salamander", "Hysteria2 with Salamander masking"),
      "hysteria2://check-pass@203.0.113.21:8443/?sni=www.example.com&obfs=salamander&obfs-password=check-obfs"
-     "&insecure=1#Check-Hy2-obfs", "error"),
+     "#Check-Hy2-obfs", "error"),
     (T("Hysteria2 с закреплённым сертификатом", "Hysteria2 with a pinned certificate"),
      "hy2://check-pass@203.0.113.22:443?sni=www.example.com&pinSHA256=" + "ab" * 32 + "#Check-Hy2-pin", "warn"),
 ]
@@ -287,12 +289,32 @@ def check_engines(paths: xray.Paths, exe: str) -> None:
     ok, err = xray.check_config(paths, cfg, os.path.join(paths.data_dir, "field-check-config.json"), exe=exe)
     add("ok" if ok else "error", T("Ядро Xray: проверка серверов вместе с Hysteria2", "Xray core: server test together with Hysteria2"),
         "" if ok else err)
+    # «не проверять сертификат» (allowInsecure): ядро получает отпечаток сертификата вместо него
+    self_signed = links.parse_link("vless://11111111-2222-3333-4444-888888888888@203.0.113.12:443?type=ws&security=tls"
+                                   "&sni=www.example.com&path=%2Fws&allowInsecure=1#Check-self-signed")
+    xray.CERT_PINS[self_signed.key] = "ab" * 32
+    cfg = xray.build_run_config(self_signed, base_settings(), ports, access, paths.geo_ready(), True, core_version=ver)
+    ok, err = xray.check_config(paths, cfg, os.path.join(paths.data_dir, "field-check-config.json"), exe=exe)
+    add("ok" if ok else "error", T("Ядро Xray: сервер «не проверять сертификат» с отпечатком вместо allowInsecure",
+                                   "Xray core: “skip certificate check” server with a pin instead of allowInsecure"),
+        "" if ok else err)
     tuic = links.parse_link(BRIDGE_LINKS[0])
     tuic.sidecar_port = 23500
     cfg = xray.build_run_config(tuic, base_settings(), ports, access, paths.geo_ready(), True, core_version=ver)
     ok, err = xray.check_config(paths, cfg, os.path.join(paths.data_dir, "field-check-config.json"), exe=exe)
     add("ok" if ok else "error", T("Ядро Xray: сервер TUIC через мост sing-box", "Xray core: TUIC server via the sing-box bridge"),
         "" if ok else err)
+
+
+def check_certpin() -> None:
+    """Отпечаток сертификата снимается по настоящему TLS (так программа заменяет allowInsecure)."""
+    from pult import certpin
+    try:
+        pin = certpin.fetch("github.com", 443, "github.com", timeout=10)
+        add("ok" if len(pin) == 64 else "error", T("Отпечаток сертификата сервера снимается", "Server certificate pin is taken"))
+    except OSError as exc:
+        add("warn", T("Отпечаток сертификата: github.com не ответил", "Certificate pin: github.com did not answer"),
+            str(exc)[:200])
 
 
 def _awg_conf(private: str, public: str) -> str:
@@ -738,6 +760,7 @@ def main() -> None:
     section(T("Движки: Hysteria2, TUIC, AmneziaWG", "Engines: Hysteria2, TUIC, AmneziaWG"))
     if paths.xray_exists():
         guard(T("Движки в ядре Xray", "Engines in the Xray core"), lambda: check_engines(paths, paths.xray))
+    guard(T("Отпечаток сертификата", "Certificate pin"), check_certpin)
     if IS_WINDOWS:
         guard("AmneziaWG", lambda: check_awg(paths, live=CI))
 

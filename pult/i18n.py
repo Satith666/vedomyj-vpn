@@ -794,6 +794,7 @@ RULES: list[tuple[str, str]] = [
     (r"ключ Amnezia не читается", "the Amnezia key cannot be read"),
     (r"в ключе Amnezia нет ни AmneziaWG, ни Xray", "the Amnezia key has neither AmneziaWG nor Xray"),
     (r"ссылка AmneziaWG повреждена", "the AmneziaWG link is damaged"),
+    (r"сервер не показал сертификат", "the server did not show a certificate"),
     (r"в конфиге AmneziaWG нет ключей или адреса сервера", "the AmneziaWG config has no keys or server address"),
     (r"в настройках Xray нет сервера", "the Xray settings have no server"),
     (r"AmneziaWG запускается своим клиентом, а не ядром Xray", "AmneziaWG runs with its own client, not the Xray core"),

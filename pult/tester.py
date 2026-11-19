@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import netutil, singbox
+from . import certpin, netutil, singbox, xray as xraymod
 from .links import Server
 from .xray import Paths, XrayError, XrayProcess, build_test_config, check_config, fingerprint_of
 
@@ -130,6 +130,8 @@ def test_servers(paths: Paths, servers: list[Server], ping_host: str, ping_path:
             status = "сообщение провайдера" if srv.stub else "не поддерживается"
             srv.result = {"ok": False, "status": status, "error": srv.note, "tested_at": time.time()}
             on_result(srv)
+    # «не проверять сертификат»: ядро так не умеет — отпечатки сертификатов, которых ещё нет, снимаются сейчас
+    certpin.fill([s for s in servers if s.supported], xraymod.CERT_PINS)
     working = 0
     for exe, candidates in _groups(paths, [s for s in servers if s.supported], ensure_core):
         working += _test_group(paths, exe, candidates, ping_host, ping_path, on_result, stop_event, log)
