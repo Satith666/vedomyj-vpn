@@ -37,7 +37,7 @@ if APP_DIR not in sys.path:
 for _k in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"):
     os.environ.pop(_k, None)
 
-from pult import (autostart, dpi, engine as engmod, happ, hotspot, i18n, links, netutil, qr,  # noqa: E402
+from pult import (autostart, diagnostics, dpi, engine as engmod, happ, hotspot, i18n, links, netutil, qr,  # noqa: E402
                   routing, services, share, subscription, tester, tray, tun, vps, xray)
 from pult.webui import UIServer  # noqa: E402
 
@@ -3354,16 +3354,39 @@ def t_background():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _real_bash() -> str:
+    """bash для проверки синтаксиса скриптов. В Windows «bash» из System32 — заглушка WSL (без Linux она не работает),
+    поэтому там берётся bash из Git для Windows. Нет рабочего — проверка синтаксиса пропускается."""
+    import subprocess as sp
+    cands = []
+    if sys.platform == "win32":
+        for env in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+            if os.environ.get(env):
+                cands.append(os.path.join(os.environ[env], "Git", "bin", "bash.exe"))
+    found = shutil.which("bash")
+    if found and not (sys.platform == "win32" and "system32" in found.lower()):
+        cands.append(found)
+    for exe in cands:
+        try:
+            r = sp.run([exe, "-c", "echo ok"], capture_output=True, timeout=20)
+            if r.returncode == 0 and r.stdout.strip() == b"ok":
+                return exe
+        except (OSError, sp.SubprocessError):
+            continue
+    return ""
+
+
 @case("Мастер своего сервера: скрипт, ход установки, ссылки и проверка")
 def t_vps():
     import subprocess as sp
     sh = vps.script()
     check("XTLS/Xray-install" in sh and "xtls-rprx-vision" in sh and "PULT_RESULT" in sh and "\r" not in sh,
           "скрипт установки")
-    if shutil.which("bash"):
+    bash = _real_bash()
+    if bash:
         with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, newline="\n") as f:
             f.write(sh)
-        check(sp.run(["bash", "-n", f.name]).returncode == 0, "в скрипте установки ошибка синтаксиса")
+        check(sp.run([bash, "-n", f.name]).returncode == 0, "в скрипте установки ошибка синтаксиса")
         os.remove(f.name)
     for bad in (("1.2.3.4; rm -rf /", 22, "root"), ("1.2.3.4", 22, "root; ls"), ("1.2.3.4", "x", "root"), ("", 22, "root")):
         try:
@@ -3381,10 +3404,10 @@ def t_vps():
     for body in (vps.status_script(), vps.friend_script("add"),
                  vps.friend_script("remove", "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab")):
         check("\r" not in body and "__" not in body.replace("__name__", ""), "в скрипте остались заготовки")
-        if shutil.which("bash"):
+        if bash:
             with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, newline="\n") as f:
                 f.write(body)
-            check(sp.run(["bash", "-n", f.name]).returncode == 0, "в скрипте для сервера ошибка синтаксиса")
+            check(sp.run([bash, "-n", f.name]).returncode == 0, "в скрипте для сервера ошибка синтаксиса")
             os.remove(f.name)
     for bad in (("remove", "x; rm -rf /"), ("drop", "")):
         try:
@@ -4254,6 +4277,8 @@ def main() -> None:
     for r in report["results"]:
         mark = "OK " if r["ok"] else "ОШИБКА"
         print(f"[{mark}] {r['name']}" + ("" if r["ok"] else f"\n        {r['error']}"))
+        if not r["ok"] and os.environ.get("GITHUB_ACTIONS") == "true":
+            print(diagnostics.gh_annotation("error", r["name"], r["error"] + "\n" + r.get("trace", "")))
     print(f"\nПройдено {report['total'] - report['failed']} из {report['total']} за {report['seconds']} с.")
     sys.exit(1 if report["failed"] else 0)
 

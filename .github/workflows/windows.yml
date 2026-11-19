@@ -38,7 +38,9 @@ jobs:
       - name: Самопроверка на Windows
         run: python -m pult.selftest
 
+      # дальше — даже если самопроверка нашла ошибку: за один запуск видно всё
       - name: Клиент AmneziaWG (официальный, из его выпусков на GitHub)
+        if: success() || failure()
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -56,6 +58,7 @@ jobs:
             ForEach-Object { Write-Host "Клиент: $($_.FullName)" }
 
       - name: Настоящие ядра, движки и туннель AmneziaWG
+        if: success() || failure()
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python field_check.py --ci

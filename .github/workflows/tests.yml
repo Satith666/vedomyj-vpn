@@ -46,4 +46,12 @@ jobs:
           java-version: "17"
 
       - name: Самопроверка ядра и сверка с программой для ПК
-        run: sh android/coretest/run.sh
+        run: |
+          set -o pipefail
+          sh android/coretest/run.sh 2>&1 | tee coretest.log
+
+      - name: Ошибки — на страницу запуска
+        if: failure()
+        run: |
+          grep -A4 "FAIL" coretest.log | head -60 > fails.txt || true
+          echo "::error title=Android::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' fails.txt)"

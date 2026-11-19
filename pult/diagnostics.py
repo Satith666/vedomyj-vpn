@@ -602,3 +602,11 @@ def finish(r: Report, e) -> dict:
     except OSError:
         pass
     return report
+
+
+def gh_annotation(level: str, title: str, detail: str) -> str:
+    """Строка для GitHub Actions: ошибка видна прямо на странице запуска (в сводке), без открытия журнала."""
+    def esc(x: str, prop: bool = False) -> str:
+        x = x.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        return x.replace(":", "%3A").replace(",", "%2C") if prop else x
+    return f"::{level} title={esc(title[:200], True)}::{esc(detail[:3000])}"

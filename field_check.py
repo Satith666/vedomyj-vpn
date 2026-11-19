@@ -60,6 +60,9 @@ def add(level: str, title: str, detail: str = "") -> None:
     RESULTS.append({"section": SECTION[0], "level": level, "title": title, "detail": detail})
     mark = {"ok": "  OK ", "info": "  i  ", "warn": "  !  ", "error": " ERR ", "skip": "  -  "}.get(level, "  ?  ")
     print(f"{mark} {title}" + (f" — {detail}" if detail else ""), flush=True)
+    if CI and level in ("error", "warn") and os.environ.get("GITHUB_ACTIONS") == "true":
+        # ошибка видна прямо на странице запуска на GitHub
+        print(diagnostics.gh_annotation("error" if level == "error" else "warning", title, diagnostics.scrub(detail, set())), flush=True)
 
 
 def guard(title: str, func) -> None:
