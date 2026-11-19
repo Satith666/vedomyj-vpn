@@ -4097,6 +4097,11 @@ def t_engine_links():
         {"address": "j.example", "port": 443, "password": "p"}]}, "streamSettings": {"security": "tls", "tlsSettings": {
             "serverName": "j.example", "allowInsecure": True}}}]})
     check(cfg[0].tls_unverified and "allowInsecure" not in json.dumps(cfg[0].outbound), "и в JSON-подписках")
+    # одна и та же точка выхода под разными названиями (JSON-подписки) — разные серверы, а не «подключён» у всех
+    same = {"protocol": "vless", "settings": {"vnext": [{"address": "n.example", "port": 443, "users": [{"id": "x"}]}]},
+            "streamSettings": {"security": "reality", "realitySettings": {"publicKey": "K", "serverName": "a.com"}}}
+    two = links.servers_from_json([{"remarks": "Германия", "outbounds": [same]}, {"remarks": "Германия 2", "outbounds": [same]}])
+    check(len(two) == 2 and two[0].key != two[1].key, "разные записи с одним outbound — разные ключи")
     s2 = links.parse_link("hy2://secret@h3.example#Short")
     check(s2.port == 443 and s2.name == "Short", "hy2:// без порта — 443")
     check(not links.parse_link("hy2://x@h.example:443?obfs=gfw#z").supported, "неизвестная маскировка — не поддерживается")
@@ -4176,6 +4181,11 @@ def t_engines():
         wait_idle(e)
         by = {x.name: x for x in e.servers}
         check(set(by) == {"Vless", "Tuic", "TuicDead", "Hy", "Дом", "Self"}, f"серверы: {sorted(by)}")
+        n = len(e.servers)
+        dup = links.parse_link(by["Vless"].link)
+        dup.sub_id = by["Vless"].sub_id
+        e._set_servers(list(e.servers) + [dup])  # тот же сервер второй раз
+        check(len(e.servers) == n, "повтор сервера в списке убирается")
         SINGBOX_CONFIGS.clear()
         e.test_all()
         check(by["Tuic"].result.get("ok") and not by["TuicDead"].result.get("ok") and by["Hy"].result.get("ok"),

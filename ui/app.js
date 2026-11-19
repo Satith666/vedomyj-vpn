@@ -279,6 +279,38 @@ function placePopover(pop, anchor, matchWidth) {
   pop.style.top = (r.bottom + h + 8 > innerHeight && r.top - h - 6 > 8 ? r.top - h - 6 : r.bottom + 6) + "px";
 }
 
+/* Меню привязано к своей кнопке: едет вместе с ней при прокрутке и после перерисовки (главная обновляется каждую
+   секунду — кнопка заменяется новой), а когда кнопка уходит за край экрана — закрывается. */
+function popAnchorSel(el) {
+  const d = el.dataset;
+  if (d.dd) return `[data-dd="${CSS.escape(d.dd)}"]`;
+  if (d.menu) return `[data-menu="${CSS.escape(d.menu)}"]` + (d.key ? `[data-key="${CSS.escape(d.key)}"]`
+    : d.id ? `[data-id="${CSS.escape(d.id)}"]` : "");
+  return "";
+}
+
+function syncPopover() {
+  const pop = $("#popover");
+  if (pop.hidden || !pop._anchor) return;
+  let a = pop._anchor;
+  if (!a.isConnected) {
+    a = pop._sel ? document.querySelector(pop._sel) : null;
+    if (!a) return closeMenu();
+    a.setAttribute("aria-expanded", "true");
+    pop._anchor = a;
+  }
+  const r = a.getBoundingClientRect();
+  const box = ($(".main") || document.documentElement).getBoundingClientRect();
+  if (!r.width || r.bottom < box.top || r.top > box.bottom) return closeMenu();
+  placePopover(pop, a, pop.classList.contains("dd-pop"));
+}
+
+document.addEventListener("scroll", e => {
+  const pop = $("#popover");
+  if (!pop.hidden && !(e.target instanceof Node && pop.contains(e.target))) syncPopover();
+}, true);
+addEventListener("resize", () => syncPopover());
+
 function openMenu(anchor, items) {
   const pop = $("#popover");
   pop.className = "popover";
@@ -287,6 +319,7 @@ function openMenu(anchor, items) {
   pop.hidden = false;
   placePopover(pop, anchor, false);
   anchor.setAttribute("aria-expanded", "true");
+  pop._sel = popAnchorSel(anchor);
   pop.onclick = e => {
     const b = e.target.closest("button[data-i]");
     if (!b) return;
@@ -301,6 +334,7 @@ function closeMenu() {
   if (pop._anchor) pop._anchor.setAttribute("aria-expanded", "false");
   pop.hidden = true;
   pop._anchor = null;
+  pop._sel = "";
 }
 
 /* Выпадающий список как в Happ: пункты, у каждого — «Подробнее». */
@@ -319,6 +353,7 @@ function openDropdown(anchor, groups, onPick) {
   placePopover(pop, anchor, true);
   anchor.setAttribute("aria-expanded", "true");
   pop._anchor = anchor;
+  pop._sel = popAnchorSel(anchor);
   pop.onclick = e => {
     const more = e.target.closest("[data-info]");
     if (more) { e.stopPropagation(); closeMenu(); return detailModal(more.dataset.info); }
@@ -440,6 +475,7 @@ function homeSkeleton() {
 }
 
 function renderHero() {
+  queueMicrotask(syncPopover);  // открытое меню остаётся у своей (новой) кнопки
   const box = $("#hero");
   if (!box) return;
   const live = S.live || {};
@@ -2475,6 +2511,7 @@ function renderLock() {
 
 function renderPage(full = false) {
   if (!S) return;
+  queueMicrotask(syncPopover);
   if (S.locked) return renderLock();
   renderTheme();
   renderTop();

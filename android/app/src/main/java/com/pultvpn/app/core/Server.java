@@ -42,7 +42,9 @@ public final class Server {
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     public String key() {
-        String raw = link.isEmpty() ? Json.canonical(outbound) : link;
+        // без ссылки (JSON-подписки): у разных записей бывает один и тот же outbound — различаем по имени и цепочке
+        String raw = !link.isEmpty() ? link : extraOutbounds.isEmpty()
+                ? name + "|" + Json.canonical(outbound) : name + "|" + Json.canonical(outbound) + Json.write(extraOutbounds);
         return Text.sha1hex(subId + "|" + raw).substring(0, 12);
     }
 

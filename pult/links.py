@@ -55,7 +55,10 @@ class Server:
 
     @property
     def key(self) -> str:
-        raw = self.link or json.dumps(self.outbound, sort_keys=True, ensure_ascii=False)
+        # без ссылки (JSON-подписки): у разных записей бывает один и тот же outbound — различаем по имени и цепочке
+        raw = self.link or (self.name + "|" + json.dumps(self.outbound, sort_keys=True, ensure_ascii=False)
+                            + (json.dumps(self.extra_outbounds, sort_keys=True, ensure_ascii=False)
+                               if self.extra_outbounds else ""))
         return hashlib.sha1((self.sub_id + "|" + raw).encode("utf-8")).hexdigest()[:12]
 
     @property

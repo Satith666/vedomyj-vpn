@@ -419,6 +419,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             self.save()
 
     def _set_servers(self, servers: list[Server]) -> None:
+        seen: set = set()
+        # один и тот же сервер второй раз (повтор в подписке) — лишний: иначе «подключён» горит у всех копий
+        servers = [s for s in servers if not (s.key in seen or seen.add(s.key))]
         saved = dict(self.settings.get("results", {}) or {})
         saved.update({s.key: s.result for s in self.servers if s.result})
         for s in servers:

@@ -1013,8 +1013,15 @@ public final class Engine {
                         keep.add(srv);
                     }
                 }
+                Set<String> seen = new HashSet<String>();
+                for (Server srv : keep) {
+                    seen.add(srv.key());
+                }
                 for (Server srv : sub.servers) {
                     srv.subId = id;
+                    if (!seen.add(srv.key())) {
+                        continue; // тот же сервер второй раз (повтор в подписке): иначе «подключён» горит у всех копий
+                    }
                     Server prev = old.get(srv.key());
                     if (prev != null) {
                         srv.pingMs = prev.pingMs;
