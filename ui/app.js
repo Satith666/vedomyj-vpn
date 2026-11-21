@@ -552,7 +552,8 @@ function renderHero() {
       </div>
       <div class="con-side">
         <div class="con-card">
-          <h2 class="con-title" id="methodTitle">${t("method_title")}</h2>
+          <div class="con-title-row"><h2 class="con-title" id="methodTitle">${t("method_title")}</h2>
+            <button type="button" class="btn btn-small" data-act="pick_server">${t("m_change")}</button></div>
           <div class="methods" role="radiogroup" aria-labelledby="methodTitle">${methodRows(method)}</div>
         </div>
         <div class="con-card con-toggles">${toggleRows()}</div>
@@ -596,12 +597,10 @@ function methodRows(method) {
   };
   return METHODS.map(id => {
     const sel = id === method;
-    return `<div class="m-row">
-      <button type="button" class="m-opt ${sel ? "sel" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}">
+    return `<button type="button" class="m-opt ${sel ? "sel" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}" title="${esc(subs[id])}">
         <span class="m-dot" aria-hidden="true"></span>
         <span class="m-text"><b>${t(`m_${id}`)}</b><small>${esc(subs[id])}</small></span>
-      </button>${id === "server" ? `<button type="button" class="btn btn-small m-pick" data-act="pick_server">${t("m_change")}</button>` : ""}
-    </div>`;
+      </button>`;
   }).join("");
 }
 

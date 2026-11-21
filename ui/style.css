@@ -712,7 +712,7 @@ form[data-form="ads_lookup"] .input { flex: 1 1 auto; min-width: 0; width: auto;
 
 /* ---------- главный экран: «Пульт» (связь слева, способ и переключатели справа) ---------- */
 .page:has(> .console) { max-width: 1060px; }
-.con-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: stretch; }
+.con-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 @media (max-width: 860px) { .con-grid { grid-template-columns: 1fr; } }
 .con-card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
 .con-main { display: flex; flex-direction: column; gap: 18px; padding: 22px; }
@@ -753,9 +753,8 @@ form[data-form="ads_lookup"] .input { flex: 1 1 auto; min-width: 0; width: auto;
 @media (max-width: 560px) { .rt-row { flex-wrap: wrap; } .rt-line { display: none; } }
 
 /* способ */
-.methods { display: flex; flex-direction: column; gap: 8px; }
-.m-row { display: flex; align-items: stretch; gap: 8px; }
-.m-opt { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; min-height: 54px; padding: 9px 14px; border-radius: 12px;
+.methods { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.m-opt { min-width: 0; display: flex; align-items: center; gap: 11px; min-height: 58px; padding: 9px 12px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--panel-2); color: var(--text); text-align: left; cursor: pointer; font: inherit; }
 .m-opt:hover { background: var(--panel-3); }
 .m-opt.sel { border-color: var(--accent-line); background: var(--accent-soft); }
@@ -765,7 +764,9 @@ form[data-form="ads_lookup"] .input { flex: 1 1 auto; min-width: 0; width: auto;
 .m-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .m-text b { font-weight: 600; }
 .m-text small { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.m-pick { align-self: center; }
+.m-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
+.con-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.con-title-row .con-title { margin: 0; }
 
 /* переключатели */
 .con-toggles { padding: 6px 8px; }
