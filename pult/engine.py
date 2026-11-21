@@ -381,7 +381,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
             except Exception as exc:
                 self.log(f"Обход замедлений не включился: {exc}")
         if last:
-            self.connect(last)
+            self.connect_start(last)
 
     def load_cached(self) -> None:
         """Загружает сохранённые подписки без сети и без побочных действий (так же это делает проверка программы)."""
@@ -4252,6 +4252,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
                     return
         if self.ladder(reason):
             return
+        # быстрые способы не помогли (обычно это 10–20 секунд) — сразу показать, что происходит
+        self._searching_more(reason)
         # всё ещё шаг 6: проверяем все серверы заново (с маскировкой и другими отпечатками) и берём лучший
         self.check_stop()
         self.ladder_step = "проверка всех серверов"
@@ -4386,7 +4388,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
         """Одна секунда монитора. Отдельно от цикла — чтобы самопроверка могла «прокрутить» 10 минут за секунду."""
         ui = self.ui_clients > 0
         if not self.connected:
-            self._standby_at = time.time()  # запасные проверяем через 10 минут после подключения, не сразу
+            # запасные проверяем через минуту после подключения (не в первые секунды), потом раз в 10 минут
+            self._standby_at = time.time() - 540
         if self.connected:
             if tick % (self.LOG_TAIL_UI if ui else self.LOG_TAIL_BG) == 0:
                 self._tail_access_log()

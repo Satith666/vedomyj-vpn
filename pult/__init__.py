@@ -1,4 +1,4 @@
 """VEDOMYJ VPN — ядро программы."""
 
 APP_NAME = "VEDOMYJ VPN"
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"

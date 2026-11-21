@@ -4434,7 +4434,15 @@ def t_dispatcher():
         e._apply_net_way()
         check(e.current.key == cur, "способ из памяти не применён, пока данные идут")
         st = e.state()
-        check("dispatcher" not in st or isinstance(st["dispatcher"], dict), "состояние")
+        check(isinstance(st["dispatcher"], dict), "состояние")
+        # быстрый старт: в этой сети работал B — большая кнопка сразу берёт его, без перебора
+        e.disconnect()
+        e._net_cache = ("10.20", time.time())
+        nid = e._net_id(cached_only=True)
+        e.settings["net_ways"] = {nid: {"server": e.servers[1].key, "fp": "", "mask": 0, "at": time.time()}}
+        e.connect_start(e.servers[0])
+        it = e.journal.recent(1)[0]
+        check(e.current.key == e.servers[1].key and "в этой сети" in it["why"], f"сразу из памяти сети: {it}")
     finally:
         if e:
             e.shutdown()

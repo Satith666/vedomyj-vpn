@@ -310,7 +310,7 @@ class UIServer:
                 if e.servers and e.settings.get("engine_pick", "auto") != "auto":
                     raise ActionError("Для выбранного движка нет серверов. Добавь их или выбери движок «Авто».")
                 raise ActionError("Сначала добавь подписку или нажми «Автонастройка».")
-            return vpn_task("Подключаюсь", e.connect, srv)
+            return vpn_task("Подключаюсь", e.connect_start, srv)
         if action == "engine_pick":
             pick = str(a.get("pick", ""))
             e.set_engine_pick(pick)

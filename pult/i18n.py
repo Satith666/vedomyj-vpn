@@ -809,6 +809,11 @@ RULES: list[tuple[str, str]] = [
     (r"^Применяю настройки сети$", "Applying network settings"),
     (r"^новые настройки$", "new settings"),
     (r"новые настройки\.$", "new settings."),
+    (r"Связи через VPN нет — ищу рабочий сервер", "No connection via VPN — looking for a working server"),
+    (r"Программа проверяет все серверы и обновляет подписку — это до минуты\.",
+     "The program is checking all servers and updating the subscription — up to a minute."),
+    (r"^в этой сети работал этот сервер$", "this server worked in this network"),
+    (r"Сервер из памяти сети не подключился \((.+)\) — беру лучший\.", r"The server remembered for this network did not connect (\1) — taking the best one."),
     # --- журнал подключения ---
     (r"^Журнал подключения$", "Connection journal"),
     (r"^записей$", "entries"),

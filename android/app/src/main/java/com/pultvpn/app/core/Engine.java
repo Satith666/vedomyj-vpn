@@ -1817,7 +1817,26 @@ public final class Engine {
                 throw new UserError(Text.t("Для выбранного движка нет серверов. Добавь их или выбери движок «Авто».",
                         "The chosen engine has no servers. Add some or pick the “Auto” engine."));
             }
-            if (ranked().isEmpty() || System.currentTimeMillis() - lastTestAt > 30 * 60 * 1000L) {
+            // быстрый старт: в этой сети уже что-то работало — сразу оно, без проверки всех серверов
+            if (tryNetMemory()) {
+                return;
+            }
+            boolean stale = System.currentTimeMillis() - lastTestAt > 30 * 60 * 1000L;
+            if (!ranked().isEmpty() && stale && tryCandidates(ranked(), 2)) {
+                // проверка старая, но лучший по ней сервер работает — остальные проверим уже в фоне
+                pool.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            testServers(false);
+                        } catch (RuntimeException ignored) {
+                            // фоновая проверка — помощник
+                        }
+                    }
+                });
+                return;
+            }
+            if (ranked().isEmpty() || stale) {
                 testServers(true);
             }
             if (tryCandidates(ranked(), 5)) {
@@ -2720,6 +2739,27 @@ public final class Engine {
         } else if (cur != s) {
             startWith(cur);
         }
+    }
+
+    /** Подключиться способом из памяти этой сети (провайдер уже известен — без запроса в сеть). */
+    private boolean tryNetMemory() {
+        if (!Json.bool(settings, "net_memory", true) || System.currentTimeMillis() - ispAt >= 600000L) {
+            return false;
+        }
+        Map<String, Object> mem = netWay();
+        if (mem == null) {
+            return false;
+        }
+        Server s = find(Json.str(mem, "server"));
+        if (s == null || !s.usable() || !inPool(s)) {
+            return false;
+        }
+        synchronized (lock) {
+            s.fp = Json.str(mem, "fp");
+            s.mask = Json.bool(mem, "mask", false);
+        }
+        journalWhy(Text.t("в этой сети работал этот сервер", "this server worked in this network"));
+        return startWith(s);
     }
 
     /** После подключения: данные идут — запомнить сервер и способ для этой сети. */

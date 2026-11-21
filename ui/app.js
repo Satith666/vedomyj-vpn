@@ -578,8 +578,10 @@ function whatWorksHtml() {
   if (!w || S.connected && !S.problems.some(p => p.key === "no_working")) return "";
   const items = (w.items || []).map(x => `<span class="ww-item ${x.ok ? "ok" : "bad"}">${icon(x.ok ? "check" : "x")}${esc(x.name)}</span>`).join("");
   const mins = L.retry_at ? Math.max(1, Math.round((L.retry_at - Date.now() / 1000) / 60)) : 0;
+  const head = w.searching ? `<b>${t("ww_searching_title")}</b> <span class="hint">${esc(t("ww_searching"))}</span>`
+    : `<b>${t("ww_title")}</b> <span class="hint">${esc(mins ? t("ww_retry_in", { n: mins }) : t("ww_retry_soon"))}</span>`;
   return `<div class="what-works" role="status">
-    <div><b>${t("ww_title")}</b> <span class="hint">${esc(mins ? t("ww_retry_in", { n: mins }) : t("ww_retry_soon"))}</span></div>
+    <div>${head}</div>
     ${items ? `<div class="ww-list"><span class="hint">${t("ww_direct")}</span>${items}</div>` : ""}
     <span class="hint">${t(w.hint === "wifi" ? "ww_hint_wl" : "ww_hint")}</span>
     <div class="toolbar">${busy("connect") || S.conn_busy ? "" : `<button class="btn btn-small btn-primary" data-act="ladder_retry">${icon("refresh")}${t("ww_try_now")}</button>`}</div>

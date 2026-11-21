@@ -116,20 +116,46 @@ class LadderMixin:
 
     # ---------- сеть ----------
 
-    def _net_id(self) -> str:
-        """Ключ сети для памяти способов: вид сети, имя Wi-Fi и подсеть провайдера — одним хешем."""
+    def _net_id(self, cached_only: bool = False) -> str:
+        """Ключ сети для памяти способов: вид сети, имя Wi-Fi и подсеть провайдера — одним хешем.
+        cached_only — без запроса в сеть (только если провайдер уже известен): для быстрого старта."""
         net = getattr(self, "net_profile", None) or {}
-        isp = self._network_key()
+        if cached_only:
+            cached = getattr(self, "_net_cache", None)
+            isp = cached[0] if cached and time.time() - cached[1] < 600 else ""
+            if not isp:
+                return ""
+        else:
+            isp = self._network_key()
         kind, ssid = net.get("kind") or "", net.get("ssid") or ""
         if not (isp or ssid):
             return ""
         return hashlib.sha1(f"{kind}|{ssid}|{isp}".encode("utf-8")).hexdigest()[:12]
 
-    def _net_way(self) -> dict | None:
+    def _net_way(self, cached_only: bool = False) -> dict | None:
         if not self.settings.get("net_memory", True):
             return None
-        nid = self._net_id()
+        nid = self._net_id(cached_only)
         return (self.settings.get("net_ways") or {}).get(nid) if nid else None
+
+    def connect_start(self, srv: Server) -> None:
+        """Большая кнопка и запуск программы: если в этой сети уже что-то работало — сразу оно
+        (сервер и способ из памяти сети), без перебора; иначе — srv."""
+        mem = self._net_way(cached_only=True)
+        pick = self.settings.get("engine_pick", "auto")
+        if mem and srv and srv.engine != "awg":
+            real = self.find(mem.get("server", ""))
+            if real and real in self.pool() and real.supported and not real.stub \
+                    and (pick == "auto" or real.engine == srv.engine):
+                way = self._apply_way(way_copy(real, mem.get("fp") or "", mem.get("mask") or 0))
+                if way:
+                    self._lane.why = "в этой сети работал этот сервер"
+                    try:
+                        self.connect(way)
+                        return
+                    except Exception as exc:
+                        self.log(f"Сервер из памяти сети не подключился ({exc}) — беру лучший.")
+        self.connect(srv)
 
     def _remember_way(self, srv: Server) -> None:
         """Способ сработал — запомнить его для этой сети (шаг 1 лестницы в следующий раз)."""
@@ -329,12 +355,12 @@ class LadderMixin:
 
     # ---------- «ничего не работает» ----------
 
-    def _nothing_works(self, reason: str) -> None:
-        """Ни один способ не помог: без бесконечных переподключений, честно показать, что работает напрямую."""
-        self._ladder_fails += 1
-        wait = BACKOFF[min(self._ladder_fails, len(BACKOFF)) - 1]
-        self._ladder_next = time.time() + wait
-        self.ladder_step = ""
+    def _direct_works(self) -> list[dict]:
+        """Что открывается напрямую (Google, Telegram…) — подсказка, когда через VPN связи нет.
+        Свежий результат (меньше минуты) берётся повторно, чтобы не проверять дважды подряд."""
+        prev = self.what_works or {}
+        if prev.get("items") and time.time() - prev.get("time", 0) < 60:
+            return prev["items"]
         self.progress("Проверяю, что работает напрямую")
         names = [n for n in WHAT_WORKS if any(s["name"] == n for s in services.SERVICES)]
         found = []
@@ -346,6 +372,25 @@ class LadderMixin:
                 found.append({"name": n, "ok": st in (services.OK, services.SLOW)})
         except Exception as exc:  # проверка — подсказка, а не главное
             self.log(f"Проверка «что работает напрямую»: {exc}")
+        return found
+
+    def _searching_more(self, reason: str) -> None:
+        """Быстрые способы лестницы не помогли: сразу показать, что происходит и что работает напрямую,
+        а глубокий поиск (проверка всех серверов, обновление подписки) продолжается — он может идти минуту."""
+        found = self._direct_works()
+        self.what_works = {"time": time.time(), "items": found, "retry_at": 0, "searching": True,
+                           "hint": "wifi" if getattr(self, "whitelist_mode", False) else ""}
+        self.problem("no_working", "Связи через VPN нет — ищу рабочий сервер", reason, where="Главная",
+                     fix="Программа проверяет все серверы и обновляет подписку — это до минуты.", level="warn")
+        self.notify("status")
+
+    def _nothing_works(self, reason: str) -> None:
+        """Ни один способ не помог: без бесконечных переподключений, честно показать, что работает напрямую."""
+        self._ladder_fails += 1
+        wait = BACKOFF[min(self._ladder_fails, len(BACKOFF)) - 1]
+        self._ladder_next = time.time() + wait
+        self.ladder_step = ""
+        found = self._direct_works()
         works = [f["name"] for f in found if f["ok"]]
         self.ladder_last = {"at": time.time(), "ok": False, "text": "ни один способ не помог"}
         self.what_works = {"time": time.time(), "items": found, "retry_at": self._ladder_next,
