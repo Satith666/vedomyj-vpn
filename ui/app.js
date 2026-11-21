@@ -595,9 +595,10 @@ function methodRows(method) {
     awg: S.awg && S.awg.count && !S.awg.client ? t("awg_need_client") : awgName,
     off: S.dpi && S.dpi.supported ? t("m_off_sub") : t("dpi_st_win"),
   };
+  const empty = { awg: !(S.awg && S.awg.count), server: !S.servers.some(s => s.supported && s.kind !== "awg"), auto: false, off: false };
   return METHODS.map(id => {
     const sel = id === method;
-    return `<button type="button" class="m-opt ${sel ? "sel" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}" title="${esc(subs[id])}">
+    return `<button type="button" class="m-opt ${sel ? "sel" : ""} ${empty[id] && !sel ? "m-empty" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}" title="${esc(subs[id])}">
         <span class="m-dot" aria-hidden="true"></span>
         <span class="m-text"><b>${t(`m_${id}`)}</b><small>${esc(subs[id])}</small></span>
       </button>`;

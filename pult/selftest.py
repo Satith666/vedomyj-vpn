@@ -4480,6 +4480,22 @@ def t_methods():
         check(e.method() == "server" and e.settings["autopilot"] is False, f"способ: {e.method()}")
         ui.dispatch("method", {"method": "auto"})
         check(e.method() == "auto" and e.settings["autopilot"] is True and e.connected, "Авто — автопереход снова включён")
+        try:
+            ui.dispatch("method", {"method": "awg"})
+            check(False, "AmneziaWG без конфига выбран")
+        except Exception as exc:
+            check("конфиг AmneziaWG" in str(exc) and e.method() == "auto", str(exc))
+        # движок без серверов (выбран раньше в «Дополнительно») — большая кнопка не ругается, а берёт «Авто»
+        e.disconnect()
+        e.settings["engine_pick"] = "singbox"
+        ui.dispatch("toggle", {})
+        for _ in range(100):
+            if not e.conn_busy():
+                break
+            time.sleep(0.05)
+        check(e.connected and e.settings["engine_pick"] == "auto" and e.method() == "auto", "нет серверов у движка — «Авто»")
+        e.add_servers("# Дом\n" + AWG_CONF)
+        wait_idle(e)
         ui.dispatch("method", {"method": "awg"})
         check(e.settings["engine_pick"] == "awg", "AmneziaWG — движок AmneziaWG")
         for _ in range(100):

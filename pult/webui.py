@@ -306,6 +306,11 @@ class UIServer:
             return vpn_task("Подключаюсь", e.connect, srv)
         if action == "method":
             m = str(a.get("method", ""))
+            if m == "awg" and not e.awg_servers():
+                raise ActionError("Сначала добавь конфиг AmneziaWG: кнопка «+» над списком серверов → вставь текст "
+                                  ".conf или ключ vpn://.")
+            if m == "server" and not any(s.supported and s.engine != "awg" for s in e.servers):
+                raise ActionError("Сначала добавь подписку или нажми «Автонастройка».")
             was_awg = bool(e.awg_active)
             e.set_method(m)
             if m == "off":
@@ -336,9 +341,15 @@ class UIServer:
             if e.connected or e.kill_on:  # kill switch: кнопка открывает интернет без VPN
                 return vpn_task("Отключаюсь", e.disconnect)
             srv = e.toggle_target()
+            if not srv and e.servers and e.settings.get("engine_pick", "auto") != "auto":
+                # у выбранного способа или движка нет серверов (например, AmneziaWG без конфига) — не ошибка
+                # на каждое нажатие, а «Авто» с обычными серверами
+                e.settings["engine_pick"] = "auto"
+                e.set_method("auto")
+                srv = e.toggle_target()
+                if srv:
+                    e.notify("info", text="Для выбранного способа нет серверов — подключаюсь в режиме «Авто».")
             if not srv:
-                if e.servers and e.settings.get("engine_pick", "auto") != "auto":
-                    raise ActionError("Для выбранного движка нет серверов. Добавь их или выбери движок «Авто».")
                 raise ActionError("Сначала добавь подписку или нажми «Автонастройка».")
             return vpn_task("Подключаюсь", e.connect_start, srv)
         if action == "engine_pick":

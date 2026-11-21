@@ -815,6 +815,10 @@ RULES: list[tuple[str, str]] = [
     (r"^в этой сети работал этот сервер$", "this server worked in this network"),
     (r"Сервер из памяти сети не подключился \((.+)\) — беру лучший\.", r"The server remembered for this network did not connect (\1) — taking the best one."),
     # --- способ на главном экране ---
+    (r"Для выбранного способа нет серверов — подключаюсь в режиме «Авто»\.",
+     "The chosen mode has no servers — connecting in “Auto” mode."),
+    (r"Сначала добавь конфиг AmneziaWG: кнопка «\+» над списком серверов → вставь текст \.conf или ключ vpn://\.",
+     "Add an AmneziaWG config first: the “+” button above the server list → paste the .conf text or a vpn:// key."),
     (r"^Способ: Авто\.$", "Mode: Auto."),
     (r"^Способ: VPN-сервер\.$", "Mode: VPN server."),
     (r"^Способ: AmneziaWG\.$", "Mode: AmneziaWG."),
