@@ -2023,6 +2023,7 @@ public class CoreTest {
             waitIdle(el);
             check("Пустой".equals(currentName(el)), "подключено к пустому: " + currentName(el));
             el.settings.put("selected", "");
+            el.settings.put("autopilot", true); // выбор сервера в списке выключает автосмену («VPN-сервер»)
             el.ladderRetry();
             waitIdle(el);
             check(el.isOn() && "Запасной".equals(currentName(el)), "лестница нашла рабочий: " + currentName(el));
@@ -2036,6 +2037,7 @@ public class CoreTest {
             waitIdle(el);
             check("FP".equals(currentName(el)), "подключено к FP: " + currentName(el));
             el.settings.put("selected", "");
+            el.settings.put("autopilot", true); // выбор сервера в списке выключает автосмену («VPN-сервер»)
             fl.blockedFps.add("firefox");
             el.ladderRetry();
             waitIdle(el);
@@ -2071,6 +2073,7 @@ public class CoreTest {
             el.select(empty.key());
             waitIdle(el);
             el.settings.put("selected", "");
+            el.settings.put("autopilot", true); // выбор сервера в списке выключает автосмену («VPN-сервер»)
             check("Пустой".equals(currentName(el)), "снова на пустом: " + currentName(el));
             Engine.SILENT_MS = 0;
             try {

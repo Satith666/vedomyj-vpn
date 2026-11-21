@@ -52,13 +52,18 @@ const out = process.argv[3];
   await page.click('.row[data-act="server"]:not(.current) [data-act="server-menu"]');
   await shot("05-server-menu");
   await page.click("#sheetBack");
-  // режим и плитки
-  await page.click('[data-act="mode"][data-v="vpn"]');
+  // способ и переключатели на главной
+  await page.click('[data-act="method"][data-v="server"]');
+  await page.waitForTimeout(300);
+  if ((await page.getAttribute('[data-act="method"][data-v="server"]', "aria-checked")) !== "true") throw new Error("method server not selected");
+  await page.click('[data-act="method"][data-v="auto"]');
+  await page.waitForTimeout(300);
+  if (!(await page.$(".route .rt-node"))) throw new Error("route missing on home");
   await page.click('[data-act="flip"][data-k="dns_encrypted"]');
   await waitIdle();
   await page.waitForTimeout(1100);
-  // раздача
-  await page.click('[data-nav="share"]');
+  // раздача (теперь в «Настройках → Подключение»)
+  await page.evaluate(() => window.pultGo("share"));
   await page.waitForTimeout(1100);
   await shot("06-share-off");
   await page.click('[data-act="hotspot-local"]');
@@ -108,7 +113,7 @@ const out = process.argv[3];
   await page.waitForTimeout(1200);
   await shot("14-home-light", true);
   // блокировка рекламы
-  await page.click('.tile[data-nav="ads"]');
+  await page.evaluate(() => window.pultGo("ads"));
   await page.waitForTimeout(300);
   await page.click('[data-act="ads-flip"]');
   await page.waitForTimeout(400);
@@ -127,7 +132,7 @@ const out = process.argv[3];
   await page.click("#back");
   await page.waitForTimeout(400);
   // обход замедлений
-  await page.click('.tile[data-nav="dpi"]');
+  await page.evaluate(() => window.pultGo("dpi"));
   await page.waitForTimeout(300);
   await page.click('[data-act="dpi-pick"]');
   await page.waitForTimeout(400);
@@ -139,7 +144,7 @@ const out = process.argv[3];
   await page.click("#back");
   await page.waitForTimeout(400);
   // свои маршруты: прокси и сервис через него
-  await page.click('.tile[data-nav="routes"]');
+  await page.evaluate(() => window.pultGo("routes"));
   await page.waitForTimeout(300);
   await page.fill("#pxRaw", "socks5://user:pass@198.51.100.7:1080");
   await page.fill("#pxName", "TikTok США");
@@ -167,7 +172,7 @@ const out = process.argv[3];
   await page.waitForTimeout(1200);
   await shot("20-home-tiles");
   // свой сервер
-  await page.click('[data-nav="vps"]');
+  await page.evaluate(() => window.pultGo("vps"));
   await page.fill("#vpsHost", "vps.example.net");
   await page.fill("#vpsPass", "secret");
   await page.fill("#vpsName", "Мой VPS");
@@ -311,6 +316,8 @@ const out = process.argv[3];
   await page.waitForTimeout(1200);
   const rowA = await page.$('.row[data-act="awg"]');
   if (!rowA) throw new Error("awg row missing");
+  await page.evaluate(() => window.pultGo("settings")); // способ и движок — в «Настройках → Подключение»
+  await page.waitForTimeout(300);
   await page.click('[data-act="engine"]');
   await page.waitForTimeout(300);
   const engTxt = await page.$eval("#sheet", (e) => e.textContent.replace(/\s+/g, " "));
@@ -331,6 +338,8 @@ const out = process.argv[3];
   await page.waitForTimeout(300);
   await page.click('[data-act="engine-set"][data-v="auto"]');
   await page.waitForTimeout(1200);
+  await page.evaluate(() => window.pultBack());
+  await page.waitForTimeout(600);
   // выключить
   await page.click(".power");
   await page.waitForTimeout(1200);

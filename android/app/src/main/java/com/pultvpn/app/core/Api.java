@@ -58,6 +58,9 @@ public final class Api {
                 e.setDpi(v == null ? Json.obj() : v);
                 return true;
             }
+            case "method":
+                e.setMethod(Json.str(a, "method"));
+                return e.method();
             case "dpi_pick":
                 return e.dpiPick();
             case "repair_site":

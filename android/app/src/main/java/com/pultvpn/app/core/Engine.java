@@ -1958,8 +1958,78 @@ public final class Engine {
     }
 
     /** Выбрать сервер вручную ("" — автоматически). Если VPN включён — переключиться сразу. */
+    // ---------- способ на главном экране (как на ПК): Авто / VPN-сервер / AmneziaWG / Без VPN ----------
+
+    public static final List<String> METHODS = Collections.unmodifiableList(Arrays.asList("auto", "server", "awg", "off"));
+
+    public String method() {
+        String m = Json.str(settings, "conn_method");
+        if (METHODS.contains(m)) {
+            return m;
+        }
+        if ("awg".equals(Json.str(settings, "engine_pick", "auto"))) {
+            return "awg";
+        }
+        return Json.str(settings, "selected").isEmpty() ? "auto" : "server";
+    }
+
+    /** Сменить способ. Подключение меняет окно: «Без VPN» — защита без VPN (нужно разрешение Android). */
+    public void setMethod(String m) {
+        if (!METHODS.contains(m)) {
+            throw new UserError(Text.t("Нет такого способа.", "No such mode."));
+        }
+        int awgCount = 0;
+        int plain = 0;
+        synchronized (lock) {
+            for (Server s : servers) {
+                if ("awg".equals(s.engine)) {
+                    awgCount++;
+                } else if (s.usable()) {
+                    plain++;
+                }
+            }
+        }
+        if ("awg".equals(m) && awgCount == 0) {
+            throw new UserError(Text.t("Сначала добавь конфиг AmneziaWG: «+» → вставь текст .conf или ключ vpn://.",
+                    "Add an AmneziaWG config first: “+” → paste the .conf text or a vpn:// key."));
+        }
+        if ("server".equals(m) && plain == 0) {
+            throw new UserError(Text.t("Сначала добавь подписку или ссылку на сервер.", "Add a subscription or a server link first."));
+        }
+        settings.put("conn_method", m);
+        if ("auto".equals(m) || "server".equals(m)) {
+            settings.put("autopilot", "auto".equals(m));
+            if ("awg".equals(Json.str(settings, "engine_pick", "auto"))) {
+                settings.put("engine_pick", "auto");
+            }
+            if ("auto".equals(m)) {
+                settings.put("selected", "");
+            } else if (Json.str(settings, "selected").isEmpty()) {
+                Server cur;
+                synchronized (lock) {
+                    cur = current;
+                }
+                List<Server> r = ranked();
+                Server pick = cur != null ? cur : r.isEmpty() ? null : r.get(0);
+                settings.put("selected", pick == null ? "" : pick.key());
+            }
+        } else if ("awg".equals(m)) {
+            settings.put("engine_pick", "awg");
+        } else {
+            settings.put("dpi_enabled", true);
+            settings.put("dpi_without_vpn", true); // «Без VPN» — ускорение YouTube и Discord без VPN
+        }
+        saveSettings();
+        int i = METHODS.indexOf(m);
+        log("Способ: " + new String[]{"Авто", "VPN-сервер", "AmneziaWG", "Без VPN"}[i] + ".",
+                "Mode: " + new String[]{"Auto", "VPN server", "AmneziaWG", "Without VPN"}[i] + ".");
+        changed();
+    }
+
     public void select(final String key) {
         settings.put("selected", key == null ? "" : key);
+        settings.put("conn_method", key == null || key.isEmpty() ? "auto" : "server"); // выбор в списке — это способ
+        settings.put("autopilot", key == null || key.isEmpty());
         saveSettings();
         if (isOn()) {
             runTask(Text.t("Переключаю сервер", "Switching server"), "connect", new Runnable() {
@@ -3976,6 +4046,7 @@ public final class Engine {
                     "net_known", !waySaved.isEmpty()));
             st.put("errors_count", errors.size());
             st.put("journal", journal.state());
+            st.put("method", method());
             st.put("app_update", Json.obj("configured", Update.configured(), "state", appUpdate,
                     "auto", Json.bool(settings, "app_update", true)));
             st.put("ads", adsState());
@@ -6324,8 +6395,8 @@ public final class Engine {
         if (tick % 720 == 6) {
             subAlerts(); // раз в час (и вскоре после запуска)
         }
-        if (tick % 6 == 2) {
-            netWatch(); // раз в 30 секунд
+        if (tick % 60 == 2) {
+            netWatch(); // раз в 5 минут для подстраховки: обычно смену сети сообщает сам Android (PultVpnService)
         }
         if (tick % 4320 == 120) {
             certWatch(); // раз в 6 часов (и через 10 минут после запуска)

@@ -202,6 +202,12 @@ S["android.net.wifi.WifiInfo"] = """public class WifiInfo implements android.net
   public int getCurrentSecurityType() { return -1; }
 }"""
 S["android.net.ConnectivityManager"] = """public class ConnectivityManager {
+  public static class NetworkCallback {
+    public void onAvailable(Network network) {}
+    public void onLost(Network network) {}
+  }
+  public void registerDefaultNetworkCallback(NetworkCallback cb) {}
+  public void unregisterNetworkCallback(NetworkCallback cb) {}
   public static final int RESTRICT_BACKGROUND_STATUS_ENABLED = 3;
   public int getRestrictBackgroundStatus() { return 1; }
   public NetworkCapabilities getNetworkCapabilities(Network n) { return null; }

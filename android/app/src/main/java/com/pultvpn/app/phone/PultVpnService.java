@@ -8,6 +8,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.drawable.Icon;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -77,10 +79,44 @@ public final class PultVpnService extends VpnService {
         }
     }
 
+    /** Смена сети (Wi-Fi ↔ мобильная, другой Wi-Fi) — сигналом Android, а не опросом: батарея целее. */
+    private ConnectivityManager.NetworkCallback netCallback;
+
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            netCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    netChanged();
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    netChanged();
+                }
+            };
+            cm.registerDefaultNetworkCallback(netCallback);
+        } catch (RuntimeException ignored) {
+            netCallback = null; // без сигнала — движок и так проверяет сеть раз в 5 минут
+        }
+    }
+
+    private static void netChanged() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Thread.sleep(1500); // сеть договаривается об адресе
+                    App.engine().netWatch();
+                } catch (Exception ignored) {
+                    // помощник
+                }
+            }
+        }).start();
     }
 
     @Override
@@ -234,6 +270,14 @@ public final class PultVpnService extends VpnService {
     @Override
     public void onDestroy() {
         running = false;
+        if (netCallback != null) {
+            try {
+                ((ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netCallback);
+            } catch (RuntimeException ignored) {
+                // уже снят
+            }
+            netCallback = null;
+        }
         stopCore();
         if (tun != null) {
             try {

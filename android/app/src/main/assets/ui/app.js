@@ -110,6 +110,7 @@
     return false;
   }
   window.pultBack = back;
+  window.pultGo = go; // проверка интерфейса (coretest/ui_walk.js) открывает экраны напрямую
 
   function render() {
     if (!S) return;
@@ -154,6 +155,7 @@
       line = t("st_on");
       sub = (srv ? srv.name : "") + (S.delay > 0 ? " · " + S.delay + " " + t("ms") : "");
     }
+    else if (S.method === "off" && S.filter_on) { line = t("st_novpn"); sub = t("st_novpn_sub"); }
     else { line = t("st_off"); sub = S.filter_on ? t("st_off_filter") : t("st_off_sub"); }
     return `<button class="power ${cls}" data-act="toggle" aria-label="${esc(on ? t("st_on") : t("st_off"))}">
         <svg class="ring" viewBox="0 0 148 148"><circle class="bg" cx="74" cy="74" r="70"/><circle class="fg" cx="74" cy="74" r="70"/></svg>
@@ -192,6 +194,49 @@
         <button data-act="mode" data-v="smart" aria-pressed="${m === "smart"}">${esc(t("mode_smart"))}</button></div>
       <p class="hint seg-note">${esc(note)}</p>
       <div class="card eng-card">${navRow('data-act="engine"', "swap", t("eng_title"), engName((S.engine || {}).pick || "auto"))}</div>`;
+  }
+
+  // ---------- новый главный экран (как на ПК): путь трафика, способ, три переключателя ----------
+  function routeHtml() {
+    const on = S.status === "on", busy = S.status === "connecting";
+    const accel = (S.dpi || {}).active && (on || S.filter_on);
+    const node = (ic, name, sub, live) => `<div class="rt-node${live ? " live" : ""}"><span class="rt-ico">${icon(ic)}</span>
+      <span class="rt-text"><b>${esc(name)}</b><small>${esc(sub)}</small></span></div>`;
+    const line = `<span class="rt-line${busy ? " busy" : on || S.filter_on ? " on" : ""}" aria-hidden="true"></span>`;
+    const parts = [node("phone", t("rt_phone"), "", true)];
+    if (accel) parts.push(node("swap", t("rt_accel"), "", true));
+    if (on && S.server) parts.push(node("server", t("rt_server"), S.server.name, true));
+    parts.push(node("globe", t("rt_net"), on ? "VPN" : t("rt_direct"), on || S.filter_on));
+    return `<div class="route" aria-label="${esc(t("rt_title"))}">${parts.join(line)}</div>`;
+  }
+
+  const METHODS = ["auto", "server", "awg", "off"];
+  function methodHtml() {
+    const m = S.method || "auto";
+    const E = (S.engine || {}).counts || {};
+    const sel = S.settings.selected ? (S.servers || []).find((x) => x.key === S.settings.selected) : null;
+    const subs = {
+      auto: t("m_auto_sub"),
+      server: sel ? sel.name : S.server && S.status === "on" ? S.server.name : t("m_server_none"),
+      awg: E.awg ? t("m_awg_ready") : t("m_awg_none"),
+      off: t("m_off_sub"),
+    };
+    const empty = { awg: !E.awg, server: !(S.servers || []).some((x) => x.usable), auto: false, off: false };
+    return `<div class="card-head"><h2>${esc(t("method_title"))}</h2></div><div class="methods" role="radiogroup">${METHODS.map((id) =>
+      `<button class="m-opt${id === m ? " sel" : ""}${empty[id] && id !== m ? " m-empty" : ""}" role="radio" aria-checked="${id === m}" data-act="method" data-v="${id}">
+        <span class="m-dot" aria-hidden="true"></span><span class="m-text"><b>${esc(t("m_" + id))}</b><small>${esc(subs[id])}</small></span></button>`).join("")}</div>`;
+  }
+
+  function togglesHtml() {
+    const st = S.settings, D = S.dpi || {}, A = S.ads || {};
+    const accelSub = !D.enabled ? t("tile_ads_off") : taskOf("dpi") ? t("tile_dpi_busy") : D.active ? t("tile_dpi_on")
+      : D.tested_at ? t("tile_dpi_none") : t("tile_dpi_wait");
+    const ads = !A.enabled ? t("tile_ads_off") : A.paused_until ? t("tile_ads_paused") : A.mode ? t("tile_ads_on") : t("tile_ads_nolists");
+    const row = (title, text, on, attrs) => `<div class="switch-row"><div class="main"><b>${esc(title)}</b><span>${esc(text)}</span></div>
+      <button class="switch" role="switch" aria-checked="${!!on}" ${attrs}></button></div>`;
+    return row(t("accel_name"), accelSub, D.enabled, 'data-act="accel"')
+      + row(t("tile_ads"), ads, A.enabled, 'data-act="ads-flip"')
+      + row(t("tile_dns"), st.dns_encrypted ? t("tile_dns_on") : t("tile_dns_off"), st.dns_encrypted, 'data-act="flip" data-k="dns_encrypted"');
   }
 
   // ---------- «Движок»: какие VPN использовать ----------
@@ -304,10 +349,10 @@
   const VIEWS = {};
   VIEWS.home = {
     render() {
-      return `<section class="hero" id="hero"></section><div class="speed-row" id="speed"></div><div class="busy-row" id="busy"></div>
+      return `<section class="hero" id="hero"></section><div id="route"></div><div class="speed-row" id="speed"></div><div class="busy-row" id="busy"></div>
         <div id="health"></div>
         <section class="card ww" id="ww" hidden></section>
-        <div id="mode"></div><div class="tiles" id="tiles"></div>
+        <section class="card" id="method"></section><section class="card toggles" id="toggles"></section>
         <section class="card" id="servers"></section><section class="card" id="subs"></section>`;
     },
     update() {
@@ -318,8 +363,9 @@
       const ww = whatWorksHtml();
       setHtml("#ww", ww);
       $("#ww").hidden = !ww;
-      setHtml("#mode", modeHtml());
-      setHtml("#tiles", tilesHtml());
+      setHtml("#route", routeHtml());
+      setHtml("#method", methodHtml());
+      setHtml("#toggles", togglesHtml());
       setHtml("#servers", serversHtml());
       const subs = subsHtml();
       setHtml("#subs", subs);
@@ -710,6 +756,9 @@
           <div class="choice-row"><b>${esc(t("lang"))}</b>${chips("lang", [["ru", "RU"], ["en", "EN"]])}</div>
           <div class="choice-row"><b>${esc(t("theme"))}</b>${chips("theme", [["auto", t("th_auto")], ["dark", t("th_dark")], ["light", t("th_light")]])}</div>
         </section>
+        <section class="card"><div class="card-head"><h2>${esc(t("s_conn"))}</h2></div>${modeHtml()}
+          ${navRow('data-nav="share"', "wifi", t("tile_share"), S.share.on ? t("tile_share_on") : t("tile_share_off"))}
+          ${navRow('data-nav="vps"', "server", t("tile_vps"), t("tile_vps_sub"))}</section>
         <section class="card"><div class="card-head"><h2>${esc(t("s_automation"))}</h2></div>
           ${sw("ru_direct", "s_ru", "s_ru_text")}${sw("block_quic", "s_quic", "s_quic_text")}
           ${sw("autopilot", "s_auto", "s_auto_text")}
@@ -1133,9 +1182,28 @@
   const ACTIONS = {
     back() { back(); },
     toggle() {
-      if (S.status === "off" && (S.engine || {}).pick === "awg") awgSheet("");
+      if (S.status === "off" && S.method === "off") { // «Без VPN»: кнопка включает и выключает ускорение
+        if (S.filter_on) act("disconnect"); else act("filter_start");
+      } else if (S.status === "off" && (S.engine || {}).pick === "awg") awgSheet("");
       else if (S.status === "off") act("connect");
       else act("disconnect");
+      poll();
+    },
+    method(el) {
+      const m = el.dataset.v;
+      if (m === S.method) return;
+      if (act("method", { method: m }) === undefined) return;
+      if (m === "off") {
+        if (S.status === "on") act("disconnect");
+        act("filter_start");
+      } else if (m === "awg") awgSheet("");
+      else if (m === "auto" && S.status === "on") act("select", { key: "" });
+      poll();
+    },
+    accel() {
+      const on = !(S.dpi || {}).enabled;
+      act("dpi_set", { values: { dpi_enabled: on } });
+      poll();
     },
     engine() { engineSheet(); },
     "engine-set"(el) {
