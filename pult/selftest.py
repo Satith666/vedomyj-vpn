@@ -4293,15 +4293,16 @@ def t_journal():
         wait_idle(e)
         a, b = e.servers[0], e.servers[1]
         check(e.run_task("Подключение", e.connect, a, lane="conn", user=True), "задача")
-        for _ in range(100):
+        for _ in range(600):
             if e.connected and not e.conn_busy():
                 break
             time.sleep(0.05)
         it = e.journal.recent(1)[0]
         check(it["kind"] == "connect" and it["who"] == "user" and it["server"] == "A", f"кнопкой: {it}")
         e.settings["autopilot"] = True
-        e.run_task("Автопилот: поиск рабочего сервера", e.failover, "сервер перестал отвечать", lane="conn")
-        for _ in range(200):
+        check(e.run_task("Автопилот: поиск рабочего сервера", e.failover, "сервер перестал отвечать", lane="conn"),
+              "очередь подключения свободна")
+        for _ in range(1200):  # лестница на медленной машине (облако GitHub) идёт дольше
             if not e.conn_busy():
                 break
             time.sleep(0.05)
