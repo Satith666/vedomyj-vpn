@@ -69,6 +69,7 @@
                 <data android:scheme="vmess" />
                 <data android:scheme="trojan" />
                 <data android:scheme="ss" />
+                <data android:scheme="vedomyj-family" />
             </intent-filter>
         </activity>
 

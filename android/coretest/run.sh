@@ -38,6 +38,9 @@ a=$($J Dump vpslinks < /dev/null); b=$(python3 dump.py vpslinks < /dev/null)
 if [ "$a" = "$b" ]; then echo "[OK]   Сверка с Windows: ссылки своего сервера"; else echo "[FAIL] ссылки своего сервера"; fail=1; fi
 $J Dump warp < /dev/null > "$OUT/j_warp.txt"; python3 dump.py warp < /dev/null > "$OUT/p_warp.txt"
 if cmp -s "$OUT/j_warp.txt" "$OUT/p_warp.txt"; then echo "[OK]   Сверка с Windows: WARP (ключи, обманки, конфиг)"; else echo "[FAIL] WARP"; diff "$OUT/p_warp.txt" "$OUT/j_warp.txt" | head; fail=1; fi
+$J Dump familyseal < /dev/null > "$OUT/j_fs.txt"; python3 dump.py familyseal < /dev/null > "$OUT/p_fs.txt"
+cat "$OUT/j_fs.txt" "$OUT/p_fs.txt" | $J Dump familyopen > "$OUT/j_fo.txt"; cat "$OUT/j_fs.txt" "$OUT/p_fs.txt" | python3 dump.py familyopen > "$OUT/p_fo.txt"
+if cmp -s "$OUT/j_fo.txt" "$OUT/p_fo.txt" && [ "$(head -2 "$OUT/j_fs.txt")" = "$(head -2 "$OUT/p_fs.txt")" ]; then echo "[OK]   Сверка с Windows: Семья (приглашения и посылки)"; else echo "[FAIL] Семья"; diff "$OUT/p_fo.txt" "$OUT/j_fo.txt" | head; diff "$OUT/p_fs.txt" "$OUT/j_fs.txt" | head -4; fail=1; fi
 $J CoreTest || fail=1
 # код для Android компилируется? (с заглушками Android SDK — сам Android SDK для этого не нужен)
 rm -rf "$OUT/stubs" "$OUT/stubcls" && mkdir -p "$OUT/stubcls"

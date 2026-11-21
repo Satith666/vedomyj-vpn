@@ -12,7 +12,12 @@ public class Dump {
         String line;
         Set<String> siteLines = new HashSet<String>();
         StringBuilder updIn = new StringBuilder();
+        StringBuilder famIn = new StringBuilder();
         while ((line = r.readLine()) != null) {
+            if (mode.equals("familyopen")) {
+                famIn.append(line).append('\n');
+                continue;
+            }
             if (mode.equals("updateverify")) {
                 updIn.append(line);
                 continue;
@@ -126,6 +131,36 @@ public class Dump {
             Map<String, Object> cp = Warp.currentParams(v);
             out.println(cp.get("endpoint") + "|" + cp.get("jc") + "|" + cp.get("jmin") + "|" + cp.get("jmax") + "|" + cp.get("i1"));
             out.println(Json.canonical(Json.arr(Warp.isWarp(conf), Warp.isWarp(conf.replace(Warp.PEER_KEY, "x")))));
+        }
+        if (mode.equals("familyseal")) {
+            byte[] sec = new byte[32], iv = new byte[16];
+            for (int i = 0; i < 32; i++) sec[i] = (byte) i;
+            for (int i = 0; i < 16; i++) iv[i] = (byte) (16 + i);
+            List<Object> ops = Json.arr(Json.obj("op", "sub_add", "url", "https://example.com/s?x=1", "name", "Мамина подписка"),
+                    Json.obj("op", "set", "values", Json.obj("dns_encrypted", true)), Json.obj("op", "method", "method", "server"));
+            out.println(Family.makeInvite("Сын", "Мама — телефон", sec));
+            out.println(Family.seal(sec, 0, 7, Json.obj("t", "cmd", "at", 1, "exp", 9999999999L, "from", "Сын", "ops", ops), iv));
+            out.println(Family.seal(sec, 1, 3, Json.obj("t", "report", "at", 2, "exp", 9999999999L, "snap",
+                    Json.obj("app", "pc", "subs", Json.arr()), "results", Json.arr()), null));
+        }
+        if (mode.equals("familyopen")) {
+            byte[] sec = new byte[32];
+            for (int i = 0; i < 32; i++) sec[i] = (byte) i;
+            for (String fl : famIn.toString().split("\n")) {
+                fl = fl.trim();
+                if (fl.isEmpty()) continue;
+                Map<String, Object> inv = Family.parseInvite(fl);
+                if (inv != null) {
+                    byte[] s2 = (byte[]) inv.get("secret");
+                    out.println("invite " + inv.get("helper") + " " + inv.get("device") + " " + Warp.toHex(s2, 0, 32) + " " + Family.pairId(s2));
+                    continue;
+                }
+                Map<String, Object> pk = Family.peek(fl);
+                Map<String, Object> pl = Family.open(sec, (byte[]) pk.get("raw"));
+                long dir = Json.num(pk, "direction", 0);
+                out.println("packet " + Json.str(pk, "pair") + " " + dir + " " + Json.num(pk, "seq", 0) + " " + Json.canonical(pl) + " "
+                        + (dir == 0 ? Json.canonical(Family.summary(Family.checkOps(pl.get("ops")))) : ""));
+            }
         }
         if (mode.equals("vpslinks")) {
             out.println(Json.canonical(Vps.makeLinks("203.0.113.10", "11111111-2222-3333-4444-555555555555|" +

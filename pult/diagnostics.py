@@ -493,7 +493,7 @@ def settings_summary(s: dict) -> str:
     return ", ".join(parts)
 
 
-_URL = re.compile(r"(?i)\b(?:https?|vless|vmess|trojan|ssr?|hysteria2?|hy2|tuic|anytls|socks5?h?|happ|wireguard|wg|awg|vpn|xrayjson)://\S+")
+_URL = re.compile(r"(?i)\b(?:https?|vless|vmess|trojan|ssr?|hysteria2?|hy2|tuic|anytls|socks5?h?|happ|wireguard|wg|awg|vpn|xrayjson|vedomyj-family)://\S+")
 _UUID = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 _IPV6 = re.compile(r"(?i)\[?(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])\]?")
@@ -534,6 +534,10 @@ def secrets_of(e) -> set:
         for f in h.get("friends") or []:
             out.add(str(f.get("id", "")))
             out.update(str(x) for x in f.get("links") or [])
+    fam = s.get("family") if isinstance(s.get("family"), dict) else {}
+    for x in (fam.get("helpers") or []) + (fam.get("devices") or []):  # «Семья»: секреты пар и приглашения
+        if isinstance(x, dict):
+            out.update(str(x.get(k) or "") for k in ("secret", "invite", "reply"))
     for k in ("lan_user", "lan_pass", "hotspot_ssid", "hotspot_pass", "hwid", "subscription_url"):
         out.add(str(s.get(k) or ""))
     home = os.path.expanduser("~")

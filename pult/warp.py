@@ -134,7 +134,21 @@ def _expand_key(key: bytes) -> list[list[int]]:
 
 
 def aes128_block(key: bytes, block: bytes) -> bytes:
+    return _encrypt_rk(_expand_key(key), block)
+
+
+def aes128_ctr(key: bytes, iv: bytes, data: bytes) -> bytes:
+    """AES-128-CTR (счётчик — все 16 байт, big-endian, как AES/CTR/NoPadding в Java). Шифрование = расшифровка."""
     rk = _expand_key(key)
+    n = int.from_bytes(iv, "big")
+    out = bytearray()
+    for i in range(0, len(data), 16):
+        ks = _encrypt_rk(rk, ((n + i // 16) % (1 << 128)).to_bytes(16, "big"))
+        out += bytes(a ^ b for a, b in zip(data[i:i + 16], ks))
+    return bytes(out)
+
+
+def _encrypt_rk(rk: list, block: bytes) -> bytes:
     s = [b ^ k for b, k in zip(block, rk[0])]
     for rnd in range(1, 11):
         s = [_SBOX[b] for b in s]

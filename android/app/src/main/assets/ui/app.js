@@ -81,6 +81,9 @@
     if (first) lastMsg = m.id || 0;
     else if (m.id && m.id !== lastMsg) { lastMsg = m.id; if (m.text) toast(m.text, m.kind); }
     $("#problems").hidden = !(st.problems && st.problems.length);
+    const famWait = ((st.family || {}).helpers || []).some((h) => h.pending);
+    $("#familyBtn").classList.toggle("wait", famWait);
+    $("#familyTxt").textContent = t("fam_btn");
     if (first) render(); else update();
     warpWatch();
   }
@@ -131,6 +134,7 @@
     $("#title").hidden = !sub;
     $("#title").textContent = sub ? t(v.title) : "";
     $("#settingsBtn").hidden = sub;
+    $("#familyBtn").hidden = sub;
     document.querySelector(".topbar").classList.toggle("sub", sub);
     $("#view").innerHTML = v.render();
     if (v.mount) v.mount();
@@ -539,6 +543,7 @@
     try { r = call("import_preview", { text }); } catch (e) { r = { kind: "unknown", error: e.message }; }
     out.className = "detect";
     go.disabled = false;
+    if (r.kind === "family") { out.textContent = t("det_family"); go.textContent = t("fam_open"); return; }
     if (r.kind === "subscription") { out.textContent = t("det_sub"); $("#addName").hidden = false; }
     else if (r.kind === "servers") { out.textContent = t("det_servers", { n: r.servers }); go.disabled = !r.servers; }
     else if (r.kind === "settings") {
@@ -765,6 +770,121 @@
     return `<button class="row" ${nav}>${icon(ic)}<span class="main"><span class="title"><span>${esc(title)}</span></span>
       ${text ? `<span class="meta">${esc(text)}</span>` : ""}</span>${icon("chev", "chev")}</button>`;
   }
+  // ---------- Семья: настраивать VPN родителей на расстоянии ----------
+  const FAM_M = ["auto", "server", "awg", "off"];
+  VIEWS.family = {
+    title: "fam_title",
+    render() {
+      return `<div class="stack"><p class="hint pad">${esc(t("fam_intro"))}</p><div id="famPending" class="stack"></div>
+        <section class="card pad-card"><h2>${esc(t("fam_paste_title"))}</h2><p class="hint">${esc(t("fam_paste_hint"))}</p>
+          <div class="btns"><button class="btn primary" data-act="fam-paste">${icon("paste")}${esc(t("paste"))}</button>
+            <button class="btn" data-act="scan">${icon("scan")}${esc(t("scan"))}</button>
+            <button class="btn" data-act="pick-file">${icon("file")}${esc(t("file"))}</button></div></section>
+        <section class="card" id="famDevices"></section><section class="card" id="famHelpers"></section></div>`;
+    },
+    update() {
+      const F = S.family || { helpers: [], devices: [] };
+      setHtml("#famPending", F.helpers.filter((h) => h.pending).map((h) => `<section class="card pad-card fam-pending">
+          <h2>${esc(t("fam_pending_title", { n: h.name }))}</h2><ul class="fam-list">${h.pending.summary.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+          <div class="btns"><button class="btn primary" data-act="fam-apply" data-pair="${esc(h.pair)}">${icon("check")}${esc(t("fam_install"))}</button>
+            <button class="btn" data-act="fam-decline" data-pair="${esc(h.pair)}">${esc(t("fam_decline"))}</button></div></section>`).join(""));
+      const devs = F.devices.map((d) => {
+        const sn = d.snap;
+        const st = !sn ? t("fam_dev_wait") : [sn.status === "on" ? t("fam_st_on", { s: sn.server || "" }) : sn.status === "awg"
+          ? t("fam_st_awg", { s: sn.server || "" }) : t("fam_st_off"), t("m_" + (sn.method || "auto")), "v" + (sn.ver || "?"), ago(d.snap_at * 1000)].join(" · ");
+        const last = d.sent && d.sent.length ? d.sent[d.sent.length - 1] : null;
+        return `<button class="row" data-act="fam-device" data-pair="${esc(d.pair)}">${icon("phone")}<span class="main"><span class="title"><span>${esc(d.name)}</span></span>
+          <span class="meta">${esc(st)}</span>${last ? `<span class="meta">${esc(t("fam_last", { s: t("fam_sent_" + last.state) + " · " + ago(last.at * 1000) }))}</span>` : ""}</span>${icon("chev", "chev")}</button>`;
+      }).join("");
+      setHtml("#famDevices", `<div class="card-head"><h2>${esc(t("fam_devices_title"))}</h2></div>${devs || `<p class="hint pad">${esc(t("fam_devices_empty"))}</p>`}
+        <div class="pad"><button class="btn wide" data-act="fam-invite">${icon("plus")}${esc(t("fam_invite_btn"))}</button></div>`);
+      const helps = F.helpers.map((h) => `<div class="choice-row fam-helper"><div class="main"><b>${esc(t("fam_helper_by", { n: h.name }))}</b>
+          <span class="hint">${esc(t("fam_helper_note"))}</span></div></div>
+        <div class="choice-row"><b>${esc(t("fam_mode"))}</b><div class="chips"><button data-act="fam-mode" data-pair="${esc(h.pair)}" data-v="ask" aria-pressed="${h.mode !== "auto"}">${esc(t("fam_mode_ask_s"))}</button>
+          <button data-act="fam-mode" data-pair="${esc(h.pair)}" data-v="auto" aria-pressed="${h.mode === "auto"}">${esc(t("fam_mode_auto_s"))}</button></div></div>
+        <div class="pad btns"><button class="btn" data-act="fam-report" data-pair="${esc(h.pair)}">${icon("send")}${esc(t("fam_report"))}</button>
+          <button class="btn" data-act="fam-remove" data-pair="${esc(h.pair)}">${esc(t("fam_disconnect"))}</button></div>`).join("");
+      setHtml("#famHelpers", `<div class="card-head"><h2>${esc(t("fam_helpers_title"))}</h2></div>${helps || `<p class="hint pad">${esc(t("fam_helpers_empty"))}</p>`}`);
+    },
+  };
+
+  /* Приглашение или посылка: отправить в мессенджер, скопировать, сохранить файлом, QR-код. */
+  let famTextCur = "";
+  function famTextSheet(title, hint, text) {
+    famTextCur = text;
+    let qr = "";
+    try { qr = call("qr", { text }); } catch (e) { qr = ""; }
+    openSheet(`<h2>${esc(title)}</h2><p class="hint">${esc(hint)}</p>
+      ${qr ? `<img class="fam-qr" src="${esc(qr)}" alt="QR">` : ""}
+      <div class="menu">
+        <button class="row" data-act="fam-share">${icon("send")}<span class="main"><span class="title"><span>${esc(t("fam_share"))}</span></span></span></button>
+        <button class="row" data-act="fam-copy">${icon("copy")}<span class="main"><span class="title"><span>${esc(t("fam_copy"))}</span></span></span></button>
+        <button class="row" data-act="fam-save">${icon("file")}<span class="main"><span class="title"><span>${esc(t("fam_save_file"))}</span></span></span></button>
+      </div>`);
+  }
+
+  function famInviteSheet() {
+    const F = S.family || {};
+    openSheet(`<h2>${esc(t("fam_invite_title"))}</h2><p class="hint">${esc(t("fam_invite_text"))}</p>
+      ${F.me ? "" : `<label class="field">${esc(t("fam_me_label"))}<input id="famMe" maxlength="40" placeholder="${esc(t("fam_me_ph"))}"></label>`}
+      <label class="field">${esc(t("fam_dev_label"))}<input id="famDev" maxlength="40" placeholder="${esc(t("fam_dev_ph"))}"></label>
+      <button class="btn primary wide" data-act="fam-invite-go">${esc(t("fam_invite_make"))}</button>`);
+  }
+
+  let famAcceptText = "";
+  function famAcceptSheet(info, text) {
+    famAcceptText = text;
+    openSheet(`<h2>${esc(t("fam_accept_title", { n: info.helper }))}</h2>
+      <ul class="fam-list"><li>${esc(t("fam_accept_can"))}</li><li>${esc(t("fam_accept_cannot"))}</li><li>${esc(t("fam_accept_off"))}</li></ul>
+      <div class="choice-row"><b>${esc(t("fam_mode"))}</b><div class="chips" id="famAccMode"><button data-act="fam-chip" data-v="ask" aria-pressed="true">${esc(t("fam_mode_ask_s"))}</button>
+        <button data-act="fam-chip" data-v="auto" aria-pressed="false">${esc(t("fam_mode_auto_s"))}</button></div></div>
+      <button class="btn primary wide" data-act="fam-allow">${icon("check")}${esc(t("fam_allow"))}</button>`);
+  }
+
+  function famReceive(text) {
+    let x;
+    try { x = call("family_receive", { text }); } catch (e) { toast(e.message, "error"); return; }
+    if (x.kind === "invite") famAcceptSheet(x, text);
+    else if (x.kind === "packet") { toast(x.auto ? t("fam_auto_applying", { n: x.from }) : t("fam_got_packet", { n: x.from }), "ok"); if (stack[stack.length - 1] !== "family") go("family"); }
+    else if (x.kind === "report") toast(t("fam_got_report", { n: x.name }), "ok");
+    else if (x.kind === "old") toast(t("fam_old", { n: x.name }), "info");
+    poll();
+  }
+
+  /* Настроить устройство из семьи: снимок его программы и что поменять → «Отправить». */
+  let famDev = null;
+  function famDeviceSheet(pair) {
+    famDev = ((S.family || {}).devices || []).find((x) => x.pair === pair);
+    if (!famDev) return;
+    const sn = famDev.snap;
+    const cur = (v) => sn ? (v ? t("on") : t("off")) : t("fam_unknown");
+    const tri = (key, label, v) => `<div class="choice-row fam-tri"><div class="main"><b>${esc(label)}</b><span class="hint">${esc(t("fam_now", { v: cur(v) }))}</span></div>
+      <div class="chips" data-fam-set="${key}"><button data-act="fam-chip" data-v="" aria-pressed="true">${esc(t("fam_keep_s"))}</button>
+        <button data-act="fam-chip" data-v="on" aria-pressed="false">${esc(t("on"))}</button><button data-act="fam-chip" data-v="off" aria-pressed="false">${esc(t("off"))}</button></div></div>`;
+    const subs = sn ? sn.subs.map((x) => `<label class="check-row"><input type="checkbox" data-fam-sub="${esc(x.id)}" data-url="${esc(x.url)}" data-name="${esc(x.name)}">
+      <span>${esc(t("fam_remove_x", { n: x.name || t("fam_sub") }))} · ${esc(t("fam_sub_meta", { n: x.n }))}</span></label>`).join("") : "";
+    const mans = sn ? sn.manual.map((x) => `<label class="check-row"><input type="checkbox" data-fam-srv="${esc(x.id)}"><span>${esc(t("fam_remove_x", { n: x.name }))}</span></label>`).join("") : "";
+    openSheet(`<h2>${esc(t("fam_device_title", { n: famDev.name }))}</h2>
+      <p class="hint">${esc(sn ? t("fam_snap_from", { a: ago(famDev.snap_at * 1000) }) : t("fam_no_snap"))}</p>
+      ${sn && sn.problems && sn.problems.length ? `<div class="problem"><p>${esc(t("fam_dev_problems", { p: sn.problems.join("; ") }))}</p></div>` : ""}
+      <h3>${esc(t("fam_subs"))}</h3>${subs || `<p class="hint">${esc(t(sn ? "fam_no_subs" : "fam_no_snap_short"))}</p>`}
+      <label class="field">${esc(t("fam_sub_new"))}<input id="famSubUrl" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="https://…"></label>
+      <h3>${esc(t("fam_servers"))}</h3>${mans}
+      <label class="field">${esc(t("fam_servers_new"))}<textarea id="famSrv" spellcheck="false" autocapitalize="off" placeholder="vless://…"></textarea></label>
+      <h3>${esc(t("fam_mode_title"))}</h3>
+      <div class="fam-methods chips" data-fam-method><button data-act="fam-chip" data-v="" aria-pressed="true">${esc(t("fam_keep_s"))}</button>
+        ${FAM_M.map((m) => `<button data-act="fam-chip" data-v="${m}" aria-pressed="false">${esc(t("m_" + m))}</button>`).join("")}</div>
+      <p class="hint">${esc(t("fam_now", { v: sn ? t("m_" + (sn.method || "auto")) : t("fam_unknown") }))}</p>
+      ${tri("block_ads", t("tile_ads"), sn && sn.set.block_ads)}${tri("dns_encrypted", t("tile_dns"), sn && sn.set.dns_encrypted)}${tri("accel", t("accel_name"), sn && sn.set.accel)}
+      <h3>${esc(t("fam_actions"))}</h3>
+      <label class="check-row"><input type="checkbox" id="famUpd"><span>${esc(t("fam_do_update"))}</span></label>
+      <label class="check-row"><input type="checkbox" id="famRe"><span>${esc(t("fam_do_reconnect"))}</span></label>
+      <label class="check-row"><input type="checkbox" id="famWarp"><span>${esc(t("fam_do_warp"))}</span></label>
+      <button class="btn primary wide" data-act="fam-send">${icon("send")}${esc(t("fam_send"))}</button>
+      ${famDev.invite ? `<button class="btn wide" data-act="fam-invite-again">${icon("qr")}${esc(t("fam_invite_again"))}</button>` : ""}
+      <button class="btn wide" data-act="fam-remove" data-pair="${esc(famDev.pair)}">${icon("trash")}${esc(t("fam_remove"))}</button>`);
+  }
+
   VIEWS.settings = {
     title: "settings",
     render() { return `<div id="setBox" class="stack"></div>`; },
@@ -1237,6 +1357,67 @@
       else if (v !== "auto" && !(((S.engine || {}).counts || {})[v])) toast(t("eng_none"), "info");
     },
     awg(el) { awgSheet(el.dataset.key); },
+    "fam-paste"() { const text = act("paste"); if (text) famReceive(text); else toast(t("fam_paste_empty"), "info"); },
+    "fam-invite"() { famInviteSheet(); },
+    "fam-invite-go"() {
+      const me = $("#famMe");
+      if (me) {
+        if (!me.value.trim()) { toast(t("fam_me_need"), "error"); return; }
+        if (act("family_me", { name: me.value.trim() }) === undefined) return;
+      }
+      const dev = $("#famDev").value.trim();
+      if (!dev) { toast(t("fam_dev_need"), "error"); return; }
+      const r = act("family_invite", { device: dev });
+      if (r) { famTextSheet(t("fam_invite_ready", { n: dev }), t("fam_invite_send"), r.text); poll(); }
+    },
+    "fam-invite-again"() { if (famDev && famDev.invite) famTextSheet(t("fam_invite_ready", { n: famDev.name }), t("fam_invite_send"), famDev.invite); },
+    "fam-share"() { act("share_text", { text: famTextCur }); },
+    "fam-copy"() { act("copy", { text: famTextCur }); toast(t("fam_copied"), "ok"); },
+    "fam-save"() { act("save_file", { text: famTextCur + "\n", name: famTextCur.indexOf("://i/") > 0 ? "VEDOMYJ-family-invite.txt" : "VEDOMYJ-family.txt", mime: "text/plain" }); },
+    "fam-chip"(el) {
+      const box = el.closest(".chips");
+      box.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === el)));
+    },
+    "fam-allow"() {
+      const mode = ($('#famAccMode [aria-pressed="true"]') || {}).dataset ? $('#famAccMode [aria-pressed="true"]').dataset.v : "ask";
+      const r = act("family_accept", { text: famAcceptText, mode });
+      if (r) { famTextSheet(t("fam_accepted_title"), t("fam_reply_hint", { n: "" }), r.reply); poll(); }
+    },
+    "fam-apply"(el) { if (act("family_apply", { pair: el.dataset.pair }) !== undefined) toast(t("fam_installing"), "info"); poll(); },
+    "fam-decline"(el) { const r = act("family_decline", { pair: el.dataset.pair }); if (r) famTextSheet(t("fam_declined_title"), t("fam_reply_hint", { n: "" }), r.text); poll(); },
+    "fam-report"(el) { const r = act("family_report", { pair: el.dataset.pair }); if (r) famTextSheet(t("fam_report_title"), t("fam_reply_hint", { n: "" }), r.text); },
+    "fam-mode"(el) { act("family_mode", { pair: el.dataset.pair, mode: el.dataset.v }); poll(); },
+    "fam-remove"(el) {
+      const F = S.family || {};
+      const x = (F.devices || []).concat(F.helpers || []).find((y) => y.pair === el.dataset.pair);
+      if (!x) return;
+      openSheet(`<h2>${esc(t("fam_remove_ask", { n: x.name }))}</h2>
+        <button class="btn primary wide" data-act="fam-remove-yes" data-pair="${esc(x.pair)}">${esc(t("fam_remove_yes"))}</button>`);
+    },
+    "fam-remove-yes"(el) { act("family_remove", { pair: el.dataset.pair }); closeSheet(); poll(); },
+    "fam-device"(el) { famDeviceSheet(el.dataset.pair); },
+    "fam-send"() {
+      if (!famDev) return;
+      const sh = $("#sheet");
+      const ops = [];
+      sh.querySelectorAll("[data-fam-sub]:checked").forEach((x) => ops.push({ op: "sub_remove", id: x.dataset.famSub, url: x.dataset.url, name: x.dataset.name }));
+      const url = $("#famSubUrl").value.trim();
+      if (url) ops.push({ op: "sub_add", url, name: "" });
+      sh.querySelectorAll("[data-fam-srv]:checked").forEach((x) => ops.push({ op: "server_remove", id: x.dataset.famSrv }));
+      const srv = $("#famSrv").value.trim();
+      if (srv) ops.push({ op: "servers_add", text: srv });
+      const meth = sh.querySelector('[data-fam-method] [aria-pressed="true"]').dataset.v;
+      if (meth) ops.push({ op: "method", method: meth });
+      const values = {};
+      sh.querySelectorAll("[data-fam-set]").forEach((box) => { const v = box.querySelector('[aria-pressed="true"]').dataset.v; if (v) values[box.dataset.famSet] = v === "on"; });
+      if (Object.keys(values).length) ops.push({ op: "set", values });
+      if ($("#famUpd").checked) ops.push({ op: "sub_update" });
+      if ($("#famWarp").checked) ops.push({ op: "warp_create" });
+      if ($("#famRe").checked) ops.push({ op: "reconnect" });
+      if (!ops.length) ops.push({ op: "report" });
+      const r = act("family_send", { pair: famDev.pair, ops });
+      if (r) { famTextSheet(t("fam_sent_title", { n: famDev.name }), t("fam_sent_hint", { n: famDev.name }), r.text); poll(); }
+    },
     "warp-create"() {
       closeSheet();
       warpWait = S.warp || "";
@@ -1287,6 +1468,7 @@
       let r;
       try {
         r = call("import_preview", { text });
+        if (r.kind === "family") { closeSheet(); famReceive(text); return; }
         if (r.kind === "subscription") call("add_sub", { url: text, name: $("#addName").value.trim() });
         else if (r.kind === "servers") call("add_servers", { text });
         else if (r.kind === "settings") toast(call("import_apply", { text }), "ok");
@@ -1608,6 +1790,9 @@
     if (!ev) return;
     if (ev.type === "open_page" && VIEWS[ev.page]) {
       if (stack[stack.length - 1] !== ev.page) go(ev.page);
+    } else if ((ev.type === "incoming" || ev.type === "scan" || ev.type === "file") && (ev.text || "").includes("vedomyj-family://")) {
+      closeSheet();
+      famReceive(ev.text);
     } else if (ev.type === "incoming" || ev.type === "scan" || ev.type === "file") {
       const ta = $("#addText");
       if (ta && !$("#sheet").hidden) { ta.value = ev.text; detect(); } else openAdd(ev.text);

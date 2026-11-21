@@ -103,7 +103,7 @@ DEFAULTS: dict = {
 
 # секреты: на диске хранятся зашифрованными (см. secure.py), если включено «encrypt_data»
 SECRET_KEYS = ("subscriptions", "manual_links", "proxies", "lan_user", "lan_pass", "hotspot_pass",
-               "subscription_url", "vps_hosts")
+               "subscription_url", "vps_hosts", "family")
 
 
 class Settings(dict):

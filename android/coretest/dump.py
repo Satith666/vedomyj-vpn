@@ -95,3 +95,24 @@ elif mode == "warp":
     cp = warp.current_params(v)
     print("|".join(str(cp[k]) for k in ("endpoint", "jc", "jmin", "jmax", "i1")))
     print(canon([warp.is_warp(conf), warp.is_warp(conf.replace(warp.PEER_KEY, "x"))]))
+elif mode == "familyseal":
+    from pult import family
+    sec = bytes(range(32))
+    ops = [{"op": "sub_add", "url": "https://example.com/s?x=1", "name": "Мамина подписка"}, {"op": "set", "values": {"dns_encrypted": True}},
+           {"op": "method", "method": "server"}]
+    print(family.make_invite("Сын", "Мама — телефон", sec))
+    print(family.seal(sec, 0, 7, {"t": "cmd", "at": 1, "exp": 9999999999, "from": "Сын", "ops": ops}, bytes(range(16, 32))))
+    print(family.seal(sec, 1, 3, {"t": "report", "at": 2, "exp": 9999999999, "snap": {"app": "pc", "subs": []}, "results": []}))
+elif mode == "familyopen":
+    from pult import family
+    sec = bytes(range(32))
+    for line in data.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        inv = family.parse_invite(line)
+        if inv:
+            print("invite", inv["helper"], inv["device"], inv["secret"].hex(), family.pair_id(inv["secret"]))
+            continue
+        pair, direction, seq, raw = family.peek(line)
+        print("packet", pair, direction, seq, canon(family.open_packet(sec, raw)), canon(family.summary(family.check_ops(family.open_packet(sec, raw)["ops"]))) if direction == 0 else "")

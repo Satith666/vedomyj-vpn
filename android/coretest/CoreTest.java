@@ -2275,6 +2275,82 @@ public class CoreTest {
             }
         });
 
+        test("Семья: приглашение, «Разрешить», посылка, «Установить», ответ со снимком, защита", () -> {
+            Engine h = engine(new Fake(tmpDir()));
+            Engine d = engine(new Fake(tmpDir()));
+            d.addServers(link("mama.example.com", "Мамин"));
+            waitIdle(d);
+            boolean threw = false;
+            try { h.familyInvite("Мама"); } catch (Family.FamilyError ex) { threw = true; }
+            check(threw, "без имени помощника приглашение не делается");
+            Api.call(h, "family_me", Json.obj("name", "Сын"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> inv = (Map<String, Object>) Api.call(h, "family_invite", Json.obj("device", "Мама — телефон"));
+            String pair = Json.str(inv, "pair");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> got = (Map<String, Object>) Api.call(d, "family_receive", Json.obj("text", "Привет! " + Json.str(inv, "text")));
+            check("invite".equals(Json.str(got, "kind")) && "Сын".equals(Json.str(got, "helper")), "приглашение: " + got);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> acc = (Map<String, Object>) Api.call(d, "family_accept", Json.obj("text", Json.str(inv, "text"), "mode", "ask"));
+            check(!Json.write(Json.map(d.state(), "family")).contains("secret"), "секретов в окне нет");
+            Api.call(h, "family_receive", Json.obj("text", Json.str(acc, "reply")));
+            Map<String, Object> dev = Json.map(Json.list(Json.map(h.state(), "family"), "devices").get(0));
+            Map<String, Object> snap = Json.map(dev, "snap");
+            check(snap != null && "android".equals(Json.str(snap, "app")) && Json.str(dev, "invite").isEmpty(), "снимок маминого телефона");
+            String manualId = Json.str(Json.map(Json.list(snap, "manual").get(0)), "id");
+            subBody = Text.b64encode(link("fam1.example.com", "Семейный").getBytes(StandardCharsets.UTF_8));
+            String sub = "http://127.0.0.1:" + httpPort() + "/sub";
+            @SuppressWarnings("unchecked")
+            Map<String, Object> sent = (Map<String, Object>) Api.call(h, "family_send", Json.obj("pair", pair, "ops", Json.arr(
+                    Json.obj("op", "sub_add", "url", sub, "name", "Новая"), Json.obj("op", "server_remove", "id", manualId),
+                    Json.obj("op", "set", "values", Json.obj("dns_encrypted", true)))));
+            String pkt = Json.str(sent, "text");
+            check(!pkt.contains("127.0.0.1") && !pkt.contains("Новая"), "посылка зашифрована");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> rc = (Map<String, Object>) Api.call(d, "family_receive", Json.obj("text", pkt));
+            check("packet".equals(Json.str(rc, "kind")) && !Json.bool(rc, "auto", true) && Json.list(rc, "summary").size() == 3, "«Установить?»: " + rc);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> again = (Map<String, Object>) Api.call(d, "family_receive", Json.obj("text", pkt));
+            check("old".equals(Json.str(again, "kind")), "повтор не применяется");
+            Api.call(d, "family_apply", Json.obj("pair", pair));
+            waitIdle(d);
+            boolean hasSub = false, hasMama = false;
+            for (Object o : Json.list(d.settings, "subscriptions")) hasSub |= sub.equals(Json.str(Json.map(o), "url"));
+            for (Object o : Json.list(d.state(), "servers")) hasMama |= "Мамин".equals(Json.str(Json.map(o), "name"));
+            check(hasSub && !hasMama && Json.bool(d.settings, "dns_encrypted", false), "изменения применились");
+            String reply = Json.str(Json.map(Json.list(Json.map(d.state(), "family"), "helpers").get(0)), "reply");
+            Api.call(h, "family_receive", Json.obj("text", reply));
+            dev = Json.map(Json.list(Json.map(h.state(), "family"), "devices").get(0));
+            List<Object> sl = Json.list(dev, "sent");
+            check("applied".equals(Json.str(Json.map(sl.get(sl.size() - 1)), "state")), "у сына: установлено " + sl);
+            // подделка: один байт посылки
+            String forged = Json.str((Map<String, Object>) Api.call(h, "family_send", Json.obj("pair", pair, "ops", Json.arr(Json.obj("op", "reconnect")))), "text");
+            char[] cs = forged.toCharArray();
+            int at = cs.length - 50;
+            cs[at] = cs[at] == 'A' ? 'B' : 'A';
+            threw = false;
+            try { d.familyReceive(new String(cs)); } catch (Family.FamilyError ex) { threw = ex.getMessage().contains("подписи"); }
+            check(threw, "испорченная посылка не принимается");
+            // «применять сразу»
+            Api.call(d, "family_mode", Json.obj("pair", pair, "mode", "auto"));
+            Map<String, Object> s2 = (Map<String, Object>) Api.call(h, "family_send", Json.obj("pair", pair, "ops", Json.arr(Json.obj("op", "set", "values", Json.obj("dns_encrypted", false)))));
+            Map<String, Object> r2 = (Map<String, Object>) Api.call(d, "family_receive", Json.obj("text", Json.str(s2, "text")));
+            check(Json.bool(r2, "auto", false), "режим «сразу»");
+            waitIdle(d);
+            check(!Json.bool(d.settings, "dns_encrypted", true), "применилось само");
+            String logs = String.join("\n", h.logLines()) + String.join("\n", d.logLines());
+            check(!logs.contains("vedomyj-family://") && !logs.contains("127.0.0.1:" + httpPort() + "/sub"), "журналы чистые");
+            // поделились текстом из мессенджера: «+» узнаёт посылку «Семьи»
+            check("family".equals(Json.str(d.importPreview("Мама, вот: " + pkt), "kind")), "«+» узнаёт посылку");
+            Api.call(d, "family_remove", Json.obj("pair", pair));
+            threw = false;
+            try { d.familyReceive(Json.str((Map<String, Object>) Api.call(h, "family_send", Json.obj("pair", pair, "ops", Json.arr(Json.obj("op", "reconnect")))), "text")); }
+            catch (Family.FamilyError ex) { threw = true; }
+            check(threw, "после «Отключить» посылки не принимаются");
+            h.shutdown();
+            d.shutdown();
+        });
+
         e.shutdown();
         http.stop(0);
         System.out.println();

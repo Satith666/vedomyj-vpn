@@ -791,6 +791,8 @@ class UIServer:
             return e.awg_conf_text(srv)  # только в окно программы (127.0.0.1 с ключом) — для ручного переноса в AmneziaWG
         if action == "warp_create":
             return vpn_task("Создаю бесплатный WARP", e.warp_start)
+        if action.startswith("family_"):
+            return self._family(action, a, task)
         if action == "awg_download":
             import webbrowser
             from . import amneziawg
@@ -867,6 +869,53 @@ class UIServer:
         if action == "quit":
             threading.Timer(0.3, self.exit_event.set).start()
             return True
+        raise ActionError("Неизвестное действие.")
+
+    @staticmethod
+    def _qr(text: str) -> str:
+        try:
+            return qr.to_svg(qr.make(text))
+        except qr.QrTooLong:
+            return ""  # длинная посылка — только текстом
+
+    def _family(self, action: str, a: dict, task):
+        """«Семья»: приглашения и посылки. Секреты в окно не уходят — только тексты приглашений и посылок."""
+        from . import family
+        e = self.engine
+        pair = str(a.get("pair", ""))
+        if action == "family_me":
+            e.family_set_me(str(a.get("name", "")))
+            return True
+        if action == "family_invite":
+            r = e.family_invite(str(a.get("device", "")))
+            return dict(r, svg=self._qr(r["text"]))
+        if action == "family_receive":
+            return e.family_receive(str(a.get("text", "")))
+        if action == "family_accept":
+            r = e.family_accept(str(a.get("text", "")), str(a.get("mode", "ask")))
+            return dict(r, svg=self._qr(r["reply"]))
+        if action == "family_apply":
+            return task("Семья: устанавливаю настройки", e.family_apply, pair)
+        if action == "family_decline":
+            text = e.family_decline(pair)
+            return {"text": text, "svg": self._qr(text)}
+        if action == "family_send":
+            text = e.family_send(pair, a.get("ops"))
+            return {"text": text, "svg": self._qr(text)}
+        if action == "family_report":
+            text = e.family_report_text(pair)
+            return {"text": text, "svg": self._qr(text)}
+        if action == "family_mode":
+            e.family_set_mode(pair, str(a.get("mode", "ask")))
+            return True
+        if action == "family_remove":
+            e.family_remove(pair)
+            return True
+        if action == "family_qr":
+            text = str(a.get("text", ""))
+            if not text.startswith((family.INVITE, family.PACKET)):
+                raise ActionError("Это не приглашение и не посылка «Семьи».")
+            return self._qr(text)
         raise ActionError("Неизвестное действие.")
 
     def _save_settings(self, a: dict, task, vpn_task):

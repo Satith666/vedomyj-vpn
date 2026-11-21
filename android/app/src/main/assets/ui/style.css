@@ -380,3 +380,22 @@ details.card-pad .btns { margin-top: 10px; }
 .m-text small { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card.toggles .switch-row:first-child { border-top: 0; }
 #busy:empty { display: none; }
+
+/* ---------- Семья ---------- */
+.fam-btn { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); font: 600 14px var(--font, inherit); position: relative; }
+.fam-btn .i { width: 18px; height: 18px; }
+.fam-btn.wait::after { content: ""; position: absolute; top: 4px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.pad-card { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.pad-card h2 { font-size: 17px; }
+.fam-pending { border-color: var(--accent-line); }
+.fam-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--soft); }
+.fam-qr { display: block; width: min(70vw, 260px); margin: 4px auto 6px; border-radius: 10px; background: #fff; padding: 8px; }
+#sheet h3 { font-size: 15px; margin: 14px 0 6px; }
+#sheet .check-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 14px; color: var(--text); }
+#sheet .check-row input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+#sheet .field { margin-top: 6px; }
+.fam-methods { flex-wrap: wrap; border-radius: 16px; }
+.fam-tri { padding-left: 0; padding-right: 0; }
+.fam-tri .main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fam-helper .main { display: flex; flex-direction: column; gap: 2px; }

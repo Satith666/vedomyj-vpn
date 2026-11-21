@@ -106,6 +106,32 @@ public final class Api {
                 return true;
             case "warp_next":
                 return e.warpNext(Json.str(a, "key"));
+            case "family_me":
+                e.familySetMe(Json.str(a, "name"));
+                return true;
+            case "family_invite":
+                return e.familyInvite(Json.str(a, "device"));
+            case "family_receive":
+                return e.familyReceive(Json.str(a, "text"));
+            case "family_accept":
+                return e.familyAccept(Json.str(a, "text"), Json.str(a, "mode", "ask"));
+            case "family_apply":
+                if (!e.familyApplyTask(Json.str(a, "pair"))) {
+                    throw new Engine.UserError(Text.t("Подожди: сейчас выполняется другая задача.", "Wait: another task is running."));
+                }
+                return true;
+            case "family_decline":
+                return Json.obj("text", e.familyDecline(Json.str(a, "pair")));
+            case "family_send":
+                return Json.obj("text", e.familySend(Json.str(a, "pair"), a.get("ops")));
+            case "family_report":
+                return Json.obj("text", e.familyReportText(Json.str(a, "pair")));
+            case "family_mode":
+                e.familySetMode(Json.str(a, "pair"), Json.str(a, "mode", "ask"));
+                return true;
+            case "family_remove":
+                e.familyRemove(Json.str(a, "pair"));
+                return true;
             default:
                 return UNKNOWN;
         }

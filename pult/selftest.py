@@ -4024,7 +4024,8 @@ def t_i18n():
     i18n.set_lang("en")
     try:
         skip = ("Мой VPN", "Fast", "Slow", "Dead", "Hy2", "Дом", "Мой AWG", "Мой сервер", "Включите отправку HWID",
-                "Подписка истекла", "Госуслуги", "Обычный", "Резидент")
+                "Подписка истекла", "Госуслуги", "Обычный", "Резидент", "Мама — компьютер", "Мама — телефон", "Папа — телефон",
+                "Сын", "Новая", "Мамин")
         bad = []
         for msg in dict.fromkeys(MESSAGES):
             text = msg[9:] if len(msg) > 9 and msg[2] == ":" and msg[5] == ":" else msg
@@ -4991,6 +4992,131 @@ def t_warp():
         if e:
             e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case("Семья: приглашение, «Разрешить», посылки с изменениями, «Установить?», ответ со снимком, защита")
+def t_family():
+    from pult import family
+    t1, t2 = tempfile.mkdtemp(prefix="pult-selftest-"), tempfile.mkdtemp(prefix="pult-selftest-")
+    h = d = None
+    try:
+        h, d = make_engine(t1), make_engine(t2)
+        for x in (h, d):
+            x._monitor_tick = lambda tick: None
+            x.startup()
+        d.add_servers("vless://79999999-9999-4999-8999-999999999991@fast.example:443?security=reality&pbk=K&sni=a.com&type=tcp#Мамин")
+        wait_idle(d)
+        # шифр и формат: подделка, чужой секрет, повтор
+        sec = secrets.token_bytes(32)
+        pkt = family.seal(sec, family.TO_DEVICE, 5, {"t": "cmd", "ops": [{"op": "reconnect"}], "exp": 9e9, "at": 1})
+        pair, direction, seq, raw = family.peek("Мама, открой: " + pkt + " спасибо")
+        check(pair == family.pair_id(sec) and direction == 0 and seq == 5, "посылка находится внутри текста")
+        check(family.open_packet(sec, raw)["ops"][0]["op"] == "reconnect", "расшифровка")
+        bad = bytearray(raw)
+        bad[40] ^= 1
+        for tamper, what in ((bytes(bad), "испорченная"), (raw, "чужой секрет")):
+            try:
+                family.open_packet(sec if what == "испорченная" else secrets.token_bytes(32), tamper)
+                check(False, f"{what} посылка принята")
+            except family.FamilyError as exc:
+                check("подписи" in str(exc), str(exc))
+        for ops, what in (([{"op": "rm -rf"}], "неизвестное изменение"), ([{"op": "set", "values": {"kill_switch": True}}], "настройка вне списка"),
+                          ([{"op": "sub_add", "url": "file:///etc/passwd"}], "не https"), ([], "пусто")):
+            try:
+                family.check_ops(ops)
+                check(False, f"принято: {what}")
+            except family.FamilyError:
+                pass
+        # приглашение → «Разрешить» → ответ со снимком
+        try:
+            h.family_invite("Мама — телефон")
+            check(False, "без имени помощника приглашение не делается")
+        except family.FamilyError:
+            pass
+        h.family_set_me("Сын")
+        inv = h.family_invite("Мама — компьютер")
+        pair = inv["pair"]
+        got = d.family_receive("Привет! " + inv["text"])
+        check(got["kind"] == "invite" and got["helper"] == "Сын" and got["device"] == "Мама — компьютер", f"приглашение: {got}")
+        try:
+            h.family_receive(inv["text"])
+            check(False, "своё приглашение не принимается")
+        except family.FamilyError:
+            pass
+        acc = d.family_accept(inv["text"], "ask")
+        st = d.state()["family"]
+        check(st["helpers"][0]["name"] == "Сын" and st["helpers"][0]["mode"] == "ask" and "secret" not in json.dumps(st),
+              "у мамы: помощник «Сын», режим «спрашивать», секретов в окне нет")
+        rep = h.family_receive(acc["reply"])
+        dev = h.state()["family"]["devices"][0]
+        check(rep["kind"] == "report" and dev["snap"]["app"] == "pc" and dev["snap"]["manual"][0]["name"] == "Мамин"
+              and not dev["invite"], f"снимок маминой программы: {dev['snap']}")
+        # посылка: подписка, удаление сервера, способ, функции
+        sub = f"http://127.0.0.1:{WEB}/sub"
+        ops = [{"op": "sub_add", "url": sub, "name": "Новая"}, {"op": "server_remove", "id": dev["snap"]["manual"][0]["id"]},
+               {"op": "method", "method": "server"}, {"op": "set", "values": {"dns_encrypted": True}}]
+        text = h.family_send(pair, ops)
+        check(sub not in text and "Новая" not in text, "в посылке ничего не видно открытым текстом")
+        got = d.family_receive(text)
+        check(got["kind"] == "packet" and got["from"] == "Сын" and not got["auto"] and len(got["summary"]) == 4
+              and d.state()["family"]["helpers"][0]["pending"], f"«Установить?»: {got}")
+        check(d.family_receive(text)["kind"] == "old", "повтор той же посылки не применяется дважды")
+        d.family_apply(pair)
+        wait_idle(d)
+        check(any(m["url"] == sub for m in d.settings["subscriptions"]) and not any(x.name == "Мамин" for x in d.servers)
+              and d.method() == "server" and d.settings["dns_encrypted"], "изменения применились")
+        reply = d.state()["family"]["helpers"][0]["reply"]
+        h.family_receive(reply)
+        dev = h.state()["family"]["devices"][0]
+        check(dev["sent"][-1]["state"] == "applied" and any(x["url"] == sub for x in dev["snap"]["subs"])
+              and dev["snap"]["method"] == "server", f"у сына: установлено, снимок свежий: {dev['sent'][-1]}")
+        # «применять сразу»; отказ; срок
+        d.family_set_mode(pair, "auto")
+        got = d.family_receive(h.family_send(pair, [{"op": "set", "values": {"dns_encrypted": False}}]))
+        check(got["auto"], "режим «применять сразу»")
+        wait_idle(d)
+        check(not d.settings["dns_encrypted"], "применилось само")
+        d.family_set_mode(pair, "ask")
+        d.family_receive(h.family_send(pair, [{"op": "reconnect"}]))
+        h.family_receive(d.family_decline(pair))
+        check(h.state()["family"]["devices"][0]["sent"][-1]["state"] == "declined", "мама отказалась — сын это видит")
+        ent = h._fam_find(pair)[1]
+        ent["seq_out"] += 1
+        old = family.seal(family.unb64u(ent["secret"]), family.TO_DEVICE, ent["seq_out"],
+                          {"t": "cmd", "at": 1, "exp": int(time.time()) - 1, "ops": [{"op": "reconnect"}]})
+        try:
+            d.family_receive(old)
+            check(False, "устаревшая посылка принята")
+        except family.FamilyError as exc:
+            check("устарела" in str(exc), str(exc))
+        try:
+            h.family_receive(h.family_send(pair, [{"op": "reconnect"}]))
+            check(False, "посылка для мамы на компьютере сына")
+        except family.FamilyError:
+            pass
+        # секреты не в журналах и не в отчёте; убрать из семьи
+        logs = "\n".join(h.logs + d.logs)
+        check("vedomyj-family://" not in logs and sub not in logs and ent["secret"] not in logs, "журналы чистые")
+        from pult import diagnostics
+        check(ent["secret"] in diagnostics.secrets_of(h), "секрет пары скрывается в отчётах")
+        d.family_remove(pair)
+        check(not d.state()["family"]["helpers"], "мама отключила помощника")
+        try:
+            d.family_receive(h.family_send(pair, [{"op": "reconnect"}]))
+            check(False, "после отключения посылки не принимаются")
+        except family.FamilyError:
+            pass
+        # через окно: действия «Семьи»
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = h
+        r = ui.dispatch("family_invite", {"device": "Папа — телефон"})
+        check(r["text"].startswith(family.INVITE) and r["svg"].startswith("<svg"), "приглашение и QR из окна")
+    finally:
+        for x in (h, d):
+            if x:
+                x.shutdown()
+        shutil.rmtree(t1, ignore_errors=True)
+        shutil.rmtree(t2, ignore_errors=True)
 
 
 # ---------- запуск ----------

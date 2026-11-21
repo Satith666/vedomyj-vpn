@@ -143,7 +143,7 @@ public final class Engine {
     }
 
     static final String SECURE_PREFIX = "VDMSEC1:";
-    static final String[] SECRET_KEYS = {"subscriptions", "proxies", "share_pass", "share_user", "vps_hosts"};
+    static final String[] SECRET_KEYS = {"subscriptions", "proxies", "share_pass", "share_user", "vps_hosts", "family"};
     private boolean secureFailed;
     private String secureRaw = "";
 
@@ -2418,6 +2418,546 @@ public final class Engine {
         return Json.obj("pick", Json.str(settings, "engine_pick", "auto"), "counts", counts);
     }
 
+    // ---------- Семья: настраивать VPN родителей на расстоянии (формат — Family.java, как pult/family.py) ----------
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> fam() {
+        Map<String, Object> f = Json.map(settings, "family");
+        if (f == null) {
+            f = new LinkedHashMap<String, Object>();
+            settings.put("family", f);
+        }
+        if (!(f.get("me") instanceof String)) {
+            f.put("me", "");
+        }
+        for (String k : new String[]{"helpers", "devices"}) {
+            if (!(f.get(k) instanceof List)) {
+                f.put(k, new ArrayList<Object>());
+            }
+        }
+        return f;
+    }
+
+    private List<Map<String, Object>> famList(String role) {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        for (Object o : Json.list(fam(), role)) {
+            Map<String, Object> m = Json.map(o);
+            if (m != null) {
+                out.add(m);
+            }
+        }
+        return out;
+    }
+
+    /** {role, entry} или null. */
+    private Object[] famFind(String pair) {
+        for (String role : new String[]{"helpers", "devices"}) {
+            for (Map<String, Object> x : famList(role)) {
+                if (pair.equals(Json.str(x, "pair"))) {
+                    return new Object[]{role, x};
+                }
+            }
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> opsOf(Object o) {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        List<Object> l = Json.list(o);
+        if (l != null) {
+            for (Object x : l) {
+                if (x instanceof Map) {
+                    out.add((Map<String, Object>) x);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Для окна — без секретов. */
+    public Map<String, Object> familyState() {
+        synchronized (lock) {
+            List<Object> helpers = new ArrayList<Object>();
+            for (Map<String, Object> h : famList("helpers")) {
+                Map<String, Object> pend = Json.map(h, "pending");
+                helpers.add(Json.obj("pair", Json.str(h, "pair"), "name", Json.str(h, "name"), "mode", Json.str(h, "mode", "ask"),
+                        "since", Json.num(h, "since", 0), "reply", Json.str(h, "reply"),
+                        "pending", pend == null ? null : Json.obj("summary", Family.summary(opsOf(pend.get("ops"))), "at", Json.num(pend, "at", 0))));
+            }
+            List<Object> devices = new ArrayList<Object>();
+            for (Map<String, Object> d : famList("devices")) {
+                List<Object> sent = Json.list(d, "sent");
+                List<Object> last = new ArrayList<Object>();
+                if (sent != null) {
+                    for (Object o : sent.subList(Math.max(0, sent.size() - 10), sent.size())) {
+                        Map<String, Object> x = new LinkedHashMap<String, Object>(Json.map(o));
+                        x.put("summary", Family.summary(opsOf(x.get("ops"))));
+                        x.remove("ops");
+                        last.add(x);
+                    }
+                }
+                Object snap = d.get("snap");
+                devices.add(Json.obj("pair", Json.str(d, "pair"), "name", Json.str(d, "name"), "since", Json.num(d, "since", 0),
+                        "snap", snap, "snap_at", Json.num(d, "snap_at", 0), "sent", last,
+                        "invite", snap == null ? Json.str(d, "invite") : ""));
+            }
+            return Json.obj("me", Json.str(fam(), "me"), "helpers", helpers, "devices", devices);
+        }
+    }
+
+    public void familySetMe(String name) {
+        synchronized (lock) {
+            fam().put("me", Text.shorten(name == null ? "" : name.trim(), 40));
+        }
+        saveSettings();
+        changed();
+    }
+
+    public Map<String, Object> familyInvite(String device) {
+        String dev = Text.shorten(device == null ? "" : device.trim(), 40);
+        if (dev.isEmpty()) {
+            dev = Text.t("Устройство", "Device");
+        }
+        byte[] secret = Family.newSecret();
+        String invite;
+        synchronized (lock) {
+            String me = Json.str(fam(), "me");
+            if (me.isEmpty()) {
+                throw new Family.FamilyError(Text.t("Сначала напиши, как тебя подписать (например, «Сын»).", "First type how to sign you (for example, “Son”)."));
+            }
+            if (famList("devices").size() >= 20) {
+                throw new Family.FamilyError(Text.t("В семье уже 20 устройств — убери ненужные.", "The family already has 20 devices — remove the ones you don't need."));
+            }
+            invite = Family.makeInvite(me, dev, secret);
+            Json.list(fam(), "devices").add(Json.obj("pair", Family.pairId(secret), "name", dev, "secret", Family.b64u(secret),
+                    "since", System.currentTimeMillis() / 1000, "seq_in", 0L, "seq_out", 0L, "snap", null, "snap_at", 0L,
+                    "sent", new ArrayList<Object>(), "invite", invite));
+        }
+        saveSettings();
+        log("Семья: приглашение для «" + dev + "» готово.", "Family: the invitation for “" + dev + "” is ready.");
+        changed();
+        return Json.obj("pair", Family.pairId(secret), "text", invite);
+    }
+
+    /** Приглашение или посылка: посылку от помощника в режиме «спрашивать» только запоминает, в режиме
+     *  «применять сразу» — применяет. */
+    public Map<String, Object> familyReceive(String text) {
+        String tx = text == null ? "" : text.length() > 200000 ? text.substring(0, 200000) : text;
+        Map<String, Object> inv = Family.parseInvite(tx);
+        if (inv != null) {
+            String pair = Family.pairId((byte[]) inv.get("secret"));
+            Object[] f = famFind(pair);
+            if (f != null && "devices".equals(f[0])) {
+                throw new Family.FamilyError(Text.t("Это твоё же приглашение — его нужно отправить тому, кого подключаешь.",
+                        "This is your own invitation — send it to the person you are connecting."));
+            }
+            return Json.obj("kind", "invite", "helper", inv.get("helper"), "device", inv.get("device"), "pair", pair, "known", f != null);
+        }
+        Map<String, Object> pk = Family.peek(tx);
+        if (pk == null) {
+            throw new Family.FamilyError(Text.t("Здесь нет приглашения или посылки «Семьи».", "There is no Family invitation or package here."));
+        }
+        String pair = Json.str(pk, "pair");
+        int direction = (int) Json.num(pk, "direction", 0);
+        long seq = Json.num(pk, "seq", 0);
+        Object[] f = famFind(pair);
+        if (f == null || (direction == Family.TO_DEVICE) != "helpers".equals(f[0])) {
+            throw new Family.FamilyError(Text.t("Эта посылка не для этого устройства (или его убрали из семьи).",
+                    "This package is not for this device (or it was removed from the family)."));
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ent = (Map<String, Object>) f[1];
+        Map<String, Object> payload = Family.open(Family.unb64u(Json.str(ent, "secret")), (byte[]) pk.get("raw"));
+        if (seq <= Json.num(ent, "seq_in", 0)) {
+            return Json.obj("kind", "old", "name", Json.str(ent, "name"));
+        }
+        if (Json.num(payload, "exp", 0) < System.currentTimeMillis() / 1000) {
+            throw new Family.FamilyError(Text.t("Посылка устарела (ей больше недели) — попроси прислать заново.",
+                    "The package is outdated (older than a week) — ask to send it again."));
+        }
+        if (direction == Family.TO_HELPER) {
+            ent.put("seq_in", seq);
+            return famReport(ent, payload);
+        }
+        List<Map<String, Object>> ops = Family.checkOps(payload.get("ops"));
+        boolean auto;
+        synchronized (lock) {
+            ent.put("seq_in", seq);
+            ent.put("pending", Json.obj("ops", new ArrayList<Object>(ops), "at", Json.num(payload, "at", 0), "seq", seq));
+            ent.put("reply", "");
+            auto = "auto".equals(Json.str(ent, "mode"));
+        }
+        saveSettings();
+        log("Семья: " + Json.str(ent, "name") + " прислал(а) настройки — изменений: " + ops.size() + ".",
+                "Family: " + Json.str(ent, "name") + " sent settings — changes: " + ops.size() + ".");
+        if (auto) {
+            familyApplyTask(pair);
+        }
+        changed();
+        return Json.obj("kind", "packet", "pair", pair, "from", Json.str(ent, "name"), "summary", Family.summary(ops), "auto", auto);
+    }
+
+    public Map<String, Object> familyAccept(String text, String mode) {
+        Map<String, Object> inv = Family.parseInvite(text);
+        if (inv == null) {
+            throw new Family.FamilyError(Text.t("Здесь нет приглашения «Семьи».", "There is no Family invitation here."));
+        }
+        byte[] secret = (byte[]) inv.get("secret");
+        String pair = Family.pairId(secret);
+        Map<String, Object> ent = Json.obj("pair", pair, "name", inv.get("helper"), "secret", Family.b64u(secret),
+                "mode", "auto".equals(mode) ? "auto" : "ask", "since", System.currentTimeMillis() / 1000, "seq_in", 0L, "seq_out", 0L,
+                "pending", null, "reply", "", "device", inv.get("device"));
+        synchronized (lock) {
+            List<Object> l = Json.list(fam(), "helpers");
+            for (Map<String, Object> h : famList("helpers")) {
+                if (pair.equals(Json.str(h, "pair"))) {
+                    l.remove(h);
+                }
+            }
+            l.add(ent);
+        }
+        log("Семья: «" + inv.get("helper") + "» теперь может настраивать VPN на этом устройстве.",
+                "Family: “" + inv.get("helper") + "” can now set up the VPN on this device.");
+        ent.put("reply", famReply(ent, Json.arr(Json.obj("op", "hello", "ok", true)), false));
+        saveSettings();
+        changed();
+        return Json.obj("pair", pair, "reply", Json.str(ent, "reply"));
+    }
+
+    public void familySetMode(String pair, String mode) {
+        Object[] f = famFind(pair);
+        if (f == null || !"helpers".equals(f[0])) {
+            throw new Family.FamilyError(Text.t("Помощник не найден.", "Helper not found."));
+        }
+        Json.map(f[1]).put("mode", "auto".equals(mode) ? "auto" : "ask");
+        saveSettings();
+        changed();
+    }
+
+    public void familyRemove(String pair) {
+        Object[] f = famFind(pair);
+        if (f == null) {
+            return;
+        }
+        Map<String, Object> ent = Json.map(f[1]);
+        synchronized (lock) {
+            Json.list(fam(), (String) f[0]).remove(ent);
+        }
+        saveSettings();
+        String n = Json.str(ent, "name");
+        if ("devices".equals(f[0])) {
+            log("Семья: «" + n + "» убран(а) из семьи.", "Family: “" + n + "” was removed from the family.");
+        } else {
+            log("Семья: «" + n + "» больше не может настраивать VPN на этом устройстве.", "Family: “" + n + "” can no longer set up the VPN on this device.");
+        }
+        changed();
+    }
+
+    public String familySend(String pair, Object rawOps) {
+        Object[] f = famFind(pair);
+        if (f == null || !"devices".equals(f[0])) {
+            throw new Family.FamilyError(Text.t("Устройство не найдено.", "Device not found."));
+        }
+        Map<String, Object> ent = Json.map(f[1]);
+        List<Map<String, Object>> ops = Family.checkOps(rawOps);
+        long now = System.currentTimeMillis() / 1000;
+        String text;
+        synchronized (lock) {
+            long seq = Json.num(ent, "seq_out", 0) + 1;
+            ent.put("seq_out", seq);
+            text = Family.seal(Family.unb64u(Json.str(ent, "secret")), Family.TO_DEVICE, seq,
+                    Json.obj("t", "cmd", "at", now, "exp", now + Family.TTL, "from", Json.str(fam(), "me"), "ops", new ArrayList<Object>(ops)), null);
+            List<Object> sent = Json.list(ent, "sent");
+            if (sent == null) {
+                sent = new ArrayList<Object>();
+                ent.put("sent", sent);
+            }
+            sent.add(Json.obj("seq", seq, "at", now, "ops", new ArrayList<Object>(ops), "state", "sent"));
+            while (sent.size() > 20) {
+                sent.remove(0);
+            }
+        }
+        saveSettings();
+        log("Семья: посылка для «" + Json.str(ent, "name") + "» готова — изменений: " + ops.size() + ".",
+                "Family: the package for “" + Json.str(ent, "name") + "” is ready — changes: " + ops.size() + ".");
+        changed();
+        return text;
+    }
+
+    public String familyDecline(String pair) {
+        Object[] f = famFind(pair);
+        if (f == null || !"helpers".equals(f[0]) || Json.map(Json.map(f[1]), "pending") == null) {
+            throw new Family.FamilyError(Text.t("Нечего отклонять.", "Nothing to decline."));
+        }
+        Map<String, Object> ent = Json.map(f[1]);
+        ent.put("pending", null);
+        ent.put("reply", famReply(ent, Json.arr(Json.obj("op", "declined", "ok", false)), true));
+        saveSettings();
+        changed();
+        return Json.str(ent, "reply");
+    }
+
+    public String familyReportText(String pair) {
+        Object[] f = famFind(pair);
+        if (f == null || !"helpers".equals(f[0])) {
+            throw new Family.FamilyError(Text.t("Помощник не найден.", "Helper not found."));
+        }
+        Map<String, Object> ent = Json.map(f[1]);
+        ent.put("reply", famReply(ent, new ArrayList<Object>(), false));
+        saveSettings();
+        return Json.str(ent, "reply");
+    }
+
+    public boolean familyApplyTask(final String pair) {
+        Object[] f = famFind(pair);
+        final String name = f == null ? "" : Json.str(Json.map(f[1]), "name");
+        return runTask(Text.t("Семья: применяю настройки от «" + name + "»", "Family: applying settings from “" + name + "”"), "update",
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        familyApply(pair);
+                    }
+                });
+    }
+
+    /** Применить посылку (из задачи), потом — ответ помощнику со снимком и итогом. */
+    public void familyApply(String pair) {
+        Object[] f = famFind(pair);
+        Map<String, Object> ent = f == null ? null : Json.map(f[1]);
+        Map<String, Object> pending = ent == null ? null : Json.map(ent, "pending");
+        if (ent == null || !"helpers".equals(f[0]) || pending == null) {
+            throw new Family.FamilyError(Text.t("Нечего устанавливать.", "Nothing to install."));
+        }
+        ent.put("pending", null);
+        Lane lane = laneOf.get();
+        if (lane != null) {
+            lane.why = "настройки от «" + Json.str(ent, "name") + "» (Семья)";
+        }
+        boolean wasOn = isOn();
+        boolean reconnect = false;
+        List<Object> results = new ArrayList<Object>();
+        List<String> refresh = new ArrayList<String>();
+        for (Map<String, Object> op : opsOf(pending.get("ops"))) {
+            checkStop();
+            try {
+                reconnect |= famApplyOp(op, refresh);
+                results.add(Json.obj("op", Json.str(op, "op"), "ok", true));
+            } catch (RuntimeException e) {
+                String m = e.getMessage() == null ? e.toString() : e.getMessage();
+                results.add(Json.obj("op", Json.str(op, "op"), "ok", false, "error", Text.shorten(m, 200)));
+                log("Семья: «" + Json.str(op, "op") + "» не получилось: " + m, "Family: “" + Json.str(op, "op") + "” failed: " + m);
+            }
+        }
+        for (String id : refresh) { // новые подписки — загрузить и проверить здесь же, в этой задаче
+            refreshOne(id);
+        }
+        if (!refresh.isEmpty()) {
+            testServers(false);
+        }
+        int ok = 0;
+        for (Object r : results) {
+            ok += Json.bool(Json.map(r), "ok", false) ? 1 : 0;
+        }
+        log("Семья: применено " + ok + " из " + results.size() + " изменений от «" + Json.str(ent, "name") + "».",
+                "Family: applied " + ok + " of " + results.size() + " changes from “" + Json.str(ent, "name") + "”.");
+        if (reconnect && wasOn) {
+            if (isOn()) {
+                pendingApply = true; // ядро перезапустится после задачи с новыми настройками
+            } else {
+                connect();
+            }
+        }
+        ent.put("applied_seq", Json.num(pending, "seq", 0));
+        ent.put("reply", famReply(ent, results, false));
+        saveSettings();
+        say(Text.t("Настройки от «" + Json.str(ent, "name") + "» установлены: " + ok + " из " + results.size() + ".",
+                "Settings from “" + Json.str(ent, "name") + "” are installed: " + ok + " of " + results.size() + "."), "ok");
+        changed();
+    }
+
+    /** Одно изменение. true — нужно переподключить VPN. */
+    private boolean famApplyOp(Map<String, Object> op, List<String> refresh) {
+        String kind = Json.str(op, "op");
+        switch (kind) {
+            case "sub_add": {
+                String url;
+                try {
+                    url = Subscription.normalizeUrl(Json.str(op, "url"));
+                } catch (Subscription.SubError e) {
+                    throw new UserError(e.getMessage());
+                }
+                String id = Text.sha1hex(url).substring(0, 8);
+                synchronized (lock) {
+                    if (sub(id) == null) {
+                        Json.list(settings, "subscriptions").add(Json.obj("id", id, "url", url,
+                                "name", Text.shorten(Json.str(op, "name").trim(), 80), "title", "", "usage", Json.obj(),
+                                "error", "", "fetched", 0L, "count", 0L));
+                    }
+                }
+                saveSettings();
+                refresh.add(id);
+                return true;
+            }
+            case "sub_remove": {
+                String found = null;
+                for (Map<String, Object> m : subs()) {
+                    if (Json.str(m, "id").equals(Json.str(op, "id")) || (!Json.str(op, "url").isEmpty() && Json.str(m, "url").equals(Json.str(op, "url")))) {
+                        found = Json.str(m, "id");
+                    }
+                }
+                if (found == null) {
+                    throw new UserError(Text.t("подписки уже нет", "the subscription is already gone"));
+                }
+                removeSubscription(found);
+                return true;
+            }
+            case "sub_update":
+                for (Map<String, Object> m : subs()) {
+                    refresh.add(Json.str(m, "id"));
+                }
+                return true;
+            case "servers_add":
+                addServersQuiet(Json.str(op, "text"));
+                return true;
+            case "server_remove": {
+                Server found = null;
+                synchronized (lock) {
+                    for (Server x : servers) {
+                        if (x.subId.isEmpty() && Family.serverId(x.link).equals(Json.str(op, "id"))) {
+                            found = x;
+                        }
+                    }
+                }
+                if (found == null) {
+                    throw new UserError(Text.t("сервера уже нет", "the server is already gone"));
+                }
+                removeServer(found.key());
+                return true;
+            }
+            case "method": {
+                String m = Json.str(op, "method");
+                setMethod(m);
+                if ("off".equals(m) && isOn()) {
+                    disconnect();
+                }
+                return !"off".equals(m);
+            }
+            case "set": {
+                Map<String, Object> vals = Json.map(op, "values");
+                boolean again = false;
+                if (vals.containsKey("block_ads")) {
+                    setAds(Json.obj("block_ads", vals.get("block_ads")));
+                }
+                if (vals.containsKey("dns_encrypted")) {
+                    setSettings(Json.obj("dns_encrypted", vals.get("dns_encrypted")));
+                    again = true;
+                }
+                if (vals.containsKey("accel")) {
+                    setDpi(Json.obj("dpi_enabled", vals.get("accel")));
+                }
+                return again;
+            }
+            case "reconnect":
+                return true;
+            case "warp_create":
+                createWarp();
+                return false;
+            default:
+                return false; // report — ответ и так придёт со снимком
+        }
+    }
+
+    private Map<String, Object> famSnapshot() {
+        List<Object> subsOut = new ArrayList<Object>();
+        List<Object> manual = new ArrayList<Object>();
+        String status;
+        String server;
+        synchronized (lock) {
+            for (Map<String, Object> m : subs()) {
+                int n = 0;
+                for (Server x : servers) {
+                    if (Json.str(m, "id").equals(x.subId)) {
+                        n++;
+                    }
+                }
+                String name = Json.str(m, "name").isEmpty() ? Json.str(m, "title") : Json.str(m, "name");
+                subsOut.add(Json.obj("id", Json.str(m, "id"), "name", name, "url", Json.str(m, "url"), "n", n,
+                        "err", !Json.str(m, "error").isEmpty()));
+            }
+            for (Server x : servers) {
+                if (x.subId.isEmpty() && manual.size() < 60) {
+                    manual.add(Json.obj("id", Family.serverId(x.link), "name", x.name, "kind", "awg".equals(x.engine) ? "awg" : "server"));
+                }
+            }
+            status = "on".equals(status()) ? "on" : "off";
+            server = current != null && "on".equals(status) ? current.name : "";
+        }
+        List<Object> probs = new ArrayList<Object>();
+        synchronized (lock) {
+            for (Map<String, Object> p : problems.values()) {
+                if (probs.size() < 6) {
+                    probs.add(Json.str(p, "title"));
+                }
+            }
+        }
+        return Json.obj("app", "android", "ver", p.appVersion(), "status", status, "server", server, "method", method(),
+                "subs", subsOut, "manual", manual,
+                "set", Json.obj("block_ads", Json.bool(settings, "block_ads", false), "dns_encrypted", Json.bool(settings, "dns_encrypted", false),
+                        "accel", Json.bool(settings, "dpi_enabled", true)),
+                "accel_ok", true, "problems", probs);
+    }
+
+    private String famReply(Map<String, Object> ent, List<Object> results, boolean declined) {
+        long now = System.currentTimeMillis() / 1000;
+        long seq;
+        synchronized (lock) {
+            seq = Json.num(ent, "seq_out", 0) + 1;
+            ent.put("seq_out", seq);
+        }
+        return Family.seal(Family.unb64u(Json.str(ent, "secret")), Family.TO_HELPER, seq,
+                Json.obj("t", "report", "at", now, "exp", now + Family.TTL, "snap", famSnapshot(), "results", results,
+                        "applied", Json.num(ent, "applied_seq", 0), "declined", declined, "device", Json.str(ent, "device")), null);
+    }
+
+    private Map<String, Object> famReport(Map<String, Object> ent, Map<String, Object> payload) {
+        Map<String, Object> snap = Json.map(payload, "snap");
+        synchronized (lock) {
+            if (snap != null) {
+                ent.put("snap", snap);
+                ent.put("snap_at", Json.num(payload, "at", System.currentTimeMillis() / 1000));
+                ent.put("invite", "");
+            }
+            List<Object> results = Json.list(payload, "results");
+            List<Object> sent = Json.list(ent, "sent");
+            boolean hello = false;
+            if (results != null) {
+                for (Object r : results) {
+                    hello |= "hello".equals(Json.str(Json.map(r), "op"));
+                }
+            }
+            if (sent != null && !sent.isEmpty() && results != null && !results.isEmpty() && !hello) {
+                Map<String, Object> last = Json.map(sent.get(sent.size() - 1));
+                if (Json.bool(payload, "declined", false)) {
+                    last.put("state", "declined");
+                } else {
+                    List<Object> errs = new ArrayList<Object>();
+                    for (Object r : results) {
+                        if (!Json.bool(Json.map(r), "ok", false)) {
+                            errs.add(Text.shorten(Json.str(Json.map(r), "error"), 200));
+                        }
+                    }
+                    last.put("state", errs.isEmpty() ? "applied" : errs.size() == results.size() ? "failed" : "partial");
+                    last.put("errors", errs);
+                }
+            }
+        }
+        saveSettings();
+        log("Семья: пришло состояние «" + Json.str(ent, "name") + "».", "Family: the state of “" + Json.str(ent, "name") + "” arrived.");
+        changed();
+        return Json.obj("kind", "report", "pair", Json.str(ent, "pair"), "name", Json.str(ent, "name"));
+    }
+
     // ---------- бесплатный WARP ----------
 
     /** Куда регистрировать WARP (самопроверка подставляет свою имитацию Cloudflare). */
@@ -3501,6 +4041,9 @@ public final class Engine {
 
     /** Что внутри текста из QR-кода, файла или буфера обмена (ничего не меняет). */
     public Map<String, Object> importPreview(String text) {
+        if (text != null && text.contains("vedomyj-family://")) {
+            return Json.obj("kind", "family"); // приглашение или посылка «Семьи» — открывается в «Семье»
+        }
         String kind = Share.kind(text);
         Map<String, Object> out = Json.obj("kind", kind);
         if (kind.equals("settings")) {
@@ -4189,6 +4732,7 @@ public final class Engine {
             st.put("errors_count", errors.size());
             st.put("journal", journal.state());
             st.put("method", method());
+            st.put("family", familyState());
             Server ownWarp = ownWarp();
             st.put("warp", ownWarp == null ? "" : ownWarp.key());
             st.put("app_update", Json.obj("configured", Update.configured(), "state", appUpdate,

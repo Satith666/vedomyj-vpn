@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, dispatcher, errorlog, journal, ladder, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, dispatcher, errorlog, family, journal, ladder, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -30,7 +30,7 @@ class Cancelled(RuntimeError):
     """Человек нажал «Стоп»."""
 
 
-class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin):
+class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin, family.FamilyMixin):
     """События для интерфейса (notify(event, **data)) приходят из рабочих потоков:
     log, busy, servers, server, status, live, connections, services, service, summary, error, settings."""
 
@@ -5419,6 +5419,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
             "engine": self.engine_state(),
             "method": self.method(),
             "journal": self.journal_state(),
+            "family": self.family_state(),
             "dispatcher": self.dispatcher_state(),
             "ladder": {"step": i18n.tr(self.ladder_step) if self.ladder_step else "",
                        "retry_at": self._ladder_next if self._ladder_next > time.time() else 0,

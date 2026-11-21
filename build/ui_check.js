@@ -100,6 +100,29 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   ok(await page.locator('[data-dd="conn"]').count() === 1 && await page.locator('[data-dd="engine"]').count() === 1,
     "Маршрутизация, подключение и движок — в «Дополнительно»");
 
+  // 4в. «Семья»: кнопка на главном, приглашение с QR, настройка устройства → посылка
+  await page.locator("#backBtn").click();
+  await page.locator("#familyBtn").click();
+  await page.waitForSelector("#famPage");
+  await page.locator('[data-act="fam_invite"]').click();
+  await page.fill("#mFamMe", "Сын");
+  await page.fill("#mFamDev", "Мама — телефон");
+  await page.locator("#mOk").click();
+  await page.waitForSelector("#mFamText");
+  const inv = await page.inputValue("#mFamText");
+  const qrOk = await page.locator(".modal .qr-img svg").count();
+  ok(inv.startsWith("vedomyj-family://i/") && qrOk === 1, "Семья: приглашение текстом и QR-кодом", inv.slice(0, 24));
+  await page.locator(".modal [data-close]").first().click();
+  await page.waitForSelector('[data-act="fam_device"]');
+  await page.locator('[data-act="fam_device"]').first().click();
+  await page.fill("#mFamSubUrl", "https://example.com/sub/abc");
+  await page.locator("#mOk").click();
+  await page.waitForSelector("#mFamText");
+  const pkt = await page.inputValue("#mFamText");
+  ok(pkt.startsWith("vedomyj-family://p/") && !pkt.includes("example.com"), "Семья: посылка зашифрована", pkt.slice(0, 24));
+  await page.locator(".modal [data-close]").first().click();
+  await page.locator("#backBtn").click();
+
   // 5. журнал подключения на экране «Состояние»
   await page.locator('[data-nav="status"]').first().click();
   await page.waitForSelector("#stJournal");
