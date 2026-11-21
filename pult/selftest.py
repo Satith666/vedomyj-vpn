@@ -4450,6 +4450,77 @@ def t_dispatcher():
         HEALTH_PORT.clear()
 
 
+@case("Главный экран: способ (Авто / VPN-сервер / AmneziaWG / Без VPN), ускорение, Discord через VPN")
+def t_methods():
+    from pult import dpi as dpimod
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    try:
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.startup()
+        q = "?security=reality&pbk=K&sni=a.com&type=tcp"
+        e.add_servers(f"vless://78888888-8888-4888-8888-888888888881@fast.example:443{q}#A\n"
+                      f"vless://78888888-8888-4888-8888-888888888882@fast2.example:443{q}#B")
+        wait_idle(e)
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        e.settings["autopilot"] = True  # как у обычного пользователя (make_engine его выключает)
+        check(e.method() == "auto" and e.state()["method"] == "auto", "по умолчанию — Авто")
+        # выбор сервера в списке — это «VPN-сервер»: без автосмены
+        ui.dispatch("connect", {"key": e.servers[1].key})
+        wait_idle(e)
+        for _ in range(100):
+            if not e.conn_busy():
+                break
+            time.sleep(0.05)
+        check(e.connected and e.current.key == e.servers[1].key, "подключено к выбранному")
+        check(e.method() == "server" and e.settings["autopilot"] is False, f"способ: {e.method()}")
+        ui.dispatch("method", {"method": "auto"})
+        check(e.method() == "auto" and e.settings["autopilot"] is True and e.connected, "Авто — автопереход снова включён")
+        ui.dispatch("method", {"method": "awg"})
+        check(e.settings["engine_pick"] == "awg", "AmneziaWG — движок AmneziaWG")
+        for _ in range(100):
+            if not e.conn_busy():
+                break
+            time.sleep(0.05)
+        ui.dispatch("method", {"method": "auto"})
+        check(e.settings["engine_pick"] == "auto", "Авто — снова все серверы")
+        try:
+            ui.dispatch("method", {"method": "nope"})
+            check(False, "неизвестный способ принят")
+        except Exception:
+            pass
+        # Discord: при включённом VPN — через VPN, а не через zapret/ByeDPI; без VPN — через обход
+        check(e.connected, "подключено")
+        check(not any(d in e.dpi_domains() for d in dpimod.DISCORD_DOMAINS), "VPN включён — Discord не в обходе")
+        check(any(d in e.dpi_domains() for d in dpimod.YOUTUBE_DOMAINS), "YouTube — в обходе")
+        e.settings["tun_enabled"] = True
+        plan = e._route_plan(e.current, e.paths.xray)
+        check(any(p.get("app") and "Discord" in p.get("process", []) and p.get("tag") == "proxy" for p in plan),
+              "в режиме TUN — Discord целиком (с голосом) через VPN")
+        e.settings["tun_enabled"] = False
+        e.disconnect()
+        check(any(d in e.dpi_domains() for d in dpimod.DISCORD_DOMAINS), "VPN выключен — Discord снова через обход")
+        e.settings["discord_via_vpn"] = False
+        e.connect(e.servers[0])
+        check(any(d in e.dpi_domains() for d in dpimod.DISCORD_DOMAINS), "настройка выключена — как раньше")
+        # «Без VPN»: на Windows — VPN выключается, ускорение включается; там, где ускорения нет, — понятная ошибка
+        calls = []
+        e.dpi_supported = True
+        e.set_dpi = lambda vals: calls.append(("set", dict(vals))) or True
+        e.setup_dpi = lambda: calls.append(("setup",)) or ""
+        e.method_off()
+        check(not e.connected and ("setup",) in calls and calls[0][1] == {"zapret_enabled": True, "byedpi_role": "backup"},
+              f"Без VPN: {calls}")
+        check(e.method() == "auto", "способ меняет только кнопка (method_off сам его не трогает)")
+    finally:
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+        HEALTH_PORT.clear()
+
+
 @case("Фон: пока VPN работает, программа не запускает других программ (10 минут за секунду)")
 def t_quiet_background():
     import subprocess as sp

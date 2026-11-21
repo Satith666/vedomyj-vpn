@@ -299,7 +299,37 @@ class UIServer:
                 raise ActionError("Сервер не найден — обнови подписку.")
             if not srv.supported:
                 raise ActionError(f"Этот сервер не поддерживается: {srv.note}")
+            # выбор сервера в списке — это способ «VPN-сервер» (или AmneziaWG для его конфига)
+            want = "awg" if srv.engine == "awg" else "server"
+            if e.method() != want:
+                e.set_method(want)
             return vpn_task("Подключаюсь", e.connect, srv)
+        if action == "method":
+            m = str(a.get("method", ""))
+            was_awg = bool(e.awg_active)
+            e.set_method(m)
+            if m == "off":
+                if e.connected or e.awg_active or e.dpi_supported:
+                    return vpn_task("Выключаю VPN, включаю ускорение", e.method_off)
+                return True
+            if m == "awg" and e.connected:
+                srv = e.toggle_target()
+                if srv:
+                    return vpn_task("Подключаюсь", e.connect, srv)
+            if m in ("auto", "server") and was_awg:
+                srv = e.toggle_target()
+                if srv:
+                    return vpn_task("Подключаюсь", e.connect_start, srv)
+            return True
+        if action == "accel":
+            if a.get("on"):
+                return task("Включаю ускорение YouTube и Discord", e.accel_on)
+            return task("Выключаю ускорение", e.accel_off)
+        if action == "toggle" and e.method() == "off" and not (e.connected or e.awg_active or e.kill_on):
+            # «Без VPN»: большая кнопка включает и выключает ускорение
+            if e.dpi_mode:
+                return task("Выключаю ускорение", e.accel_off)
+            return task("Включаю ускорение YouTube и Discord", e.accel_on)
         if action == "toggle":
             if e.awg_active:
                 return vpn_task("Отключаюсь", e.disconnect_awg)

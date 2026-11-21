@@ -1684,6 +1684,10 @@ public final class Engine {
         o.ads = adsMode();
         if (dpiActive()) {
             o.dpiDomains = Dpi.domains(settings);
+            if (Json.bool(settings, "discord_via_vpn", true)) {
+                // VPN включён — Discord (и его голос) идёт через VPN, а не через обход замедлений (как на ПК)
+                o.dpiDomains.removeAll(Services.DISCORD_DOMAINS);
+            }
         }
         if (dpiActive() || planUsesDpi(o.routes)) {
             o.dpi = dpiStrategy();

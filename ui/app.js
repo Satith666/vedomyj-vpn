@@ -97,6 +97,7 @@ const ICON_PATHS = {
   key: '<circle cx="8" cy="12" r="3.5"/><path d="M11.5 12H20M17 12v3M20 12v2.5"/>',
   split: '<path d="M3 12h6M15 12h6"/><path d="m9 7 6 10"/>',
   monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  server: '<rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.5h.01M8 16.5h.01"/>',
   globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/>',
   game: '<path d="M7 9h10a4 4 0 0 1 4 4v1a3 3 0 0 1-5.3 1.9L14 14h-4l-1.7 1.9A3 3 0 0 1 3 14v-1a4 4 0 0 1 4-4z"/><path d="M8 11v3M6.5 12.5h3"/>',
 };
@@ -459,12 +460,8 @@ const stopBtn = (small = false) => `<button type="button" class="btn btn-stop ${
 
 function homeSkeleton() {
   return `
-    <section class="hero" id="hero" aria-label="${t("connection")}"></section>
-    <section class="stack" aria-labelledby="dpiTitle" style="gap:8px">
-      <div class="dpi-head"><h2 class="section-title" id="dpiTitle">${t("dpi_title")}</h2><span id="dpiCombo"></span></div>
-      <div class="dpi" id="dpi"></div>
-    </section>
-    <section class="stack" aria-labelledby="srvTitle" style="gap:10px">
+    <section class="console" id="hero" aria-label="${t("connection")}"></section>
+    <section class="stack" aria-labelledby="srvTitle" style="gap:10px" id="srvSection">
       <div class="srv-head">
         <h2 id="srvTitle">${t("servers")}</h2>
         <label class="search">${icon("search")}<input id="q" type="search" placeholder="${t("search")}" value="${esc(query)}" aria-label="${t("search_server")}"></label>
@@ -510,65 +507,117 @@ function renderHero() {
   const awgOn = !!(S.awg && S.awg.active);
   const on = S.connected || awgOn;
   const connecting = busy("connect") || !!S.conn_busy;
+  const method = S.method || "auto";
+  const accelRun = !!(S.dpi && S.dpi.mode);
+  const noVpn = method === "off" && !on;
   const stateText = connecting ? (on ? t("st_switching") : t("st_connecting")) : on ? t("st_connected")
-    : S.kill_on ? t("st_killed") : t("st_disconnected");
+    : S.kill_on ? t("st_killed") : noVpn && accelRun ? t("st_novpn") : t("st_disconnected");
   const best = S.servers.find(s => s.key === S.best);
   let line;
-  const pick = (S.engine && S.engine.pick) || "auto";
-  const pickAwg = pick === "awg" && !S.connected;
+  const pickAwg = method === "awg" && !S.connected;
   const awgSrv = awgOn ? S.servers.find(s => s.key === S.awg.active) : null;
-  if (awgOn) line = `${cc(awgSrv ? awgSrv.cc : "")}<b>${esc(S.awg.name)}</b><span>AmneziaWG</span><span class="awg-chip" title="${esc(t("awg_all_tip"))}">${t("awg_all")}</span>`;
+  if (awgOn) line = `${cc(awgSrv ? awgSrv.cc : "")}<b>${esc(S.awg.name)}</b><span>AmneziaWG</span>`;
   else if (on && S.current) line = `${cc(S.current.cc)}<b>${esc(S.current.name)}</b><span>${esc(S.current.protocol)}</span>`;
   else if (pickAwg) line = S.awg && !S.awg.client ? `<span>${t("awg_need_client")}</span><button type="button" class="btn btn-small" data-act="awg_download">${icon("download")}${t("awg_download")}</button>`
     : S.awg && S.awg.count ? `<span>${t("awg_ready")}</span>` : `<span>${t("awg_none")}</span>`;
+  else if (noVpn) line = `<span>${esc(accelRun ? t("novpn_on") : t("novpn_off"))}</span>`;
   else if (best) line = `<span>${t("best_server")}</span>${cc(best.cc)}<b>${esc(best.name)}</b>`;
   else line = `<span>${S.servers.length ? t("press_check") : t("add_sub_hint")}</span>`;
   if (!on && S.filter_on) line += `<span class="ads-chip">${icon("block")}${t("ads_chip")}</span>`;
   if (!on && S.kill_on) line = `<span class="kill-chip">${icon("lock")}${t("kill_chip")}</span>`;
   if (on && S.vpn_until) line += `<span class="timer-chip">${t("vpn_until", { n: Math.max(1, Math.round((S.vpn_until - Date.now() / 1000) / 60)) })}</span>`;
-  const st = S.settings;
-  const conn = connLabel();
-  const autoBtn = busy("auto") ? stopBtn() : `<button class="btn btn-primary hero-act" data-act="auto">${icon("bolt")}${t("auto")}</button>`;
-  const tile = (id, ic, name, sub, on2, attrs) => `<button type="button" class="tile ${on2 ? "on" : ""} ${SOON.has(id) ? "soon-tile" : ""}" ${attrs}
-      title="${esc(t(`i_${id}_desc`))}">${icon(ic)}<span class="tile-text"><b>${esc(name)}</b><span>${esc(sub)}</span></span></button>`;
-  const backup = S.backup ? t("tile_backup", { name: S.backup.name }) : t("on");
+  const autoBtn = busy("auto") ? stopBtn() : `<button class="btn btn-small hero-auto" data-act="auto">${icon("bolt")}${t("auto")}</button>`;
+  const hv = healthVerdict();
+  const J = S.journal || {};
   const html = `
-    <div class="hero-top">
-      <button class="power" data-act="toggle" aria-label="${on ? t("disconnect") : t("connect")}">
-        <svg class="ring-svg" viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-bg" cx="60" cy="60" r="54"/><circle class="ring" cx="60" cy="60" r="54"/></svg>
-        <span class="glyph">${icon("power")}</span>
-      </button>
-      <div class="hero-main">
-        <div class="hero-state">${stateText}</div>
-        <div class="hero-server ${pickAwg && S.awg && !S.awg.client ? "awg-need" : ""}">${line}</div>
+    <div class="con-grid">
+      <div class="con-card con-main">
+        <div class="hero-top">
+          <button class="power" data-act="toggle" aria-label="${on ? t("disconnect") : noVpn && accelRun ? t("accel_off_btn") : t("connect")}">
+            <svg class="ring-svg" viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-bg" cx="60" cy="60" r="54"/><circle class="ring" cx="60" cy="60" r="54"/></svg>
+            <span class="glyph">${icon("power")}</span>
+          </button>
+          <div class="hero-main">
+            <div class="hero-state">${stateText}</div>
+            <div class="hero-server ${pickAwg && S.awg && !S.awg.client ? "awg-need" : ""}">${line}</div>
+          </div>
+          ${autoBtn}
+        </div>
+        ${routeHtml(on, connecting, awgOn, accelRun)}
         <dl class="stats" id="heroStats"></dl>
+        <div class="con-foot">
+          <button type="button" class="link-btn con-health" data-nav="status"><i class="dot ${hv.cls}"></i>${esc(hv.short)}</button>
+          <span class="hint">${esc(t("journal_auto_short", { h: J.auto_hour || 0 }))}</span>
+        </div>
       </div>
-      ${autoBtn}
-    </div>
-    ${healthStrip()}
-    <div class="selects">
-      <div class="sel-wrap"><span class="sel-label" id="lblRoute">${t("sel_route")}</span>
-        <button type="button" class="dd-btn" data-dd="route" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblRoute">
-          <b>${S.mode === "vpn" ? t("i_global_name") : t("i_smart_name")}</b><span>— ${S.mode === "vpn" ? t(S.ru_direct ? "rt_global_sub" : "rt_global_all") : t("rt_smart_sub")}</span>${icon("down")}</button></div>
-      <div class="sel-wrap"><span class="sel-label" id="lblConn">${t("sel_conn")}</span>
-        <button type="button" class="dd-btn" data-dd="conn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblConn">
-          <b>${esc(conn.name)}</b><span>— ${esc(conn.sub)}</span>${icon("down")}</button></div>
-      <div class="sel-wrap"><span class="sel-label" id="lblEngine">${t("sel_engine")}</span>
-        <button type="button" class="dd-btn" data-dd="engine" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblEngine">
-          <b>${esc(t(`i_eng_${pick}_name`))}</b><span>— ${esc(engineSub(pick))}</span>${icon("down")}</button></div>
-    </div>
-    <div class="tiles">
-      ${tile("autopilot", "swap", t("i_autopilot_name"), st.autopilot ? backup : t("off"), st.autopilot, `data-act="tile_autopilot" aria-pressed="${!!st.autopilot}"`)}
-      ${tile("multi", "layers", t("i_multi_name"), !st.multi_enabled ? t("off")
-        : S.multi.map.length ? t("multi_n", { n: S.multi.map.length }) : t("multi_none"),
-        st.multi_enabled, `data-act="tile_set" data-key="multi_enabled" aria-pressed="${!!st.multi_enabled}"`)}
-      ${tile("ads", "block", t("i_ads_name"), adsSide(), st.block_ads, `data-act="tile_ads" aria-pressed="${!!st.block_ads}"`)}
-      ${tile("dns", "lock", t("i_dns_name"), st.dns_encrypted ? t("on") : t("off"), st.dns_encrypted,
-        `data-act="tile_set" data-key="dns_encrypted" aria-pressed="${!!st.dns_encrypted}"`)}
+      <div class="con-side">
+        <div class="con-card">
+          <h2 class="con-title" id="methodTitle">${t("method_title")}</h2>
+          <div class="methods" role="radiogroup" aria-labelledby="methodTitle">${methodRows(method)}</div>
+        </div>
+        <div class="con-card con-toggles">${toggleRows()}</div>
+        <button type="button" class="link-btn con-more" data-nav="more">${t("all_settings")}</button>
+      </div>
     </div>${whatWorksHtml()}`;
   // пересобираем только если что-то правда поменялось: иначе кнопка под курсором не пересоздаётся
   if (box._html !== html) { box.innerHTML = html; box._html = html; }
   updateHeroLive();
+}
+
+/* Путь трафика: компьютер → ускорение (zapret или ByeDPI) → VPN-сервер → интернет. */
+function routeHtml(on, connecting, awgOn, accelRun) {
+  const flow = connecting ? "busy" : on || accelRun ? "on" : "";
+  const node = (ic, name, sub, live) => `<div class="rt-node ${live ? "live" : ""}"><span class="rt-ico">${icon(ic)}</span>
+    <span class="rt-text"><b>${esc(name)}</b><small>${esc(sub)}</small></span></div>`;
+  const line = `<span class="rt-line ${flow}" aria-hidden="true"></span>`;
+  const live = S.live || {};
+  const parts = [node("monitor", t("rt_pc"), t("rt_pc_sub"), true)];
+  if (accelRun && !awgOn) parts.push(node("bolt", t("rt_accel"), S.dpi.mode === "byedpi" ? "ByeDPI" : "zapret", true));
+  if (awgOn) parts.push(node("layers", "AmneziaWG", S.awg.name || "", true));
+  else if (S.connected && S.current) parts.push(node("server", `${S.current.cc || ""} ${t("rt_server")}`.trim(), S.current.name, true));
+  else if (connecting) parts.push(node("server", t("rt_server"), "…", false));
+  const exit = S.connected ? (live.exit_loc ? countryName(live.exit_loc) : "…") : awgOn ? t("rt_via_awg") : t("rt_direct");
+  parts.push(node("globe", t("rt_net"), exit, on || accelRun));
+  return `<div class="route" aria-label="${esc(t("rt_title"))}"><span class="rt-title">${t("rt_title")}</span>
+    <div class="rt-row">${parts.join(line)}</div></div>`;
+}
+
+const METHODS = ["auto", "server", "awg", "off"];
+
+function methodRows(method) {
+  const cur = S.connected && S.current ? S.current : null;
+  const last = S.servers.find(s => s.key === (S.settings.last_server_key || "")) || S.servers.find(s => s.key === S.best);
+  const awgName = S.awg && S.awg.count ? (S.awg.name || t("m_awg_ready")) : t("m_awg_none");
+  const subs = {
+    auto: t("m_auto_sub"),
+    server: cur && method === "server" ? cur.name : last ? last.name : t("m_server_none"),
+    awg: S.awg && S.awg.count && !S.awg.client ? t("awg_need_client") : awgName,
+    off: S.dpi && S.dpi.supported ? t("m_off_sub") : t("dpi_st_win"),
+  };
+  return METHODS.map(id => {
+    const sel = id === method;
+    return `<div class="m-row">
+      <button type="button" class="m-opt ${sel ? "sel" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}">
+        <span class="m-dot" aria-hidden="true"></span>
+        <span class="m-text"><b>${t(`m_${id}`)}</b><small>${esc(subs[id])}</small></span>
+      </button>${id === "server" ? `<button type="button" class="btn btn-small m-pick" data-act="pick_server">${t("m_change")}</button>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function toggleRows() {
+  const st = S.settings;
+  const d = S.dpi || {};
+  const accelOn = !!d.supported && (dpiOn("zapret") || dpiOn("byedpi"));
+  const accelSub = !d.supported ? t("dpi_st_win") : !accelOn ? t("off")
+    : S.busy && /zapret|byedpi|ускорен|стратег|accelerat|strateg/i.test(S.busy) ? S.busy + "…"
+    : d.mode ? t("accel_running", { e: d.mode === "byedpi" ? "ByeDPI" : "zapret" }) + (S.connected && st.discord_via_vpn !== false ? t("accel_discord_vpn") : "")
+    : t("dpi_st_setup");
+  const row = (name, sub, control) => `<div class="tg-row"><span class="tg-text"><b>${esc(name)}</b><small>${esc(sub)}</small></span>${control}</div>`;
+  return row(t("accel_name"), accelSub, sw(accelOn, `data-act="accel" aria-label="${esc(t("accel_name"))}"`, !d.supported))
+    + row(t("i_ads_name"), adsSide(), sw(st.block_ads, `data-act="tile_ads" aria-label="${esc(t("i_ads_name"))}"`))
+    + row(t("i_dns_name"), st.dns_encrypted ? t("dns_on_sub") : t("off"),
+      sw(st.dns_encrypted, `data-act="tile_set" data-key="dns_encrypted" aria-label="${esc(t("i_dns_name"))}"`));
 }
 
 /* Лестница не нашла ни одного рабочего способа: что открывается напрямую и когда следующая попытка. */
@@ -910,6 +959,19 @@ function renderMore() {
     <section class="list-card"><h2>${t("more_state")}</h2>
       ${row("status", "shield", t("nav_status"), t("more_status"), `<span class="dot ${hv.cls}"></span>${esc(hv.short)}`, true)}
       ${row("errors", "alert", t("nav_errors"), t("more_errors"), S.errors_count ? esc(t("errors_n", { n: S.errors_count })) : "")}
+    </section>
+    <section class="list-card"><h2>${t("more_conn")}</h2>
+      <div class="more-selects">
+        <div class="sel-wrap"><span class="sel-label" id="lblRoute">${t("sel_route")}</span>
+          <button type="button" class="dd-btn" data-dd="route" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblRoute">
+            <b>${S.mode === "vpn" ? t("i_global_name") : t("i_smart_name")}</b><span>— ${S.mode === "vpn" ? t(S.ru_direct ? "rt_global_sub" : "rt_global_all") : t("rt_smart_sub")}</span>${icon("down")}</button></div>
+        <div class="sel-wrap"><span class="sel-label" id="lblConn">${t("sel_conn")}</span>
+          <button type="button" class="dd-btn" data-dd="conn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblConn">
+            <b>${esc(connLabel().name)}</b><span>— ${esc(connLabel().sub)}</span>${icon("down")}</button></div>
+        <div class="sel-wrap"><span class="sel-label" id="lblEngine">${t("sel_engine")}</span>
+          <button type="button" class="dd-btn" data-dd="engine" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblEngine">
+            <b>${esc(t(`i_eng_${(S.engine && S.engine.pick) || "auto"}_name`))}</b><span>— ${esc(engineSub((S.engine && S.engine.pick) || "auto"))}</span>${icon("down")}</button></div>
+      </div>
     </section>
     <section class="list-card"><h2>${t("more_dpi")}</h2>
       ${row("zapret", "key", t("i_zapret_name"), t("i_zapret_desc"), dpiSide("zapret"), true)}
@@ -2866,6 +2928,24 @@ const ACTIONS = {
   add_sub_modal: modalAddSub,
   add_server_modal: modalAddServer,
   vps_modal: () => modalVps(),
+  method: el => {
+    const m = el.dataset.method;
+    if (!m || m === S.method) return;
+    S.method = m;
+    renderHero();
+    act("method", { method: m }).then(() => scheduleRefresh(50));
+  },
+  accel: el => {
+    const v = el.getAttribute("aria-checked") !== "true";
+    el.setAttribute("aria-checked", String(v));
+    act("accel", { on: v }).then(() => scheduleRefresh(50));
+  },
+  pick_server: () => {
+    const sec = $("#srvSection");
+    if (sec) sec.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    const q = $("#q");
+    if (q) setTimeout(() => q.focus({ preventScroll: true }), 300);
+  },
   tile_set: el => {
     const key = el.dataset.key;
     const v = !S.settings[key];

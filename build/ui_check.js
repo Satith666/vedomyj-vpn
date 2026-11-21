@@ -53,22 +53,43 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   ok(cur === 1, "«Подключён» горит у одного сервера", `таких: ${cur}`);
 
   // 4. меню при прокрутке: едет за кнопкой или закрывается
-  await page.locator('[data-dd="route"]').click();
+  await page.locator('[data-menu="sort"]').click();
   await page.waitForTimeout(300);
   const before = await page.evaluate(() => {
-    const p = document.querySelector("#popover"), a = document.querySelector('[data-dd="route"]');
+    const p = document.querySelector("#popover"), a = document.querySelector('[data-menu="sort"]');
     return p && !p.hidden ? { dy: p.getBoundingClientRect().top - a.getBoundingClientRect().bottom } : null;
   });
   ok(!!before, "Меню открывается");
   await page.evaluate(() => { const m = document.querySelector(".main"); m.scrollTop += 120; m.dispatchEvent(new Event("scroll")); });
   await page.waitForTimeout(300);
   const after = await page.evaluate(() => {
-    const p = document.querySelector("#popover"), a = document.querySelector('[data-dd="route"]');
+    const p = document.querySelector("#popover"), a = document.querySelector('[data-menu="sort"]');
     if (!p || p.hidden) return { closed: true };
-    return { closed: false, dy: p.getBoundingClientRect().top - a.getBoundingClientRect().bottom };
+    const pr = p.getBoundingClientRect(), ar = a.getBoundingClientRect();
+    // меню у своей кнопки — снизу или сверху (если внизу не помещается)
+    return { closed: false, below: Math.round(pr.top - ar.bottom), above: Math.round(ar.top - pr.bottom) };
   });
-  ok(after.closed || (before && Math.abs(after.dy - before.dy) < 4), "Меню не «съезжает» при прокрутке", JSON.stringify(after));
+  const attached = after.closed || (after.below >= 0 && after.below < 14) || (after.above >= 0 && after.above < 14);
+  ok(attached, "Меню не «съезжает» при прокрутке", JSON.stringify(after));
   await page.keyboard.press("Escape");
+  await page.evaluate(() => { document.querySelector(".main").scrollTop = 0; });
+
+  // 4а. способ: «VPN-сервер» и обратно «Авто» — переключается и запоминается
+  await page.locator('[data-act="method"][data-method="server"]').click();
+  await page.waitForTimeout(1200);
+  const m1 = await page.locator('[data-act="method"][data-method="server"]').getAttribute("aria-checked");
+  await page.locator('[data-act="method"][data-method="auto"]').click();
+  await page.waitForTimeout(1200);
+  const m2 = await page.locator('[data-act="method"][data-method="auto"]').getAttribute("aria-checked");
+  ok(m1 === "true" && m2 === "true", "Способ переключается (VPN-сервер, потом Авто)", `${m1} ${m2}`);
+  const routeOk = await page.locator(".route .rt-node").count();
+  ok(routeOk >= 2, "Путь трафика на главном экране", `звеньев: ${routeOk}`);
+
+  // маршрутизация, вход и движок теперь в «Дополнительно»
+  await page.locator("#moreBtn").click();
+  await page.waitForSelector('[data-dd="route"]');
+  ok(await page.locator('[data-dd="conn"]').count() === 1 && await page.locator('[data-dd="engine"]').count() === 1,
+    "Маршрутизация, подключение и движок — в «Дополнительно»");
 
   // 5. журнал подключения на экране «Состояние»
   await page.locator('[data-nav="status"]').first().click();

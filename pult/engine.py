@@ -112,6 +112,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
         self._rx_at = -1e9          # когда с сервера последний раз приходили данные (monotonic)
         self._ping_at = -1e9        # когда последний раз измерен пинг
         self._net_event_at = 0.0    # Windows сообщила о смене сети
+        self._vpn_wanted = False    # идёт подключение VPN (до того, как connected станет True)
         self._dispatcher_init()     # диспетчер: можно ли автоматике трогать VPN (dispatcher.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
@@ -1015,6 +1016,58 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
             return last
         return next((x for x in pool if x.supported and not x.stub), None)
 
+    # ---------- способ на главном экране: Авто / VPN-сервер / AmneziaWG / Без VPN ----------
+
+    METHODS = {"auto": "Авто", "server": "VPN-сервер", "awg": "AmneziaWG", "off": "Без VPN"}
+
+    def method(self) -> str:
+        """Выбранный способ. Старые настройки без него: AmneziaWG — если выбран этот движок,
+        иначе «Авто» при включённом автопереходе и «VPN-сервер» без него."""
+        m = self.settings.get("conn_method")
+        if m in self.METHODS:
+            return m
+        if self.settings.get("engine_pick") == "awg":
+            return "awg"
+        return "auto" if self.settings.get("autopilot", True) else "server"
+
+    def set_method(self, method: str) -> None:
+        """Сменить способ. «Авто» — сервер выбирает и при сбое меняет программа; «VPN-сервер» — только
+        выбранный тобой, без автосмены; «AmneziaWG» — свой конфиг через клиент AmneziaWG;
+        «Без VPN» — VPN выключен, работает только ускорение YouTube и Discord."""
+        if method not in self.METHODS:
+            raise RuntimeError("Нет такого способа.")
+        s = self.settings
+        s["conn_method"] = method
+        if method in ("auto", "server"):
+            s["autopilot"] = method == "auto"
+            if s.get("engine_pick") == "awg":
+                s["engine_pick"] = "auto"
+        elif method == "awg":
+            s["engine_pick"] = "awg"
+        self.save()
+        self.log(f"Способ: {self.METHODS[method]}.")
+        self.notify("status")
+
+    def method_off(self) -> None:
+        """«Без VPN»: VPN выключается, ускорение YouTube и Discord включается (если ещё не работает)."""
+        if self.awg_active:
+            self.disconnect_awg()
+        if self.connected:
+            self.disconnect()
+        self.accel_on()
+
+    def accel_on(self) -> None:
+        """Ускорение YouTube и Discord: zapret, запасной ByeDPI (на Windows); подбор стратегий — сам."""
+        if not self.dpi_supported:
+            raise RuntimeError("Ускорение YouTube и Discord работает только в Windows.")
+        changed = self.set_dpi({"zapret_enabled": True, "byedpi_role": "backup"})
+        if changed or not self.dpi_mode:
+            self.setup_dpi()
+
+    def accel_off(self) -> None:
+        self.set_dpi({"zapret_enabled": False, "byedpi_role": "off"})
+        self.stop_dpi()
+
     def set_engine_pick(self, pick: str) -> None:
         if pick not in self.ENGINE_PICKS:
             raise RuntimeError("Нет такого движка.")
@@ -1066,6 +1119,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
             self.ensure_legacy()
         self._pin_server_dns([server])
         exe = self.paths.exe_for(server)
+        self._vpn_wanted = True  # настройки ядра собираются для VPN (Discord — через него)
         with self._conn_lock:
             self.progress(f"Подключаюсь к {server.name}")
             s = self.settings
@@ -1073,6 +1127,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
                 self._bring_up(server, exe)
             except XrayError as last_exc:
                 self.connected = False
+                self._vpn_wanted = False
                 self.filter_on = False  # ядро остановлено — фильтр перезапустит монитор
                 self.notify("status")
                 self.problem("connect", "Не удалось подключиться", str(last_exc), where=server.name,
@@ -1449,6 +1504,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
                 # ядро не запускается совсем — системный прокси остаётся на нашем порту: браузеры тоже не уйдут мимо VPN
                 self.log(f"Kill switch: ядро не запустилось ({exc}). Браузеры всё равно не пойдут мимо VPN.")
             self.connected = False
+            self._vpn_wanted = False
             self.filter_on = False
             self.kill_on = True
             self.current = server
@@ -1493,6 +1549,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
         """Отключить VPN. keep_filter — если включена «Блокировка рекламы без VPN», ядро сразу
         запускается снова без сервера (False — при обновлении ядра, смене портов и выходе)."""
         was = self.connected
+        self._vpn_wanted = False
         if was and not quiet:
             self._journal("disconnect", self.current)
         self.vpn_until = 0.0
@@ -1519,6 +1576,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
             self.bridge.stop()
             self._tun_sig = None
             self.connected = False
+            self._vpn_wanted = False
             if self.tun_active:
                 self.tun_active = ""
                 self._rebind_byedpi()
@@ -2518,7 +2576,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
 
         items = [(k, routes[k], None) for k in sorted(routes, key=order)]
         if not self._apps_off:
-            items += [(f"app:{n}", spec, n) for n, spec in sorted((self.settings.get("app_routes") or {}).items())]
+            own = self.settings.get("app_routes") or {}
+            items += [(f"app:{n}", spec, n) for n, spec in sorted(own.items())]
+            # Discord целиком через VPN (с голосом — UDP видно только в режиме TUN), если ты не задал ему свой маршрут
+            if main is not self.FILTER and self.settings.get("discord_via_vpn", True) and self.settings.get("tun_enabled") \
+                    and not any(n.lower().startswith("discord") for n in own):
+                items.append(("app:Discord", {"via": "proxy"}, "Discord"))
         for key, spec, app in items:
             if app:
                 domains, ips = [], []
@@ -3317,7 +3380,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
         out: list[str] = []
         if s.get("dpi_youtube", True):
             out += dpi.YOUTUBE_DOMAINS
-        if s.get("dpi_discord", True):
+        if s.get("dpi_discord", True) and not self._discord_via_vpn():
             out += dpi.DISCORD_DOMAINS
         out += [ln.strip() for ln in (s.get("dpi_custom") or "").splitlines() if ln.strip() and not ln.startswith("#")]
         # сервисы и сайты, для которых выбрано «напрямую с обходом замедления»
@@ -3325,6 +3388,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
             if spec.get("via") == "dpi":
                 out += [d[7:] for d in self._route_domains(key)[0] if d.startswith("domain:")]
         return list(dict.fromkeys(out))
+
+    def _discord_via_vpn(self) -> bool:
+        """VPN включён — Discord идёт через него, а не через zapret/ByeDPI: у многих провайдеров обход
+        замедлений чинит текст Discord, но не голос. В режиме TUN через VPN идёт и голос (правило для
+        процесса Discord в _route_plan). Выключается настройкой discord_via_vpn."""
+        return bool(self.settings.get("discord_via_vpn", True)) and (self.connected or self._vpn_wanted)
 
     def _dpi_targets(self) -> tuple[str, ...]:
         s = self.settings
@@ -5340,6 +5409,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
             "hotspot": self.hotspot_state(),
             "awg": self.awg_state(),
             "engine": self.engine_state(),
+            "method": self.method(),
             "journal": self.journal_state(),
             "dispatcher": self.dispatcher_state(),
             "ladder": {"step": i18n.tr(self.ladder_step) if self.ladder_step else "",
