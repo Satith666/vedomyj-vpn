@@ -76,3 +76,22 @@ elif mode == "vpsextra":
     print(canon(vps.parse_status("x|<b>|9999999999999999999|a;b|-1|2|act$ive|٣|0")))
 elif mode == "vpslinks":
     print(canon(vps.make_links("203.0.113.10", "11111111-2222-3333-4444-555555555555|AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde|0123abcd|a1b2c3d4e5f6", "Мой сервер")))
+elif mode == "warp":
+    from pult import warp
+    seed = bytes(range(32))
+    print(canon(list(warp.keypair(seed))))
+    print(warp.quic_i1("vk.com", bytes(range(8)), bytes(range(100, 132))))
+    print(warp.quic_i1("www.google.com", bytes(range(200, 208)), bytes(32)))
+    print(warp.dns_i1("yandex.ru", 100))
+    print(warp.stun_i1(16))
+    print(warp.sip_i1("www.google.com", 1, 2))
+    acct = {"private_key": warp.keypair(seed)[0], "peer": warp.PEER_KEY, "v4": "172.16.0.2", "v6": "2606:4700:110:8a36::1"}
+    p1 = {"endpoint": "162.159.192.1:2408", "jc": 5, "jmin": 20, "jmax": 90, "i1": warp.DNS_YANDEX_I1}
+    p2 = {"endpoint": "188.114.99.1:1701", "jc": 7, "jmin": 11, "jmax": 33, "i1": warp.stun_i1(20)}
+    conf = warp.build_conf(acct, p1)
+    sys.stdout.write(conf)
+    v = warp.variant(conf, p2)
+    sys.stdout.write(v)
+    cp = warp.current_params(v)
+    print("|".join(str(cp[k]) for k in ("endpoint", "jc", "jmin", "jmax", "i1")))
+    print(canon([warp.is_warp(conf), warp.is_warp(conf.replace(warp.PEER_KEY, "x"))]))

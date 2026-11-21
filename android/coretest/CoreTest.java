@@ -2195,6 +2195,86 @@ public class CoreTest {
             e3.shutdown();
         });
 
+        test("WARP: ключи и шифр по официальным тестам, регистрация, создание и другие обманки", () -> {
+            byte[] nine = new byte[32];
+            nine[0] = 9;
+            check(Warp.toHex(Warp.x25519(Warp.hex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4"),
+                    Warp.hex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c")), 0, 32)
+                    .equals("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552"), "X25519: RFC 7748, 5.2");
+            byte[] a = Warp.hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+            byte[] b = Warp.hex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb");
+            check(Warp.toHex(Warp.x25519(a, Warp.x25519(b, nine)), 0, 32)
+                    .equals("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"), "X25519: общий секрет");
+            byte[] fips = new byte[16];
+            for (int i = 0; i < 16; i++) fips[i] = (byte) i;
+            check(Warp.toHex(Warp.aes128Block(fips, Warp.hex("00112233445566778899aabbccddeeff")), 0, 16)
+                    .equals("69c4e0d86a7b0430d8cdb78070b4c55a"), "AES-128: FIPS-197");
+            byte[][] qk = Warp.quicKeys(Warp.hex("8394c8f03e515708"));
+            check(Warp.toHex(qk[0], 0, 16).equals("1f369613dd76d5467730efcbe3b1a22d") && Warp.toHex(qk[1], 0, 12).equals("fa044b2f42a3fd3b46fb255c")
+                    && Warp.toHex(qk[2], 0, 16).equals("9f50449e04a0e810283a1e9933adedd2"), "ключи QUIC: RFC 9001");
+            for (int i = 0; i < Warp.PRESETS.length; i++) {
+                String i1 = Json.str(Warp.preset(i), "i1");
+                check(i1.matches("(<b 0x[0-9a-f]+>|<r \\d+>|<rc \\d+>|<rd \\d+>)+"), "набор " + i + ": формат CPS");
+            }
+            // имитация Cloudflare: регистрация и включение WARP
+            final List<String> calls = new ArrayList<String>();
+            final String[] seenKey = {""};
+            http.createContext("/warp/", ex -> {
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] chunk = new byte[4096];
+                for (int n; (n = ex.getRequestBody().read(chunk)) > 0; ) bo.write(chunk, 0, n);
+                byte[] in = bo.toByteArray();
+                String method = ex.getRequestMethod();
+                calls.add(method + " " + ex.getRequestURI().getPath() + " " + ex.getRequestHeaders().getFirst("CF-Client-Version")
+                        + " " + ex.getRequestHeaders().getFirst("Authorization"));
+                if ("POST".equals(method)) seenKey[0] = Json.str(Json.parseObject(new String(in, StandardCharsets.UTF_8)), "key");
+                byte[] out = ("POST".equals(method) ? Json.write(Json.obj("id", "dev1", "token", "tok-SECRET-1", "account", Json.obj("warp_enabled", false),
+                        "config", Json.obj("peers", Json.arr(Json.obj("public_key", Warp.PEER_KEY)),
+                                "interface", Json.obj("addresses", Json.obj("v4", "172.16.0.2", "v6", "2606:4700:110:8a36::1")))))
+                        : "{\"warp_enabled\":true}").getBytes(StandardCharsets.UTF_8);
+                ex.sendResponseHeaders(200, out.length);
+                try (OutputStream o = ex.getResponseBody()) { o.write(out); }
+            });
+            Engine.WARP_BASES = new String[]{"http://127.0.0.1:" + httpPort() + "/warp"};
+            try {
+                Map<String, Object> acct = Warp.register(Engine.WARP_BASES[0], 0, "Android", null);
+                check(calls.size() == 2 && calls.get(0).startsWith("POST /warp/" + Warp.API_VERSION + "/reg " + Warp.CLIENT_VERSION)
+                        && calls.get(1).equals("PATCH /warp/" + Warp.API_VERSION + "/reg/dev1 " + Warp.CLIENT_VERSION + " Bearer tok-SECRET-1"),
+                        "запросы к Cloudflare: " + calls);
+                check(seenKey[0].equals(Warp.publicOf(Json.str(acct, "private_key"))) && !acct.containsKey("token"),
+                        "Cloudflare получает только открытый ключ, метка доступа не хранится");
+                Fake fw = new Fake(tmpDir());
+                Engine ew = engine(fw);
+                check(Json.str(ew.state(), "warp").isEmpty(), "своего WARP ещё нет");
+                check(Boolean.TRUE.equals(Api.call(ew, "warp_create", Json.obj())), "кнопка «Создать бесплатный WARP»");
+                waitIdle(ew);
+                String key = Json.str(ew.state(), "warp");
+                Map<String, Object> info = ew.awgInfo(key);
+                check(!key.isEmpty() && Warp.NAME.equals(Json.str(info, "name")) && Json.bool(info, "warp", false)
+                        && Warp.isWarp(Json.str(info, "conf")) && "awg".equals(ew.method()), "WARP создан, способ — AmneziaWG");
+                String before = Warp.currentParams(Json.str(info, "conf")).toString();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> next = (Map<String, Object>) Api.call(ew, "warp_next", Json.obj("key", key));
+                String conf2 = Json.str(next, "conf");
+                java.util.regex.Matcher pk = java.util.regex.Pattern.compile("PrivateKey = \\S+").matcher(Json.str(info, "conf"));
+                check(pk.find() && conf2.contains(pk.group()) && !Warp.currentParams(conf2).toString().equals(before)
+                        && Json.str(Warp.currentParams(conf2), "endpoint").equals(Warp.PRESETS[1][0]),
+                        "другие обманки (ключ тот же): " + Json.str(next, "label"));
+                check(Json.str(ew.state(), "warp").equals(Json.str(next, "key")) && Json.num(ew.settings, "warp_preset", 0) == 1,
+                        "новый набор сохранён вместо старого");
+                Api.call(ew, "warp_create", Json.obj());
+                waitIdle(ew);
+                int own = 0;
+                for (Object o : Json.list(ew.state(), "servers")) if (Warp.NAME.equals(Json.str(Json.map(o), "name"))) own++;
+                check(own == 1, "новый WARP заменяет прошлый: " + own);
+                String logs = String.join("\n", ew.logLines());
+                check(!logs.contains("tok-SECRET-1") && !logs.contains("PrivateKey"), "ключи не попадают в журнал");
+                ew.shutdown();
+            } finally {
+                Engine.WARP_BASES = null;
+            }
+        });
+
         e.shutdown();
         http.stop(0);
         System.out.println();

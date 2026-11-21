@@ -2418,6 +2418,148 @@ public final class Engine {
         return Json.obj("pick", Json.str(settings, "engine_pick", "auto"), "counts", counts);
     }
 
+    // ---------- бесплатный WARP ----------
+
+    /** Куда регистрировать WARP (самопроверка подставляет свою имитацию Cloudflare). */
+    public static String[] WARP_BASES = null;
+
+    private String[] warpBases() {
+        if (WARP_BASES != null) {
+            return WARP_BASES;
+        }
+        String[] out = new String[Warp.API_HOSTS.length];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = "https://" + Warp.API_HOSTS[i];
+        }
+        return out;
+    }
+
+    /** Свой WARP (созданный кнопкой), если есть. */
+    public Server ownWarp() {
+        synchronized (lock) {
+            for (Server s : servers) {
+                if ("awg".equals(s.engine) && s.subId.isEmpty() && Warp.NAME.equals(s.name)) {
+                    return s;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Кнопка «Создать бесплатный WARP»: регистрация (через VPN, если он включён, иначе напрямую) — в фоне. */
+    public boolean warpCreateTask() {
+        return runTask(Text.t("Создаю бесплатный WARP", "Creating a free WARP"), "update", new Runnable() {
+            @Override
+            public void run() {
+                createWarp();
+                setMethod("awg");
+                say(Text.t("WARP создан. Сохрани файл конфига и импортируй его в AmneziaWG.",
+                        "WARP is created. Save the config file and import it into AmneziaWG."), "ok");
+            }
+        });
+    }
+
+    public Server createWarp() {
+        List<Integer> routes = new ArrayList<Integer>();
+        if (isOn() && appPort > 0) {
+            routes.add(appPort);
+        }
+        routes.add(0);
+        Map<String, Object> acct = null;
+        java.util.Set<String> kinds = new java.util.HashSet<String>();
+        for (int port : routes) {
+            for (String base : warpBases()) {
+                checkStop();
+                progress(port > 0 ? Text.t("Регистрирую WARP у Cloudflare через VPN", "Registering WARP with Cloudflare through the VPN")
+                        : Text.t("Регистрирую WARP у Cloudflare", "Registering WARP with Cloudflare"));
+                try {
+                    acct = Warp.register(base, port, "Android", null);
+                    break;
+                } catch (Warp.WarpError e) {
+                    kinds.add(e.kind);
+                    log((port > 0 ? "WARP: регистрация через VPN не удалась (" : "WARP: регистрация напрямую не удалась (") + e.getMessage() + ").",
+                            (port > 0 ? "WARP: registration through the VPN failed (" : "WARP: direct registration failed (") + e.getMessage() + ").");
+                }
+            }
+            if (acct != null) {
+                break;
+            }
+        }
+        if (acct == null) {
+            if (kinds.contains("limit")) {
+                throw new UserError(Text.t("Cloudflare сейчас не даёт создать WARP: слишком много регистраций с твоего адреса. Попробуй через полчаса.",
+                        "Cloudflare will not create a WARP right now: too many registrations from your address. Try again in half an hour."));
+            }
+            if (routes.size() > 1) {
+                throw new UserError(Text.t("Не получилось связаться с Cloudflare ни через VPN, ни напрямую. Попробуй позже.",
+                        "Could not reach Cloudflare either through the VPN or directly. Try again later."));
+            }
+            throw new UserError(Text.t("Не получилось связаться с Cloudflare: в твоей сети регистрацию WARP, похоже, блокируют. "
+                            + "Включи на минуту любой VPN-сервер и нажми снова — регистрация пройдёт через него. Или вставь готовый конфиг WARP через «+».",
+                    "Could not reach Cloudflare: WARP registration seems to be blocked in your network. Turn on any VPN server for a minute "
+                            + "and press again — registration will go through it. Or paste a ready WARP config with “+”."));
+        }
+        String conf = Warp.buildConf(acct, Warp.preset((int) Json.num(settings, "warp_preset", 0)));
+        Server srv;
+        try {
+            srv = Links.parseLink(Links.awgLink(conf, Warp.NAME));
+        } catch (Links.LinkError e) {
+            throw new UserError(Text.t("Конфиг WARP не сохранился.", "The WARP config was not saved."));
+        }
+        synchronized (lock) {
+            Server old = ownWarp();
+            if (old != null) {
+                servers.remove(old);
+                manualLinks().remove(old.link);
+            }
+            servers.add(srv);
+            manualLinks().add(srv.link);
+            settings.put("last_awg_key", srv.key());
+        }
+        saveSettings();
+        saveServers();
+        log("Создан бесплатный WARP (ключи созданы на этом телефоне).", "A free WARP was created (the keys were made on this phone).");
+        changed();
+        return srv;
+    }
+
+    /** «Другие обманки»: тот же WARP со следующим набором обманок (на телефоне туннель включает AmneziaWG,
+     *  поэтому выбирает человек: не подключилось — следующий набор, файл заново в AmneziaWG). */
+    public Map<String, Object> warpNext(String key) {
+        Server s = find(key);
+        if (s == null || !"awg".equals(s.engine) || !Warp.isWarp(s.awgConf) || !s.subId.isEmpty()) {
+            throw new UserError(Text.t("Это не свой конфиг WARP.", "This is not your own WARP config."));
+        }
+        int idx = (int) Json.num(settings, "warp_preset", 0) + 1;
+        Map<String, Object> p = Warp.preset(idx);
+        Server fresh;
+        try {
+            fresh = Links.parseLink(Links.awgLink(Warp.variant(s.awgConf, p), s.name));
+        } catch (Links.LinkError e) {
+            throw new UserError(Text.t("Конфиг WARP не сохранился.", "The WARP config was not saved."));
+        }
+        synchronized (lock) {
+            int at = servers.indexOf(s);
+            servers.set(at < 0 ? 0 : at, fresh);
+            List<Object> l = manualLinks();
+            int li = l.indexOf(s.link);
+            if (li >= 0) {
+                l.set(li, fresh.link);
+            } else {
+                l.add(fresh.link);
+            }
+            settings.put("warp_preset", (long) (idx % Warp.PRESETS.length));
+            settings.put("last_awg_key", fresh.key());
+        }
+        saveSettings();
+        saveServers();
+        log("WARP: другие обманки — «" + Json.str(p, "label") + "».", "WARP: other decoys — “" + Json.str(p, "label") + "”.");
+        changed();
+        Map<String, Object> info = awgInfo(fresh.key());
+        info.put("label", Json.str(p, "label"));
+        return info;
+    }
+
     /** Конфиг AmneziaWG — в приложение AmneziaWG (на телефоне его включает оно само). */
     public Map<String, Object> awgInfo(String key) {
         Server s = key == null || key.isEmpty() ? null : find(key);
@@ -2438,7 +2580,7 @@ public final class Engine {
         settings.put("last_awg_key", s.key());
         saveSettings();
         String file = s.name.replaceAll("[^A-Za-z0-9_-]+", "_").replaceAll("^_+|_+$", "");
-        return Json.obj("key", s.key(), "name", s.name, "conf", s.awgConf, "note", s.note,
+        return Json.obj("key", s.key(), "name", s.name, "conf", s.awgConf, "note", s.note, "warp", Warp.isWarp(s.awgConf) && s.subId.isEmpty(),
                 "file", (file.isEmpty() ? "vedomyj" : file.length() > 32 ? file.substring(0, 32) : file) + ".conf");
     }
 
@@ -4047,6 +4189,8 @@ public final class Engine {
             st.put("errors_count", errors.size());
             st.put("journal", journal.state());
             st.put("method", method());
+            Server ownWarp = ownWarp();
+            st.put("warp", ownWarp == null ? "" : ownWarp.key());
             st.put("app_update", Json.obj("configured", Update.configured(), "state", appUpdate,
                     "auto", Json.bool(settings, "app_update", true)));
             st.put("ads", adsState());

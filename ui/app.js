@@ -519,7 +519,7 @@ function renderHero() {
   if (awgOn) line = `${cc(awgSrv ? awgSrv.cc : "")}<b>${esc(S.awg.name)}</b><span>AmneziaWG</span>`;
   else if (on && S.current) line = `${cc(S.current.cc)}<b>${esc(S.current.name)}</b><span>${esc(S.current.protocol)}</span>`;
   else if (pickAwg) line = S.awg && !S.awg.client ? `<span>${t("awg_need_client")}</span><button type="button" class="btn btn-small" data-act="awg_download">${icon("download")}${t("awg_download")}</button>`
-    : S.awg && S.awg.count ? `<span>${t("awg_ready")}</span>` : `<span>${t("awg_none")}</span>`;
+    : S.awg && S.awg.count ? `<span>${t("awg_ready")}</span>` : `<span>${t("awg_none")}</span>${warpBtn()}`;
   else if (noVpn) line = `<span>${esc(accelRun ? t("novpn_on") : t("novpn_off"))}</span>`;
   else if (best) line = `<span>${t("best_server")}</span>${cc(best.cc)}<b>${esc(best.name)}</b>`;
   else line = `<span>${S.servers.length ? t("press_check") : t("add_sub_hint")}</span>`;
@@ -588,14 +588,14 @@ const METHODS = ["auto", "server", "awg", "off"];
 function methodRows(method) {
   const cur = S.connected && S.current ? S.current : null;
   const last = S.servers.find(s => s.key === (S.settings.last_server_key || "")) || S.servers.find(s => s.key === S.best);
-  const awgName = S.awg && S.awg.count ? (S.awg.name || t("m_awg_ready")) : t("m_awg_none");
+  const awgName = S.awg && S.awg.count ? (S.awg.name || t("m_awg_ready")) : t("m_awg_warp");
   const subs = {
     auto: t("m_auto_sub"),
     server: cur && method === "server" ? cur.name : last ? last.name : t("m_server_none"),
     awg: S.awg && S.awg.count && !S.awg.client ? t("awg_need_client") : awgName,
     off: S.dpi && S.dpi.supported ? t("m_off_sub") : t("dpi_st_win"),
   };
-  const empty = { awg: !(S.awg && S.awg.count), server: !S.servers.some(s => s.supported && s.kind !== "awg"), auto: false, off: false };
+  const empty = { awg: false, server: !S.servers.some(s => s.supported && s.kind !== "awg"), auto: false, off: false };
   return METHODS.map(id => {
     const sel = id === method;
     return `<button type="button" class="m-opt ${sel ? "sel" : ""} ${empty[id] && !sel ? "m-empty" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}" title="${esc(subs[id])}">
@@ -2721,10 +2721,28 @@ function modalAddSub() {
   });
 }
 
+/* Кнопка «Создать бесплатный WARP» (свой WARP ещё не создан). */
+function warpBtn() {
+  if (S.awg && S.awg.warp) return "";
+  return `<button type="button" class="btn btn-small" data-act="warp_create">${icon("plus")}${t("warp_create")}</button>`;
+}
+
+/* AmneziaWG выбран, а конфигов нет: создать бесплатный WARP или вставить свой. */
+function modalAwgStart() {
+  openModal(`<h2>${t("awg_start_title")}</h2><p class="modal-text">${t("awg_start_text")}</p>
+    <p class="hint">${t("warp_note")}</p>
+    <div class="modal-actions modal-stack"><button class="btn btn-primary" data-act="warp_create">${icon("plus")}${t("warp_create")}</button>
+      <button class="btn" id="mOwn">${t("awg_paste_own")}</button>
+      <button class="btn btn-ghost" data-close>${t("cancel")}</button></div>`, m => {
+    m.querySelector("#mOwn").addEventListener("click", () => { closeModal(); modalAddServer(); });
+  });
+}
+
 function modalAddServer() {
   openModal(`<h2>${t("add_server_title")}</h2><p class="modal-text">${t("add_server_text")}</p>
     <div class="stack"><textarea class="input" id="mLinks" rows="6" spellcheck="false" placeholder="vless://…"></textarea>
-      <div class="modal-error" id="mErr" hidden></div></div>
+      <div class="modal-error" id="mErr" hidden></div>
+      ${S.awg && S.awg.warp ? "" : `<p class="hint">${t("warp_in_add")} <button type="button" class="link-btn" data-act="warp_create">${t("warp_create")}</button></p>`}</div>
     <div class="modal-actions"><button class="btn btn-ghost" data-close>${t("cancel")}</button><button class="btn btn-primary" id="mOk">${t("add")}</button></div>`, m => {
     m.querySelector("#mOk").addEventListener("click", async () => {
       const text = $("#mLinks").value.trim();
@@ -2783,6 +2801,7 @@ function serverMenu(anchor, key) {
     const r = await act("awg_conf", { key });
     if (r.ok) copy(r.result, t("awg_conf_copied"));
   } });
+  if (S.awg && S.awg.warp === key) items.push({ icon: "refresh", label: t("warp_recreate"), run: () => act("warp_create") });
   if (s.has_link) items.push({ icon: "copy", label: t("m_copy_link"), run: async () => {
     const r = await act("server_link", { key });
     if (r.ok) copy(r.result, t("link_copied"));
@@ -2931,6 +2950,7 @@ const ACTIONS = {
   method: el => {
     const m = el.dataset.method;
     if (!m || m === S.method) return;
+    if (m === "awg" && !(S.awg && S.awg.count)) return modalAwgStart();
     S.method = m;
     renderHero();
     act("method", { method: m }).then(() => scheduleRefresh(50));
@@ -3132,6 +3152,7 @@ const ACTIONS = {
   cert_ack: () => act("cert_ack").then(r => r.ok && scheduleRefresh(50)),
   open_folder: () => act("open_folder"),
   awg_download: () => act("awg_download").then(r => r.ok && toast(t("awg_after_install"), "info", 8000)),
+  warp_create: () => { closeModal(); act("warp_create").then(() => scheduleRefresh(50)); },
   run_check: () => { checkReport = null; act("run_check").then(() => renderCheckBox()); },
   copy_check: () => checkReport && copy(checkReport.text, t("report_copied")),
   show_report: () => checkReport && checkReport.file && act("show_report", { name: checkReport.file }),

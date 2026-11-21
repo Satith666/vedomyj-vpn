@@ -103,6 +103,30 @@ public class Dump {
             for (Services.Service sv : Services.ALL) l.add(Json.arr(sv.name, new ArrayList<Object>(sv.domains), sv.russian));
             out.println(Json.canonical(Json.arr(l, new ArrayList<Object>(Services.YOUTUBE_DOMAINS), new ArrayList<Object>(Services.DISCORD_DOMAINS))));
         }
+        if (mode.equals("warp")) {
+            byte[] seed = new byte[32];
+            for (int i = 0; i < 32; i++) seed[i] = (byte) i;
+            out.println(Json.canonical(Json.arr((Object[]) Warp.keypair(seed))));
+            byte[] d1 = new byte[8], k1 = new byte[32], d2 = new byte[8];
+            for (int i = 0; i < 8; i++) { d1[i] = (byte) i; d2[i] = (byte) (200 + i); }
+            for (int i = 0; i < 32; i++) k1[i] = (byte) (100 + i);
+            out.println(Warp.quicI1("vk.com", d1, k1));
+            out.println(Warp.quicI1("www.google.com", d2, new byte[32]));
+            out.println(Warp.dnsI1("yandex.ru", 100));
+            out.println(Warp.stunI1(16));
+            out.println(Warp.sipI1("www.google.com", 1, 2));
+            Map<String, Object> acct = Json.obj("private_key", Warp.keypair(seed)[0], "peer", Warp.PEER_KEY,
+                    "v4", "172.16.0.2", "v6", "2606:4700:110:8a36::1");
+            Map<String, Object> p1 = Json.obj("endpoint", "162.159.192.1:2408", "jc", 5, "jmin", 20, "jmax", 90, "i1", Warp.DNS_YANDEX_I1);
+            Map<String, Object> p2 = Json.obj("endpoint", "188.114.99.1:1701", "jc", 7, "jmin", 11, "jmax", 33, "i1", Warp.stunI1(20));
+            String conf = Warp.buildConf(acct, p1);
+            out.print(conf);
+            String v = Warp.variant(conf, p2);
+            out.print(v);
+            Map<String, Object> cp = Warp.currentParams(v);
+            out.println(cp.get("endpoint") + "|" + cp.get("jc") + "|" + cp.get("jmin") + "|" + cp.get("jmax") + "|" + cp.get("i1"));
+            out.println(Json.canonical(Json.arr(Warp.isWarp(conf), Warp.isWarp(conf.replace(Warp.PEER_KEY, "x")))));
+        }
         if (mode.equals("vpslinks")) {
             out.println(Json.canonical(Vps.makeLinks("203.0.113.10", "11111111-2222-3333-4444-555555555555|" +
                 "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcde|0123abcd|a1b2c3d4e5f6", "Мой сервер")));

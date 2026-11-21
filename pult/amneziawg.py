@@ -15,8 +15,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 
+from . import links, warp
 from .links import Server
 
 IS_WINDOWS = sys.platform == "win32"
@@ -144,7 +146,21 @@ class AwgMixin:
             self.disconnect(quiet=True, keep_filter=False)  # весь трафик возьмёт AmneziaWG — ядро Xray не нужно
         self.disconnect_awg(quiet=True, restore_filter=False)  # прошлый туннель (и оставшийся от прошлого запуска) — выключить
         self.progress(f"Включаю AmneziaWG: {srv.name}")
-        self.awg.write_conf(srv.awg_conf)
+        if warp.is_warp(srv.awg_conf):
+            self._connect_warp(srv)
+        else:
+            self._awg_up(srv.awg_conf)
+        self.awg_active = srv
+        self.settings["last_awg_key"] = srv.key
+        self.resolve("awg_down")
+        self.resolve("warp_dead")
+        self.save()
+        self.log(f"Подключено через AmneziaWG: {srv.name}. Весь трафик компьютера идёт через него.")
+        self.notify("status")
+
+    def _awg_up(self, conf: str) -> None:
+        """Записать конфиг и включить туннель клиентом AmneziaWG (через помощника с правами администратора)."""
+        self.awg.write_conf(conf)
         r = self.admin.run("awg", ["/installtunnelservice", self.awg.conf_path])
         if not r.get("ok"):
             self.awg.wipe()
@@ -157,11 +173,212 @@ class AwgMixin:
             self.admin.run("awg", ["/uninstalltunnelservice", TUNNEL])
             self.awg.wipe()
             raise RuntimeError("Туннель AmneziaWG не запустился. Проверь конфиг или открой AmneziaWG и посмотри журнал.")
-        self.awg_active = srv
+
+    def _awg_down(self) -> None:
+        """Выключить туннель (между попытками WARP): без записей в журнал и без «Без рекламы»."""
+        try:
+            self.admin.run("awg", ["/uninstalltunnelservice", TUNNEL])
+        except Exception as exc:
+            self.log(f"AmneziaWG: {exc}")
+        deadline = time.time() + 6
+        while time.time() < deadline and self.awg.running():
+            time.sleep(0.3)
+        self.awg.wipe()
+
+    # ---------- бесплатный WARP ----------
+
+    WARP_VERIFY_DELAYS = (1.0, 2.5, 3.5)  # когда проверять, что трафик идёт через WARP (всего ~7 с)
+    WARP_HEALTH_EVERY = 60
+    WARP_HEALTH_RECHECK = 10.0
+    WARP_NETS_MAX = 30
+
+    def _warp_check(self) -> bool:
+        return warp.trace_ok()
+
+    def _warp_verify(self) -> bool:
+        for delay in self.WARP_VERIFY_DELAYS:
+            if self.conn_stop.is_set():
+                break
+            time.sleep(delay)
+            if self._warp_check():
+                return True
+        return False
+
+    def _warp_net(self) -> str:
+        """Ключ сети для памяти обманок (хеш, как у памяти способов). До включения туннеля — иначе
+        провайдером оказался бы Cloudflare."""
+        if not self.settings.get("net_memory", True):
+            return ""
+        try:
+            return self._net_id(cached_only=True) or self._net_id()
+        except Exception:
+            return ""
+
+    def _warp_candidates(self, srv: Server, net: str, skip: str = ""):
+        """Варианты конфига по очереди: рабочий в этой сети раньше → как в конфиге → наборы обманок."""
+        saved = (self.settings.get("warp_nets") or {}).get(net) if net else None
+        if saved:
+            yield warp.variant(srv.awg_conf, saved)
+        yield srv.awg_conf
+        for i in range(len(warp.PRESETS)):
+            yield warp.variant(srv.awg_conf, warp.preset(i))
+
+    @staticmethod
+    def _warp_sig(conf: str) -> str:
+        p = warp.current_params(conf)
+        return f"{p.get('endpoint')}|{p.get('i1')}" if p else conf
+
+    def _connect_warp(self, srv: Server, skip: str = "") -> None:
+        """Включить WARP: каждый вариант обманок — туннель и проверка, что Cloudflare видит трафик через WARP.
+        Не прошло — следующий вариант. Рабочий запоминается для этой сети."""
+        net = self._warp_net()
+        seen = {skip} if skip else set()
+        total = 2 + len(warp.PRESETS)
+        tried = 0
+        for conf in self._warp_candidates(srv, net):
+            sig = self._warp_sig(conf)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            tried += 1
+            self.check_stop()
+            self.progress(f"WARP: пробую обманки, вариант {tried} из {total}")
+            self._awg_up(conf)
+            if self._warp_verify():
+                self._warp_conf = conf
+                p = warp.current_params(conf)
+                if net and p:
+                    nets = dict(self.settings.get("warp_nets") or {})
+                    nets.pop(net, None)
+                    nets[net] = {k: p[k] for k in ("endpoint", "jc", "jmin", "jmax", "i1")}
+                    while len(nets) > self.WARP_NETS_MAX:
+                        nets.pop(next(iter(nets)))
+                    self.settings["warp_nets"] = nets
+                if tried > 1:
+                    self.log(f"WARP работает с обманками «{p.get('label', '') if p else ''}» (вариант {tried}).")
+                return
+            self._awg_down()
+        raise RuntimeError(f"WARP не пробился в этой сети: проверил {tried} вариантов обманок. Провайдер блокирует "
+                           "WARP — попробуй позже, в другой сети или используй обычный VPN-сервер.")
+
+    def _warp_bases(self) -> list[str]:
+        return [f"https://{h}" for h in warp.API_HOSTS]
+
+    def _warp_register(self, port: int | None, base: str) -> dict:
+        return warp.register(warp.opener_for(port), base)
+
+    def create_warp(self) -> Server:
+        """Зарегистрировать бесплатный WARP и сохранить его конфиг среди своих серверов (прошлый свой WARP
+        заменяется). Если VPN включён — регистрация идёт через него: напрямую в России её часто блокируют."""
+        routes: list = []
+        if self.connected and self.ports.get("health"):
+            routes.append(self.ports["health"])
+        routes.append(None)
+        acct, kinds = None, []
+        for port in routes:
+            for base in self._warp_bases():
+                self.check_stop()
+                self.progress("Регистрирую WARP у Cloudflare" + (" через VPN" if port else ""))
+                try:
+                    acct = self._warp_register(port, base)
+                    break
+                except warp.WarpError as exc:
+                    kinds.append(exc.kind)
+                    if port:
+                        self.log(f"WARP: регистрация через VPN не удалась ({exc}).")
+                    else:
+                        self.log(f"WARP: регистрация напрямую не удалась ({exc}).")
+            if acct:
+                break
+        if not acct:
+            if "limit" in kinds:
+                raise RuntimeError("Cloudflare сейчас не даёт создать WARP: слишком много регистраций с твоего "
+                                   "адреса. Попробуй через полчаса.")
+            if routes[0]:
+                raise RuntimeError("Не получилось связаться с Cloudflare ни через VPN, ни напрямую. Попробуй позже.")
+            raise RuntimeError("Не получилось связаться с Cloudflare: в твоей сети регистрацию WARP, похоже, "
+                               "блокируют. Включи на минуту любой VPN-сервер и нажми снова — регистрация пройдёт "
+                               "через него. Или вставь готовый конфиг WARP через «+».")
+        net = self._warp_net()
+        saved = (self.settings.get("warp_nets") or {}).get(net) if net else None
+        conf = warp.build_conf(acct, saved or warp.preset(0))
+        link = links.awg_link(conf, warp.NAME)
+        old = [x for x in self.servers if x.sub_id == "manual" and x.engine == "awg" and x.name == warp.NAME]
+        if self.awg_active and self.awg_active in old:
+            self.disconnect_awg(quiet=True)
+        drop = {x.link for x in old}
+        saved_links = [x for x in self.settings.get("manual_links", []) if x.strip() not in drop]
+        saved_links.append(link)
+        self.settings["manual_links"] = saved_links
+        self._rebuild_servers()
+        srv = next((x for x in self.servers if x.link == link), None)
+        if not srv:
+            raise RuntimeError("Конфиг WARP не сохранился.")
         self.settings["last_awg_key"] = srv.key
-        self.resolve("awg_down")
         self.save()
-        self.log(f"Подключено через AmneziaWG: {srv.name}. Весь трафик компьютера идёт через него.")
+        self.log("Создан бесплатный WARP (ключи созданы на этом компьютере).")
+        self.notify("servers")
+        return srv
+
+    def warp_start(self) -> None:
+        """Кнопка «Создать бесплатный WARP»: создать конфиг, выбрать способ AmneziaWG и, если клиент
+        AmneziaWG установлен, сразу включить."""
+        srv = self.create_warp()
+        if self.method() != "awg":
+            self.set_method("awg")
+        if not self.awg.client and not self.awg.refresh():
+            self.notify("info", text="WARP создан. Чтобы включить его, установи программу AmneziaWG и нажми большую кнопку.")
+            return
+        self.connect(srv)
+
+    def awg_conf_text(self, srv: Server) -> str:
+        """Конфиг для ручного переноса: у работающего WARP — с обманками, которые сейчас пробивают блокировку."""
+        if self.awg_active is srv and getattr(self, "_warp_conf", ""):
+            return self._warp_conf
+        return srv.awg_conf
+
+    def _warp_health(self) -> None:
+        """Раз в минуту, пока работает WARP: идёт ли трафик. Два промаха подряд — подобрать другие обманки."""
+        srv = self.awg_active
+        if not srv or not warp.is_warp(srv.awg_conf) or getattr(self, "_warp_checking", False) or self.is_busy():
+            return
+        self._warp_checking = True
+
+        def job():
+            try:
+                if self._warp_check():
+                    return
+                time.sleep(self.WARP_HEALTH_RECHECK)
+                if self.awg_active is not srv or self._warp_check() or self.is_busy():
+                    return
+                self.log("WARP перестал пропускать трафик — подбираю другие обманки.")
+                self.run_task("Чиню WARP", self._warp_repair, srv, lane="conn")
+            finally:
+                self._warp_checking = False
+        threading.Thread(target=job, daemon=True).start()
+
+    def _warp_repair(self, srv: Server) -> None:
+        if self.awg_active is not srv:
+            return
+        self._lane.why = "WARP перестал пропускать трафик"
+        skip = self._warp_sig(getattr(self, "_warp_conf", "") or srv.awg_conf)
+        self._warp_switching = True
+        try:
+            self._awg_down()
+            try:
+                self._connect_warp(srv, skip=skip)
+            except Exception as exc:
+                self.awg_active = None
+                self._warp_conf = ""
+                self._journal("fail", srv, str(exc))
+                self.problem("warp_dead", "WARP не пропускает трафик", str(exc), where="Способ → AmneziaWG",
+                             fix="Попробуй позже, в другой сети или выбери обычный VPN-сервер.")
+                self.notify("status")
+                return
+        finally:
+            self._warp_switching = False
+        self.save()
+        self._journal("reconnect", srv)
         self.notify("status")
 
     def disconnect_awg(self, quiet: bool = False, restore_filter: bool = True) -> None:
@@ -172,6 +389,7 @@ class AwgMixin:
                 self.log(f"AmneziaWG: {exc}")
         self.awg.wipe()
         was = self.awg_active
+        self._warp_conf = ""
         if was and not quiet:
             self._journal("disconnect", was)
         self.awg_active = None
@@ -187,7 +405,7 @@ class AwgMixin:
 
     def awg_watch(self) -> None:
         """Из монитора: туннель выключили в самом клиенте или он упал — сказать об этом."""
-        if self.awg_active and not self.awg.running():
+        if self.awg_active and not getattr(self, "_warp_switching", False) and not self.awg.running():
             name = self.awg_active.name
             self.awg_active = None
             self.awg.wipe()
@@ -209,6 +427,7 @@ class AwgMixin:
     def awg_state(self) -> dict:
         if not self.awg.client and IS_WINDOWS:
             self.awg.refresh()  # клиент могли установить, пока программа открыта (проверка — пара вызовов isfile)
+        own = [x for x in self.awg_servers() if x.name == warp.NAME and x.sub_id == "manual"]
         return {"client": bool(self.awg.client), "active": self.awg_active.key if self.awg_active else "",
                 "name": self.awg_active.name if self.awg_active else "", "count": len(self.awg_servers()),
-                "download": DOWNLOAD_URL}
+                "warp": own[0].key if own else "", "download": DOWNLOAD_URL}

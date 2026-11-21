@@ -58,6 +58,15 @@ const out = process.argv[3];
   if ((await page.getAttribute('[data-act="method"][data-v="server"]', "aria-checked")) !== "true") throw new Error("method server not selected");
   await page.click('[data-act="method"][data-v="auto"]');
   await page.waitForTimeout(300);
+  // AmneziaWG без конфига: не ошибка, а лист «создать бесплатный WARP или вставить свой»
+  await page.click('[data-act="method"][data-v="awg"]');
+  await page.waitForTimeout(400);
+  const warpTxt = await page.$eval("#sheet", (e) => e.textContent.replace(/\s+/g, " "));
+  if (!(await page.$('#sheet [data-act="warp-create"]')) || !warpTxt.includes("WARP")) throw new Error("warp sheet: " + warpTxt);
+  await shot("05b-warp");
+  await page.evaluate(() => window.pultBack());
+  await page.waitForTimeout(300);
+  if ((await page.getAttribute('[data-act="method"][data-v="auto"]', "aria-checked")) !== "true") throw new Error("awg without config changed the mode");
   if (!(await page.$(".route .rt-node"))) throw new Error("route missing on home");
   await page.click('[data-act="flip"][data-k="dns_encrypted"]');
   await waitIdle();

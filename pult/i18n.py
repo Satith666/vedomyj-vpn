@@ -1249,6 +1249,42 @@ RULES: list[tuple[str, str]] = [
     (r"(zapret|ByeDPI) не помог\b", r"\1 didn't help"),
     (r"Проверка программы: ошибок (\d+), предупреждений (\d+)\.", r"Program check: \1 errors, \2 warnings."),
     (r"Проверка программы", "Program check"),
+    # --- бесплатный WARP ---
+    (r"^Регистрирую WARP у Cloudflare через VPN$", "Registering WARP with Cloudflare through the VPN"),
+    (r"^Регистрирую WARP у Cloudflare$", "Registering WARP with Cloudflare"),
+    (r"WARP: регистрация через VPN не удалась \((.*)\)\.", r"WARP: registration through the VPN failed (\1)."),
+    (r"WARP: регистрация напрямую не удалась \((.*)\)\.", r"WARP: direct registration failed (\1)."),
+    (r"Cloudflare отказал \(код (\d+)\)", r"Cloudflare refused (code \1)"),
+    (r"Cloudflare ответил ошибкой (\d+)", r"Cloudflare returned error \1"),
+    (r"непонятный ответ Cloudflare", "unreadable Cloudflare response"),
+    (r"в ответе Cloudflare нет ключей", "the Cloudflare response has no keys"),
+    (r"Cloudflare сейчас не даёт создать WARP: слишком много регистраций с твоего адреса\. Попробуй через полчаса\.",
+     "Cloudflare will not create a WARP right now: too many registrations from your address. Try again in half an hour."),
+    (r"Не получилось связаться с Cloudflare ни через VPN, ни напрямую\. Попробуй позже\.",
+     "Could not reach Cloudflare either through the VPN or directly. Try again later."),
+    (r"Не получилось связаться с Cloudflare: в твоей сети регистрацию WARP, похоже, блокируют\. Включи на минуту любой "
+     r"VPN-сервер и нажми снова — регистрация пройдёт через него\. Или вставь готовый конфиг WARP через «\+»\.",
+     "Could not reach Cloudflare: WARP registration seems to be blocked in your network. Turn on any VPN server for a "
+     "minute and press again — registration will go through it. Or paste a ready WARP config with “+”."),
+    (r"Конфиг WARP не сохранился\.", "The WARP config was not saved."),
+    (r"Создан бесплатный WARP \(ключи созданы на этом компьютере\)\.", "A free WARP was created (the keys were made on this computer)."),
+    (r"WARP создан\. Чтобы включить его, установи программу AmneziaWG и нажми большую кнопку\.",
+     "WARP is created. To turn it on, install the AmneziaWG app and press the big button."),
+    (r"WARP: пробую обманки, вариант (\d+) из (\d+)", r"WARP: trying decoys, variant \1 of \2"),
+    (r"WARP работает с обманками «(.*)» \(вариант (\d+)\)\.", r"WARP works with the “\1” decoys (variant \2)."),
+    (r"WARP не пробился в этой сети: проверил (\d+) вариантов обманок\. Провайдер блокирует WARP — попробуй позже, "
+     r"в другой сети или используй обычный VPN-сервер\.",
+     r"WARP did not get through in this network: \1 decoy variants tried. The provider blocks WARP — try later, in "
+     r"another network, or use a regular VPN server."),
+    (r"WARP перестал пропускать трафик — подбираю другие обманки\.", "WARP stopped passing traffic — picking other decoys."),
+    (r"WARP перестал пропускать трафик", "WARP stopped passing traffic"),
+    (r"WARP не пропускает трафик", "WARP does not pass traffic"),
+    (r"Попробуй позже, в другой сети или выбери обычный VPN-сервер\.", "Try later, in another network, or choose a regular VPN server."),
+    (r"^Чиню WARP$", "Fixing WARP"),
+    (r"^Создаю бесплатный WARP$", "Creating a free WARP"),
+    (r"Способ → AmneziaWG", "Mode → AmneziaWG"),
+    (r"WARP \(бесплатный\)", "WARP (free)"),
+    (r"QUIC: неожиданная длина", "QUIC: unexpected length"),
 ]
 
 # Длинные фразы заменяем раньше коротких: иначе «Автонастройка» испортит предложение, где это слово — часть.

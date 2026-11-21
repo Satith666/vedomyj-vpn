@@ -99,6 +99,13 @@ public final class Api {
                 return true;
             case "awg_info":
                 return e.awgInfo(Json.str(a, "key"));
+            case "warp_create":
+                if (!e.warpCreateTask()) {
+                    throw new Engine.UserError(Text.t("Подожди: сейчас выполняется другая задача.", "Wait: another task is running."));
+                }
+                return true;
+            case "warp_next":
+                return e.warpNext(Json.str(a, "key"));
             default:
                 return UNKNOWN;
         }

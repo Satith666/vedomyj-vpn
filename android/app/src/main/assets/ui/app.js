@@ -82,6 +82,15 @@
     else if (m.id && m.id !== lastMsg) { lastMsg = m.id; if (m.text) toast(m.text, m.kind); }
     $("#problems").hidden = !(st.problems && st.problems.length);
     if (first) render(); else update();
+    warpWatch();
+  }
+
+  // «Создать бесплатный WARP»: регистрация идёт в фоне — когда готово, сразу показать, как передать его в AmneziaWG
+  let warpWait = null;
+  function warpWatch() {
+    if (warpWait === null || !S) return;
+    if (S.warp && S.warp !== warpWait) { warpWait = null; awgSheet(S.warp); }
+    else if (!S.task || S.task.kind !== "update") warpWait = null; // не получилось — ошибку уже показали
   }
 
   let themeApplied = "";
@@ -218,10 +227,10 @@
     const subs = {
       auto: t("m_auto_sub"),
       server: sel ? sel.name : S.server && S.status === "on" ? S.server.name : t("m_server_none"),
-      awg: E.awg ? t("m_awg_ready") : t("m_awg_none"),
+      awg: E.awg ? t("m_awg_ready") : t("m_awg_warp"),
       off: t("m_off_sub"),
     };
-    const empty = { awg: !E.awg, server: !(S.servers || []).some((x) => x.usable), auto: false, off: false };
+    const empty = { awg: false, server: !(S.servers || []).some((x) => x.usable), auto: false, off: false };
     return `<div class="card-head"><h2>${esc(t("method_title"))}</h2></div><div class="methods" role="radiogroup">${METHODS.map((id) =>
       `<button class="m-opt${id === m ? " sel" : ""}${empty[id] && id !== m ? " m-empty" : ""}" role="radio" aria-checked="${id === m}" data-act="method" data-v="${id}">
         <span class="m-dot" aria-hidden="true"></span><span class="m-text"><b>${esc(t("m_" + id))}</b><small>${esc(subs[id])}</small></span></button>`).join("")}</div>`;
@@ -264,6 +273,18 @@
         <button class="row" data-act="awg-open">${icon("send")}<span class="main"><span class="title"><span>${esc(t("awg_open"))}</span></span></span></button>
         <button class="row" data-act="awg-copy">${icon("copy")}<span class="main"><span class="title"><span>${esc(t("awg_copy"))}</span></span>
           <span class="meta">${esc(t("awg_copy_note"))}</span></span></button>
+        ${awgCur.warp ? `<button class="row" data-act="warp-next">${icon("refresh")}<span class="main"><span class="title"><span>${esc(t("warp_next"))}</span></span>
+          <span class="meta">${esc(t("warp_next_note"))}</span></span></button>` : ""}
+      </div>`);
+  }
+
+  // AmneziaWG выбран, а конфигов нет: создать бесплатный WARP или вставить свой
+  function warpStartSheet() {
+    openSheet(`<h2>${esc(t("awg_start_title"))}</h2><p class="hint">${esc(t("awg_start_text"))}</p>
+      <p class="hint">${esc(t("warp_note"))}</p>
+      <div class="menu">
+        <button class="row" data-act="warp-create">${icon("plus")}<span class="main"><span class="title"><span>${esc(t("warp_create"))}</span></span></span></button>
+        <button class="row" data-act="warp-own">${icon("file")}<span class="main"><span class="title"><span>${esc(t("awg_paste_own"))}</span></span></span></button>
       </div>`);
   }
 
@@ -1192,6 +1213,7 @@
     method(el) {
       const m = el.dataset.v;
       if (m === S.method) return;
+      if (m === "awg" && !(((S.engine || {}).counts || {}).awg)) { warpStartSheet(); return; }
       if (act("method", { method: m }) === undefined) return;
       if (m === "off") {
         if (S.status === "on") act("disconnect");
@@ -1215,6 +1237,21 @@
       else if (v !== "auto" && !(((S.engine || {}).counts || {})[v])) toast(t("eng_none"), "info");
     },
     awg(el) { awgSheet(el.dataset.key); },
+    "warp-create"() {
+      closeSheet();
+      warpWait = S.warp || "";
+      if (act("warp_create") === undefined) warpWait = null;
+      else toast(t("warp_creating"), "info");
+      poll();
+    },
+    "warp-own"() { closeSheet(); openAdd(""); },
+    "warp-next"() {
+      if (!awgCur) return;
+      let r;
+      try { r = call("warp_next", { key: awgCur.key }); } catch (e) { toast(e.message, "error"); return; }
+      awgSheet(r.key);
+      toast(t("warp_next_done", { l: r.label }), "ok");
+    },
     "awg-save"() {
       if (awgCur) act("save_file", { text: awgCur.conf + "\n", name: awgCur.file, mime: "application/octet-stream" });
     },

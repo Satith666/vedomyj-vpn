@@ -16,6 +16,7 @@ import http.server
 import json
 import os
 import re
+import secrets
 import select
 import shutil
 import socket
@@ -4777,6 +4778,219 @@ def t_engines():
             e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
         HEALTH_PORT.clear()
+
+
+def _quic_parse_sni(chain: str) -> tuple[int, str]:
+    """Собрать пакет из цепочки CPS (случайные части — нули), снять защиту заголовка, расшифровать и найти имя сайта."""
+    from pult import warp
+    pkt = b""
+    for m in re.finditer(r"<(b|r) ([^>]+)>", chain):
+        pkt += bytes.fromhex(m.group(2)[2:]) if m.group(1) == "b" else bytes(int(m.group(2)))
+    dlen = pkt[5]
+    dcid = pkt[6:6 + dlen]
+    hdr_len = 6 + dlen + 2 + 2 + 1  # SCID 0, токен 0, длина (2 байта), номер пакета (1 байт)
+    key, iv, hp = warp.quic_keys(dcid)
+    mask = warp.aes128_block(hp, pkt[hdr_len - 1 + 4:hdr_len - 1 + 20])
+    check(pkt[0] ^ (mask[0] & 0x0F) == 0xC0 and pkt[hdr_len - 1] ^ mask[1] == 0, "заголовок QUIC Initial")
+    ct = pkt[hdr_len:-16]
+    stream = b"".join(warp.aes128_block(key, iv + (2 + i).to_bytes(4, "big")) for i in range((len(ct) + 15) // 16))
+    pt = bytes(a ^ b for a, b in zip(ct, stream))
+    check(pt[0] == 6 and pt[1] == 0, "кадр CRYPTO")
+    hl = ((pt[2] & 0x3F) << 8) | pt[3]
+    hello = pt[4:4 + hl]
+    check(hello[0] == 1 and int.from_bytes(hello[1:4], "big") == len(hello) - 4, "ClientHello: длина")
+    i = 4 + 2 + 32
+    i += 1 + hello[i]  # session id
+    i += 2 + int.from_bytes(hello[i:i + 2], "big")  # шифры
+    i += 1 + hello[i]  # сжатие
+    total = int.from_bytes(hello[i:i + 2], "big")
+    i += 2
+    check(i + total == len(hello), "ClientHello: длина расширений")
+    sni = ""
+    while i < len(hello):
+        kind, ln = int.from_bytes(hello[i:i + 2], "big"), int.from_bytes(hello[i + 2:i + 4], "big")
+        if kind == 0:
+            sni = hello[i + 9:i + 4 + ln].decode()
+        i += 4 + ln
+    check(i == len(hello), "ClientHello: расширения не выходят за край")
+    return len(pkt), sni
+
+
+@case("WARP: ключи и шифр по официальным тестам, обманки, регистрация, подбор обманок, починка")
+def t_warp():
+    from pult import admin_helper, amneziawg, warp
+    # X25519 — RFC 7748 (5.2 и 6.1), AES-128 — FIPS-197, ключи QUIC — RFC 9001 (приложение A)
+    check(warp.x25519(bytes.fromhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4"),
+                      bytes.fromhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c")).hex()
+          == "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552", "X25519: RFC 7748, 5.2")
+    a = bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+    b = bytes.fromhex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
+    nine = (9).to_bytes(32, "little")
+    check(warp.x25519(a, nine).hex() == "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a", "X25519: ключ Алисы")
+    check(warp.x25519(a, warp.x25519(b, nine)).hex() == "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+          "X25519: общий секрет")
+    priv, pub = warp.keypair()
+    check(len(base64.b64decode(priv)) == 32 and warp.public_of(priv) == pub, "пара ключей")
+    check(warp.aes128_block(bytes(range(16)), bytes.fromhex("00112233445566778899aabbccddeeff")).hex()
+          == "69c4e0d86a7b0430d8cdb78070b4c55a", "AES-128: FIPS-197")
+    k, iv, hp = warp.quic_keys(bytes.fromhex("8394c8f03e515708"))
+    check((k.hex(), iv.hex(), hp.hex()) == ("1f369613dd76d5467730efcbe3b1a22d", "fa044b2f42a3fd3b46fb255c",
+                                            "9f50449e04a0e810283a1e9933adedd2"), "ключи QUIC: RFC 9001")
+    check(warp.aes128_block(hp, bytes.fromhex("d1b1c98dd7689fb8ec11d242b123dc9b"))[:5].hex() == "437b9aec36",
+          "маска заголовка QUIC: RFC 9001")
+    # пакеты-обманки: только теги формата AmneziaWG, по размеру влезают в пакет
+    cps = re.compile(r"(<b 0x[0-9a-f]+>|<r \d+>|<rc \d+>|<rd \d+>)+")
+    for i in range(len(warp.PRESETS)):
+        p = warp.preset(i)
+        check(cps.fullmatch(p["i1"]), f"набор {i}: I1 в формате CPS")
+        size = sum(len(x) // 2 - 1 for x in re.findall(r"<b 0x([0-9a-f]+)>", p["i1"])) + \
+            sum(int(x) for x in re.findall(r"<r[cd]? (\d+)>", p["i1"]))
+        check(20 < size <= 1280 and 4 <= p["jc"] <= 8 and 0 < p["jmin"] < p["jmax"] < 1280, f"набор {i}: размеры")
+    n, sni = _quic_parse_sni(warp.quic_i1("vk.com", secrets.token_bytes(8), secrets.token_bytes(32)))
+    check(n == warp.QUIC_SIZE and sni == "vk.com", f"QUIC: {n} байт, сайт {sni!r}")
+    # конфиг WARP
+    acct = {"private_key": priv, "peer": warp.PEER_KEY, "v4": "172.16.0.2", "v6": "2606:4700:110:8a36::1"}
+    conf = warp.build_conf(acct, warp.preset(0))
+    srv = links.parse_awg(links.awg_link(conf, warp.NAME))
+    check(srv.name == warp.NAME and srv.engine == "awg" and not srv.note and warp.is_warp(conf), "конфиг разбирается")
+    check("S1 = 0" in conf and "H4 = 4" in conf and "MTU = 1280" in conf and "::/0" in conf, "маскировка только та, что понимает Cloudflare")
+    v = warp.variant(conf, warp.preset(2))
+    check(warp.current_params(v)["endpoint"] == warp.PRESETS[2][0] and f"PrivateKey = {priv}" in v
+          and v.count("I1 =") == 1 and v.count("Jc =") == 1, "другой набор: адрес и обманки сменились, ключ тот же")
+    check(not warp.is_warp(AWG_CONF), "обычный AmneziaWG — не WARP")
+
+    # регистрация у «Cloudflare» (имитация)
+    seen: list[dict] = []
+    mode = {"code": 200}
+
+    class Api(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def _do(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            seen.append({"method": self.command, "path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
+                         "body": json.loads(body or b"{}")})
+            code = mode["code"]
+            out = json.dumps({"id": "dev1", "token": "tok-SECRET-123", "account": {"warp_enabled": False},
+                              "config": {"peers": [{"public_key": warp.PEER_KEY}],
+                                         "interface": {"addresses": {"v4": "172.16.0.2", "v6": "2606:4700:110:8a36::1"}}}}
+                             if self.command == "POST" else {"warp_enabled": True}).encode()
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        do_POST = do_PATCH = _do
+
+    api = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Api)
+    threading.Thread(target=api.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{api.server_address[1]}"
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    try:
+        got = warp.register(warp.opener_for(None), base)
+        reg, patch = seen[0], seen[1]
+        check(reg["method"] == "POST" and reg["path"] == f"/{warp.API_VERSION}/reg"
+              and reg["headers"].get("cf-client-version") == warp.CLIENT_VERSION
+              and reg["headers"].get("user-agent") == warp.USER_AGENT, f"запрос регистрации: {reg}")
+        check(reg["body"]["key"] == warp.public_of(got["private_key"]) and got["private_key"] not in json.dumps(reg["body"]),
+              "Cloudflare получает только открытый ключ")
+        check(patch["method"] == "PATCH" and patch["path"].endswith("/reg/dev1") and patch["body"] == {"warp_enabled": True}
+              and patch["headers"].get("authorization") == "Bearer tok-SECRET-123", "WARP включён на устройстве")
+        check(got["v4"] == "172.16.0.2" and got["peer"] == warp.PEER_KEY and "token" not in got, "метка доступа не хранится")
+        mode["code"] = 429
+        try:
+            warp.register(warp.opener_for(None), base)
+            check(False, "429 — ошибка")
+        except warp.WarpError as exc:
+            check(exc.kind == "limit", f"429 → limit: {exc.kind}")
+        try:
+            warp.register(warp.opener_for(None), "http://127.0.0.1:9")
+            check(False, "закрытый порт — ошибка")
+        except warp.WarpError as exc:
+            check(exc.kind == "blocked", f"нет связи → blocked: {exc.kind}")
+        mode["code"] = 200
+
+        # программа: создать WARP, включить (обманки перебираются, рабочие запоминаются для сети), починить
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.startup()
+        e._warp_bases = lambda: [base]
+        e._net_id = lambda cached_only=False: "net1"
+        e.WARP_VERIFY_DELAYS = (0, 0)
+        e.WARP_HEALTH_RECHECK = 0
+        helper = admin_helper.Helper("t", {}, 0, e.paths.data_dir)
+        tunnel = {"on": False, "conf": "", "calls": []}
+
+        def fake_exec(cmd, timeout):
+            tunnel["calls"].append(cmd[1])
+            if cmd[1] == "/installtunnelservice":
+                with open(cmd[2], encoding="utf-8") as f:
+                    tunnel["conf"] = f.read()
+                tunnel["on"] = True
+            else:
+                tunnel["on"] = False
+            import subprocess
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        helper._exec = fake_exec
+        helper.awg_exe = lambda: os.path.join(tmp, "AmneziaWG", "amneziawg.exe")
+        e.admin.run = lambda kind, args, timeout=40.0: helper.run(kind, args)
+        e.awg.client = helper.awg_exe()
+        e.awg.running = lambda: tunnel["on"]
+        srv = e.create_warp()
+        check(srv.name == warp.NAME and e.state()["awg"]["warp"] == srv.key and e.state()["awg"]["count"] == 1, "WARP создан")
+        answers = iter([False, False, False, False, True])
+        e._warp_check = lambda: next(answers, True)
+        e.connect(srv)
+        check(e.awg_active is srv and tunnel["on"], "WARP включён")
+        check(warp.current_params(tunnel["conf"])["endpoint"] == warp.PRESETS[1][0], "третий вариант обманок прошёл")
+        check(e.settings["warp_nets"]["net1"]["endpoint"] == warp.PRESETS[1][0], "рабочие обманки запомнены для сети")
+        check(e.awg_conf_text(srv) == tunnel["conf"], "«Скопировать конфиг» — с работающими обманками")
+        e.disconnect_awg()
+        check(not tunnel["on"] and not os.path.exists(e.awg.conf_path), "выключен, файл с ключом стёрт")
+        calls = len(tunnel["calls"])
+        e._warp_check = lambda: True
+        e.connect(srv)
+        check(tunnel["calls"][calls:] == ["/installtunnelservice"]
+              and warp.current_params(tunnel["conf"])["endpoint"] == warp.PRESETS[1][0], "в этой сети — сразу рабочие обманки")
+        # раз в минуту: WARP перестал пропускать трафик → другие обманки (запомненные пропускаются)
+        answers = iter([False, False, True])
+        e._warp_check = lambda: next(answers, True)
+        e._warp_health()
+        for _ in range(200):
+            if not getattr(e, "_warp_checking", False):
+                break
+            time.sleep(0.05)
+        wait_idle(e)
+        check(e.awg_active is srv and warp.current_params(tunnel["conf"])["endpoint"] != warp.PRESETS[1][0],
+              "починка: другой вариант")
+        check(e.journal.recent(1)[0]["kind"] == "reconnect", f"журнал: {e.journal.recent(1)[0]}")
+        e._warp_check = lambda: False
+        e._warp_repair(srv)
+        check(e.awg_active is None and not tunnel["on"] and any(p["key"] == "warp_dead" for p in e.problems_list()),
+              "ни один вариант не прошёл — честная ошибка")
+        # кнопка в окне: создаёт новый WARP вместо старого и сразу включает
+        e._warp_check = lambda: True
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        check(ui.dispatch("warp_create", {}) is True, "кнопка «Создать бесплатный WARP»")
+        wait_idle(e)
+        own = [x for x in e.servers if x.name == warp.NAME]
+        check(len(own) == 1 and own[0] is not srv and e.awg_active is own[0] and e.method() == "awg",
+              f"новый WARP вместо старого и включён: {[x.name for x in own]}")
+        text = "\n".join(e.logs) + json.dumps(e.journal.recent(100), ensure_ascii=False)
+        check("tok-SECRET-123" not in text and priv not in text and not re.search(r"PrivateKey", text),
+              "ключи и метка доступа не попадают в журналы")
+        e.disconnect_awg()
+    finally:
+        api.shutdown()
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------- запуск ----------

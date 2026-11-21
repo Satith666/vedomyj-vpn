@@ -30,7 +30,7 @@ sys.path.insert(0, APP_DIR)
 
 from pult import (APP_VERSION, apps, diagnostics, i18n, leaks, links, netprofile, netutil, secure,  # noqa: E402
                   services, settings as settingsmod, tray, tun, update, xray)
-from pult import admin_helper, amneziawg, singbox  # noqa: E402
+from pult import admin_helper, amneziawg, singbox, warp  # noqa: E402
 
 IS_WINDOWS = sys.platform == "win32"
 CI = "--ci" in sys.argv
@@ -433,6 +433,64 @@ def check_awg(paths: xray.Paths, live: bool) -> None:
             r.get("error", "")[:300])
 
 
+def check_warp(paths: xray.Paths, live: bool) -> None:
+    """Бесплатный WARP по-настоящему: регистрация у Cloudflare и каждый набор обманок через клиент AmneziaWG.
+    Туннель — только до 1.1.1.1 (не весь интернет: без «аварийного выключателя» клиента, чтобы не оборвать
+    связь самой проверки); Cloudflare отвечает «warp=on», если запрос пришёл через WARP."""
+    acct, last = None, ""
+    for host in warp.API_HOSTS:
+        try:
+            acct = warp.register(warp.opener_for(None), f"https://{host}")
+            break
+        except warp.WarpError as exc:
+            last = f"{exc.kind}: {exc}"
+    if not acct:
+        if CI:
+            add("warn", T("WARP: Cloudflare не дал зарегистрироваться (из облака так бывает)",
+                          "WARP: Cloudflare refused registration (happens from clouds)"), last[:200])
+        else:
+            add("info", T("WARP: напрямую регистрация не прошла — программа зарегистрирует WARP через включённый VPN",
+                          "WARP: direct registration failed — the app will register WARP through a connected VPN"), last[:200])
+        return
+    add("ok", T("WARP: регистрация у Cloudflare прошла", "WARP: registered with Cloudflare"))
+    if not live or not amneziawg.find_client():
+        return
+    runner = amneziawg.Runner(paths.data_dir)
+    helper = admin_helper.Helper("ci", {}, 0, paths.data_dir)
+    passed = 0
+    for i in range(len(warp.PRESETS)):
+        p = warp.preset(i)
+        conf = warp.build_conf(acct, p).replace("AllowedIPs = 0.0.0.0/0, ::/0", "AllowedIPs = 1.1.1.1/32")
+        conf = "\n".join(x for x in conf.splitlines() if not x.startswith("DNS ="))
+        runner.write_conf(conf)
+        try:
+            r = helper.run("awg", ["/installtunnelservice", runner.conf_path])
+            if not r.get("ok"):
+                add("error", T(f"WARP {p['label']}: клиент AmneziaWG не принял конфиг",
+                               f"WARP {p['label']}: AmneziaWG client rejected the config"), r.get("error", "")[:300])
+                continue
+            deadline = time.time() + 20
+            while time.time() < deadline and not amneziawg.service_running():
+                time.sleep(0.5)
+            ok = False
+            for _ in range(6):
+                time.sleep(2)
+                if warp.trace_ok(timeout=5):
+                    ok = True
+                    break
+            passed += ok
+            add("ok" if ok else "warn", T(f"WARP {p['label']} ({p['endpoint']}): " + ("трафик идёт через WARP" if ok else "трафик не пошёл"),
+                                          f"WARP {p['label']} ({p['endpoint']}): " + ("traffic goes through WARP" if ok else "no traffic")))
+        finally:
+            helper.run("awg", ["/uninstalltunnelservice", amneziawg.TUNNEL])
+            deadline = time.time() + 20
+            while time.time() < deadline and amneziawg.service_running():
+                time.sleep(0.5)
+            runner.wipe()
+    add("ok" if passed else "error", T(f"WARP: работают {passed} из {len(warp.PRESETS)} наборов обманок",
+                                       f"WARP: {passed} of {len(warp.PRESETS)} decoy sets work"))
+
+
 def download_cores(paths: xray.Paths) -> None:
     """Для проверки на GitHub: ядра скачиваются тем же кодом, что и в программе."""
     if not paths.xray_exists():
@@ -832,6 +890,7 @@ def main() -> None:
     guard(T("Отпечаток сертификата", "Certificate pin"), check_certpin)
     if IS_WINDOWS:
         guard("AmneziaWG", lambda: check_awg(paths, live=CI))
+    guard("WARP", lambda: check_warp(paths, live=CI and IS_WINDOWS))
 
     section(T("Windows", "Windows"))
     guard("DPAPI", check_dpapi)

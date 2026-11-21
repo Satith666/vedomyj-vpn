@@ -4502,6 +4502,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
                 self.notify("status")
         if self.awg_active and tick % 5 == 2:
             self.awg_watch()
+        if self.awg_active and tick % self.WARP_HEALTH_EVERY == 33:
+            self._warp_health()
         self._deferred_tick()
         self._ads_watch()
         self._vpn_timer()

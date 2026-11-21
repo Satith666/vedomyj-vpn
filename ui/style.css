@@ -366,7 +366,9 @@ button.list-row:hover { background: var(--panel-2); }
 .modal-wide { max-width: 620px; }
 .modal h2 { font-size: 19px; }
 .modal-text { margin: 0; color: var(--soft); white-space: pre-wrap; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.modal-stack { flex-direction: column; align-items: stretch; }
+.modal-stack .btn { justify-content: center; }
 .modal-error { padding: 8px 12px; border-radius: 8px; background: var(--bad-soft); font-size: 13px; white-space: pre-wrap; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .row-gap { display: flex; gap: 8px; }

@@ -82,6 +82,15 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   await page.waitForTimeout(1200);
   const m2 = await page.locator('[data-act="method"][data-method="auto"]').getAttribute("aria-checked");
   ok(m1 === "true" && m2 === "true", "Способ переключается (VPN-сервер, потом Авто)", `${m1} ${m2}`);
+  // 4б. AmneziaWG без конфига: не ошибка, а окно «создать бесплатный WARP или вставить свой»
+  await page.locator('[data-act="method"][data-method="awg"]').click();
+  await page.waitForSelector(".modal");
+  const warpBtn = await page.locator('.modal [data-act="warp_create"]').count();
+  const ownBtn = await page.locator(".modal #mOwn").count();
+  const awgSel = await page.locator('[data-act="method"][data-method="awg"]').getAttribute("aria-checked");
+  ok(warpBtn === 1 && ownBtn === 1 && awgSel !== "true", "AmneziaWG без конфига: окно с «Создать бесплатный WARP»",
+    `${warpBtn} ${ownBtn} ${awgSel}`);
+  await page.locator(".modal [data-close]").first().click();
   const routeOk = await page.locator(".route .rt-node").count();
   ok(routeOk >= 2, "Путь трафика на главном экране", `звеньев: ${routeOk}`);
 

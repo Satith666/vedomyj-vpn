@@ -788,7 +788,9 @@ class UIServer:
             srv = e.find(str(a.get("key", "")))
             if not srv or srv.engine != "awg":
                 raise ActionError("Это не конфиг AmneziaWG.")
-            return srv.awg_conf  # только в окно программы (127.0.0.1 с ключом) — для ручного переноса в AmneziaWG
+            return e.awg_conf_text(srv)  # только в окно программы (127.0.0.1 с ключом) — для ручного переноса в AmneziaWG
+        if action == "warp_create":
+            return vpn_task("Создаю бесплатный WARP", e.warp_start)
         if action == "awg_download":
             import webbrowser
             from . import amneziawg

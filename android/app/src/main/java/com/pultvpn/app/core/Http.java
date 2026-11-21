@@ -307,9 +307,21 @@ public final class Http {
         return ips;
     }
 
+    /** Запрос с телом (POST, PATCH…) напрямую или через вход ядра; tls12 — только TLS 1.2 (как приложение 1.1.1.1). */
+    public static Response send(String method, String url, Map<String, String> headers, byte[] body, int timeoutMs,
+                                int proxyPort, boolean tls12) throws IOException {
+        return viaProxy(url, headers, timeoutMs, proxyPort, 1 << 16, true, null, null, null, false, method, body, tls12);
+    }
+
     private static Response viaProxy(String url, Map<String, String> headers, int timeoutMs, int proxyPort, long maxBody,
                                      boolean truncate, OutputStream sink, String pinHost, String pinIp, boolean auto)
             throws IOException {
+        return viaProxy(url, headers, timeoutMs, proxyPort, maxBody, truncate, sink, pinHost, pinIp, auto, "GET", null, false);
+    }
+
+    private static Response viaProxy(String url, Map<String, String> headers, int timeoutMs, int proxyPort, long maxBody,
+                                     boolean truncate, OutputStream sink, String pinHost, String pinIp, boolean auto,
+                                     String method, byte[] body, boolean tls12) throws IOException {
         String cur = url;
         for (int hop = 0; hop < 6; hop++) {
             URL u = new URL(cur);
@@ -369,6 +381,9 @@ public final class Http {
                 }
                 if (tls) {
                     SSLSocket ss = (SSLSocket) ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(raw, host, port, true);
+                    if (tls12) {
+                        ss.setEnabledProtocols(new String[]{"TLSv1.2"});
+                    }
                     SSLParameters prm = ss.getSSLParameters();
                     prm.setEndpointIdentificationAlgorithm("HTTPS");
                     ss.setSSLParameters(prm);
@@ -390,7 +405,10 @@ public final class Http {
                 }
                 h.put("Accept-Encoding", "identity");
                 h.put("Connection", "close");
-                StringBuilder req = new StringBuilder("GET ").append(path).append(" HTTP/1.1\r\n");
+                if (body != null) {
+                    h.put("Content-Length", String.valueOf(body.length));
+                }
+                StringBuilder req = new StringBuilder(method).append(' ').append(path).append(" HTTP/1.1\r\n");
                 for (Map.Entry<String, String> e : h.entrySet()) {
                     String v = e.getValue() == null ? "" : e.getValue().replace("\r", "").replace("\n", "");
                     req.append(e.getKey()).append(": ").append(v).append("\r\n");
@@ -398,6 +416,9 @@ public final class Http {
                 req.append("\r\n");
                 OutputStream out = s.getOutputStream();
                 out.write(req.toString().getBytes(StandardCharsets.UTF_8));
+                if (body != null) {
+                    out.write(body);
+                }
                 out.flush();
                 InputStream in = new BufferedInputStream(s.getInputStream(), 16384);
                 Response r = new Response();
@@ -413,7 +434,7 @@ public final class Http {
                     }
                 }
                 String loc = r.headers.get("location");
-                if (r.status >= 300 && r.status < 400 && loc != null && !loc.isEmpty()) {
+                if (r.status >= 300 && r.status < 400 && loc != null && !loc.isEmpty() && body == null) {
                     cur = new URL(u, loc).toString();
                     continue;
                 }

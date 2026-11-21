@@ -36,6 +36,8 @@ $J Dump vpsextra < /dev/null > "$OUT/j_vpsx.sh"; python3 dump.py vpsextra < /dev
 if cmp -s "$OUT/j_vpsx.sh" "$OUT/p_vpsx.sh"; then echo "[OK]   Сверка с Windows: состояние сервера и ключи друзей"; else echo "[FAIL] состояние сервера и ключи друзей"; diff "$OUT/p_vpsx.sh" "$OUT/j_vpsx.sh" | head; fail=1; fi
 a=$($J Dump vpslinks < /dev/null); b=$(python3 dump.py vpslinks < /dev/null)
 if [ "$a" = "$b" ]; then echo "[OK]   Сверка с Windows: ссылки своего сервера"; else echo "[FAIL] ссылки своего сервера"; fail=1; fi
+$J Dump warp < /dev/null > "$OUT/j_warp.txt"; python3 dump.py warp < /dev/null > "$OUT/p_warp.txt"
+if cmp -s "$OUT/j_warp.txt" "$OUT/p_warp.txt"; then echo "[OK]   Сверка с Windows: WARP (ключи, обманки, конфиг)"; else echo "[FAIL] WARP"; diff "$OUT/p_warp.txt" "$OUT/j_warp.txt" | head; fail=1; fi
 $J CoreTest || fail=1
 # код для Android компилируется? (с заглушками Android SDK — сам Android SDK для этого не нужен)
 rm -rf "$OUT/stubs" "$OUT/stubcls" && mkdir -p "$OUT/stubcls"
