@@ -1510,6 +1510,7 @@ def t_engine_failover():
         first = e.current.name
         DEAD.add(e.current.address)
         BEHAVIOR[e.ports["health"]] = "dead"
+        wait_idle(e, 30)  # фоновые задачи после подключения: пока очередь занята, автопилот ждёт
         for _ in range(2):
             e._health_check()
         wait_idle(e, 30)
@@ -3260,6 +3261,7 @@ def t_adblock():
         check(e.connected and not e.filter_on, "VPN заменяет фильтр")
         e.disconnect()
         check(e.filter_on and not e.connected, "после отключения VPN реклама снова блокируется")
+        wait_idle(e, 30)  # фильтр перезапущен и журнал соединений начат заново — только потом пишем в него
         # журнал: реклама считается отдельно от своих блокировок, «Разрешить» — в исключения
         with open(e.paths.access_log, "a", encoding="utf-8") as f:
             f.write("2026/11/12 10:00:00.000000 from 127.0.0.1:5000 accepted tcp:ads1.example-ads.net:443 "

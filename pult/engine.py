@@ -113,6 +113,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
         self._ping_at = -1e9        # когда последний раз измерен пинг
         self._net_event_at = 0.0    # Windows сообщила о смене сети
         self._vpn_wanted = False    # идёт подключение VPN (до того, как connected станет True)
+        self._tail_lock = threading.Lock()
         self._dispatcher_init()     # диспетчер: можно ли автоматике трогать VPN (dispatcher.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
@@ -5176,6 +5177,11 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin)
         self.notify("status")
 
     def _tail_access_log(self) -> None:
+        # из монитора и из действий окна одновременно: без замка одни и те же строки посчитались бы дважды
+        with self._tail_lock:
+            self._tail_access_log_locked()
+
+    def _tail_access_log_locked(self) -> None:
         try:
             size = os.path.getsize(self.paths.access_log)
         except OSError:
