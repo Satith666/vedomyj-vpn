@@ -1534,6 +1534,7 @@ def t_ladder():
         # всё фоновое тест делает сам: монитор запустил бы вторую лестницу параллельно с той, что вызывает
         # тест напрямую (в программе так не бывает — лестница всегда идёт в очереди подключения)
         e._monitor_tick = lambda tick: None
+        e.may_switch = lambda reason="": ""  # правила диспетчера проверяет t_dispatcher; здесь — сама лестница
         e.startup()
         q = "?security=reality&pbk=K&sni=a.com&type=tcp"
         e.add_servers("\n".join([
@@ -1635,7 +1636,7 @@ def t_ladder():
         e._silent_checked = 0
         t0 = time.monotonic()
         e._data_watch(5000, 0, t0)
-        e._data_watch(5000, 0, t0 + 16)
+        e._data_watch(5000, 0, t0 + 31)  # 30 с тишины (диспетчер)
         time.sleep(0.3)
         wait_idle(e, 60)
         check(any("Сторож данных" in x for x in e.logs_view()) and e.current.key != by["Empty"].key,
@@ -4300,6 +4301,7 @@ def t_journal():
         it = e.journal.recent(1)[0]
         check(it["kind"] == "connect" and it["who"] == "user" and it["server"] == "A", f"кнопкой: {it}")
         e.settings["autopilot"] = True
+        e.may_switch = lambda reason="": ""  # правила диспетчера — в t_dispatcher
         check(e.run_task("Автопилот: поиск рабочего сервера", e.failover, "сервер перестал отвечать", lane="conn"),
               "очередь подключения свободна")
         for _ in range(1200):  # лестница на медленной машине (облако GitHub) идёт дольше
@@ -4329,6 +4331,110 @@ def t_journal():
         check("Журнал подключения" in text and "сама программа" in text, text[:200])
         rep = diagnostics.finish(diagnostics.Report(), e)["text"]
         check("Журнал подключения" in rep and "76666666" not in rep and "fast2.example" not in rep, "отчёт")
+    finally:
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+        HEALTH_PORT.clear()
+
+
+@case("Диспетчер: при идущих данных не трогает VPN, меняет сервер после 30 с тишины, не чаще раза в 2 минуты")
+def t_dispatcher():
+    from pult import dispatcher as dsp
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    try:
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None  # время и данные задаёт тест
+        e.settings["autopilot"] = True
+        e.startup()
+        q = "?security=reality&pbk=K&sni=a.com&type=tcp"
+        e.add_servers(f"vless://77777777-7777-4777-8777-777777777771@fast.example:443{q}#A\n"
+                      f"vless://77777777-7777-4777-8777-777777777772@fast2.example:443{q}#B")
+        wait_idle(e)
+        e.connect(e.servers[0])
+        clock = [5000.0]
+        e._mono = lambda: clock[0]
+        runs: list = []
+        e.failover_real = e.failover
+
+        def fake_failover(reason):
+            if not e.may_switch(reason):
+                e.note_auto_switch()
+                runs.append(reason)
+            else:
+                e.deny_note("меняю сервер", e.may_switch(reason))
+        # 1. данные идут — проверка связи не прошла, а сервер не меняется и счётчики сбрасываются
+        e._rx_at = clock[0]
+        check("идут данные" in e.may_switch("x"), e.may_switch("x"))
+        e._ping_failures = 1
+        real_ping = netutil.http_ping
+        netutil.http_ping = lambda *a, **k: {"ok": False, "error": "нет ответа", "ping_ms": None, "delay_ms": None}
+        try:
+            e._health_check()
+            check(e._ping_failures == 0 and not e.conn_busy(), "при идущих данных — не меняем, счётчик сброшен")
+            # 2. тишина 10 с — ждём подтверждения (счётчик не сбрасывается: перепроверка через 5 с)
+            clock[0] += 10
+            e._ping_failures = 1
+            e._health_check()
+            check(e._ping_failures == 2 and not e.conn_busy(), "тишина 10 с — ещё рано")
+            check("тишина меньше" in e.may_switch("x"), e.may_switch("x"))
+            # 3. тишина 40 с — можно; вторая смена сразу — нельзя, через 2 минуты — можно
+            clock[0] += 30
+            check(e.may_switch("x") == "", e.may_switch("x"))
+            fake_failover("сервер перестал отвечать")
+            check(runs == ["сервер перестал отвечать"], f"смена разрешена: {runs}")
+            check("недавно уже меняли" in e.may_switch("x"), e.may_switch("x"))
+            clock[0] += dsp.SWITCH_GAP + 1
+            fake_failover("снова")
+            check(len(runs) == 2, f"через 2 минуты — снова можно: {runs}")
+            # сервер «моргает»: третья смена за 15 минут — пауза 5 минут (пока данные недавно были)
+            clock[0] += dsp.SWITCH_GAP + 1
+            e._rx_at = clock[0] - 40
+            check("недавно уже меняли" in e.may_switch("x") and e.switch_gap() == dsp.FLAP_GAPS[0], f"{e.switch_gap()}")
+            # связи нет совсем (больше 90 с без данных) — длинная пауза не нужна
+            e._rx_at = clock[0] - 200
+            check(e.switch_gap() == dsp.SWITCH_GAP and e.may_switch("x") == "", f"{e.switch_gap()} {e.may_switch('x')}")
+        finally:
+            netutil.http_ping = real_ping
+        # 4. ты сам подключил — минуту автоматика молчит
+        e._auto_switches.clear()
+        e.note_user_conn()
+        check("ты только что сам" in e.may_switch("x"), e.may_switch("x"))
+        clock[0] += dsp.USER_QUIET_S + 1
+        check(e.may_switch("x") == "", e.may_switch("x"))
+        # 5. не срочное «применить по-новому» при идущих данных — откладывается, потом применяется
+        e._rx_at = clock[0]
+        before = len(e.journal.recent(300))
+        e.run_task("Применяю автоподбор", e.reconnect, lane="conn")
+        for _ in range(100):
+            if not e.conn_busy():
+                break
+            time.sleep(0.05)
+        check(e._deferred == "Применяю автоподбор" and len(e.journal.recent(300)) == before, "отложено")
+        e._deferred_tick()
+        check(e._deferred and not e.conn_busy(), "данные всё ещё идут — ждём")
+        clock[0] += dsp.IDLE_S + 1
+        e._deferred_tick()
+        for _ in range(200):
+            if not e.conn_busy():
+                break
+            time.sleep(0.05)
+        it = e.journal.recent(1)[0]
+        check(not e._deferred and it["kind"] == "reconnect" and it["why"] == "Применяю автоподбор", f"применено: {it}")
+        # срочное (чужая сеть) — сразу, даже при идущих данных
+        e._rx_at = clock[0]
+        n = len(e.journal.recent(300))
+        e.reconnect(urgent=True)
+        check(len(e.journal.recent(300)) == n + 1, "срочное — сразу")
+        # память сети при работающем подключении не дёргает VPN
+        nid = e._net_id()
+        e.settings["net_ways"] = {nid: {"server": e.servers[1].key, "fp": "", "mask": 0, "at": time.time()}}
+        cur = e.current.key
+        e._apply_net_way()
+        check(e.current.key == cur, "способ из памяти не применён, пока данные идут")
+        st = e.state()
+        check("dispatcher" not in st or isinstance(st["dispatcher"], dict), "состояние")
     finally:
         if e:
             e.shutdown()

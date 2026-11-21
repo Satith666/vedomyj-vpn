@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, errorlog, journal, ladder, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, dispatcher, errorlog, journal, ladder, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -30,7 +30,7 @@ class Cancelled(RuntimeError):
     """Человек нажал «Стоп»."""
 
 
-class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
+class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin):
     """События для интерфейса (notify(event, **data)) приходят из рабочих потоков:
     log, busy, servers, server, status, live, connections, services, service, summary, error, settings."""
 
@@ -112,6 +112,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         self._rx_at = -1e9          # когда с сервера последний раз приходили данные (monotonic)
         self._ping_at = -1e9        # когда последний раз измерен пинг
         self._net_event_at = 0.0    # Windows сообщила о смене сети
+        self._dispatcher_init()     # диспетчер: можно ли автоматике трогать VPN (dispatcher.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
         # обход замедлений: zapret и ByeDPI
@@ -270,6 +271,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         def worker():
             self._lane.name = "conn" if conn else "bg"
             self._lane.task, self._lane.user, self._lane.why = title, user, ""
+            if user and conn:
+                self.note_user_conn()  # человек сам что-то делает с VPN — автоматика минуту молчит
             if conn:
                 self.conn_text = title
                 self.conn_stop.clear()
@@ -1412,8 +1415,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         except Exception as exc:
             self.log(f"Проверка соединения: {exc}")
 
-    def reconnect(self) -> None:
-        """Применить новые настройки: перезапустить VPN или «рекламу без VPN» — что сейчас работает."""
+    def reconnect(self, urgent: bool = False) -> None:
+        """Применить новые настройки: перезапустить VPN или «рекламу без VPN» — что сейчас работает.
+        Автоматика (не человек) с не срочным изменением, пока идут данные, ждёт тишины — см. dispatcher.py."""
+        if self.connected and self.current and not urgent and not self.may_apply():
+            self.defer_reconnect(getattr(self._lane, "task", "") or "новые настройки")
+            return
         if self.connected and self.current:
             self.connect(self.current)
         elif self._filter_wanted():
@@ -3339,7 +3346,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             self.dpi_last = {}
             self.notify("status")
             if self.connected:
-                self.reconnect()
+                self.reconnect(urgent=True)  # YouTube и Discord идут по-новому — иначе они сломаны
 
     def _network_key(self) -> str:
         """Сеть, для которой запоминается стратегия (у разных провайдеров работают разные).
@@ -4208,6 +4215,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             self.log(f"Проверка белых списков: {exc}")
 
     def _back_to_best(self) -> None:
+        if not self.may_apply():
+            self.deny_note("возвращаюсь к лучшему серверу", "идут данные — текущий сервер работает")
+            return
         if self.servers and self.test_all():
             best = self.best()
             if best and self.connected and (not self.current or best.key != self.current.key) and self._switch_to(best):
@@ -4216,6 +4226,11 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
     def failover(self, reason: str) -> None:
         """Текущий сервер перестал работать: лестница способов (ladder.py) — пока не пойдут данные.
         Ничего не помогло — честно показать, что работает напрямую, и попробовать снова позже (без петли)."""
+        why_not = self.may_switch(reason)
+        if why_not:
+            self.deny_note("меняю сервер", why_not)
+            return
+        self.note_auto_switch()
         self.log(f"Автопилот: {reason}. Ищу рабочий способ.")
         self._lane.why = reason  # причина попадёт в журнал подключения у каждого переключения
         current_key = self.current.key if self.current else ""
@@ -4414,6 +4429,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
                 self.notify("status")
         if self.awg_active and tick % 5 == 2:
             self.awg_watch()
+        self._deferred_tick()
         self._ads_watch()
         self._vpn_timer()
         if self._net_due(tick):
@@ -4647,9 +4663,18 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
                              fix="Автопилот переключит на другой сервер. Если он выключен — выбери сервер вручную.")
         self.notify("live")
         need = self._ping_failures >= 2 or self._slow_count >= 3
+        if need and self.data_flowing():
+            # проверка не прошла, а данные с сервера приходят — он работает (диспетчер, правило 1)
+            self._ping_failures = 0
+            self._slow_count = 0
+            return
         if need and self.settings.get("autopilot") and not self.conn_busy() and time.time() >= self._ladder_next:
             # в очереди подключения: долгая фоновая задача (скачивание, проверка) не задерживает переход
             reason = "сервер перестал отвечать" if self._ping_failures >= 2 else "сервер стал очень медленным"
+            why_not = self.may_switch(reason)
+            if why_not:  # например, тишина ещё меньше 30 с — перепроверка через 5 с, счётчики не сбрасываем
+                self.deny_note("меняю сервер", why_not)
+                return
             self._ping_failures = 0
             self._slow_count = 0
             self.run_task("Автопилот: поиск рабочего сервера", self.failover, reason, lane="conn")
@@ -4866,7 +4891,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             if srv:
                 self.run_task("Подключаюсь", self.connect, srv, lane="conn")
         elif self.connected and old_mode != self.net_profile["mode"]:
-            self.run_task("Применяю настройки", self.reconnect, lane="conn")
+            # чужая сеть: весь трафик через VPN нужен сразу (защита), а не «когда затихнет»
+            self.run_task("Применяю настройки сети", self.reconnect, True, lane="conn")
         elif net_moved:
             self._net_changed()
 
@@ -5312,6 +5338,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             "awg": self.awg_state(),
             "engine": self.engine_state(),
             "journal": self.journal_state(),
+            "dispatcher": self.dispatcher_state(),
             "ladder": {"step": i18n.tr(self.ladder_step) if self.ladder_step else "",
                        "retry_at": self._ladder_next if self._ladder_next > time.time() else 0,
                        "what_works": self.what_works, "way": i18n.tr(ladder.way_text(self.current))

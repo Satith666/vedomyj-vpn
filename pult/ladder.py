@@ -32,7 +32,7 @@ from .links import Server
 
 LADDER_FPS = ("firefox", "safari", "randomized")
 BACKOFF = (120, 300, 600, 1200)  # с: «ничего не работает» — следующая попытка не сразу
-SILENT_S = 15.0                  # с: уходит, но не приходит — пора проверить, идут ли данные
+SILENT_S = 30.0                  # с: уходит, но не приходит — пора проверить, идут ли данные (диспетчер: 30 с тишины)
 SILENT_RECHECK = 60.0            # с: не чаще раза в минуту
 NET_WAYS_MAX = 40
 WHAT_WORKS = ("Google", "YouTube", "Telegram", "Яндекс", "VK", "Госуслуги")
@@ -387,6 +387,10 @@ class LadderMixin:
         r = self._data_ok()
         if r["ok"]:
             return
+        why_not = self.may_switch("данные через сервер не идут")
+        if why_not:
+            self.deny_note("меняю сервер", why_not)
+            return
         self.log(f"Сторож данных: соединения открываются, а данные не приходят ({r['error']}).")
         if self.connected and not self.conn_busy():
             self.run_task("Автопилот: поиск рабочего сервера", self.failover, "данные через сервер не идут",
@@ -407,6 +411,9 @@ class LadderMixin:
         mem = self._net_way()
         cur = self.current
         if not mem or not cur or not self.connected:
+            return
+        if not self.may_apply():  # подключение пережило смену сети и данные идут — не трогаем (dispatcher.py)
+            self.deny_note("беру способ из памяти сети", "текущее подключение работает")
             return
         srv = self.find(mem.get("server", ""))
         if not srv:

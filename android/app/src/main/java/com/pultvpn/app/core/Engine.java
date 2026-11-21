@@ -258,6 +258,88 @@ public final class Engine {
     private volatile long userUntil;
     private long pingAt; // когда последний раз измерена задержка (монитор)
 
+    // ---------- диспетчер подключения (то же, что pult/dispatcher.py) ----------
+    // Идут данные — ничего не трогаем; сервер меняем после 30 с тишины; не чаще раза в 2 минуты (сервер
+    // «моргает» — 5, потом 10 минут; связи нет совсем — 2 минуты); после твоего действия — минута тишины.
+    public static long SILENCE_MS = 30000L;
+    public static long SWITCH_GAP_MS = 120000L;
+    static final long[] FLAP_GAPS_MS = {300000L, 600000L};
+    static final long FLAP_WINDOW_MS = 900000L;
+    static final long DEAD_MS = 90000L;
+    public static long USER_QUIET_MS = 60000L;
+    static final long RX_ALIVE_MS = 10000L;
+    public volatile long rxAt;     // когда с сервера последний раз приходили данные
+    public volatile long userConnAt; // когда человек последний раз что-то делал с VPN
+    private final java.util.ArrayDeque<Long> autoSwitches = new java.util.ArrayDeque<Long>();
+    private final Map<String, Long> deniedLogged = new java.util.HashMap<String, Long>();
+
+    private boolean byUser() {
+        Lane l = laneOf.get();
+        return l != null && l.user;
+    }
+
+    boolean dataFlowing() {
+        return System.currentTimeMillis() - rxAt < RX_ALIVE_MS;
+    }
+
+    synchronized long switchGap() {
+        long now = System.currentTimeMillis();
+        int recent = 0;
+        for (Long t : autoSwitches) {
+            if (now - t < FLAP_WINDOW_MS) {
+                recent++;
+            }
+        }
+        if (now - rxAt >= DEAD_MS || recent <= 1) {
+            return SWITCH_GAP_MS;
+        }
+        return FLAP_GAPS_MS[Math.min(recent - 2, FLAP_GAPS_MS.length - 1)];
+    }
+
+    /** Можно ли автоматике сменить сервер: "" — можно, иначе — почему нельзя. */
+    public String maySwitch() {
+        if (byUser() || !isOn()) {
+            return "";
+        }
+        long now = System.currentTimeMillis();
+        if (dataFlowing()) {
+            return Text.t("с сервера идут данные — он работает", "data is coming from the server — it works");
+        }
+        if (now - rxAt < SILENCE_MS) {
+            return Text.t("тишина меньше 30 с — жду подтверждения", "silence under 30 s — waiting for confirmation");
+        }
+        if (now - userConnAt < USER_QUIET_MS) {
+            return Text.t("ты только что сам подключал — автоматика ждёт минуту", "you just connected yourself — automation waits a minute");
+        }
+        Long last;
+        synchronized (this) {
+            last = autoSwitches.peekLast();
+        }
+        if (last != null && now - last < switchGap()) {
+            return Text.t("сервер недавно уже меняли", "the server was switched recently");
+        }
+        return "";
+    }
+
+    private synchronized void noteAutoSwitch() {
+        if (!byUser()) {
+            autoSwitches.addLast(System.currentTimeMillis());
+            while (autoSwitches.size() > 20) {
+                autoSwitches.removeFirst();
+            }
+        }
+    }
+
+    private void denyNote(String why) {
+        long now = System.currentTimeMillis();
+        String key = why.split(" — ")[0];
+        Long at = deniedLogged.get(key);
+        if (at == null || now - at >= 60000L) {
+            deniedLogged.put(key, now);
+            log("Диспетчер: не меняю сервер — " + why + ".", "Dispatcher: not switching — " + why + ".");
+        }
+    }
+
     /** Следующую задачу начал человек (вызывать прямо перед действием). */
     public void markUser() {
         userUntil = System.currentTimeMillis() + 3000;
@@ -649,6 +731,9 @@ public final class Engine {
             lane.user = System.currentTimeMillis() < userUntil;
             lane.why = "";
             userUntil = 0;
+            if (lane.user && lane == conn) {
+                userConnAt = System.currentTimeMillis(); // человек сам что-то делает с VPN — автоматика ждёт минуту
+            }
         }
         changed();
         lane.exec.submit(new Runnable() {
@@ -1898,6 +1983,12 @@ public final class Engine {
      * Успех — «скачались 64 КБ», а не пинг. Ничего не помогло — «что работает напрямую» и пауза, без петли.
      */
     void failover() {
+        String whyNot = maySwitch();
+        if (!whyNot.isEmpty()) {
+            denyNote(whyNot);
+            return;
+        }
+        noteAutoSwitch();
         progress(Text.t("Ищу рабочий способ", "Looking for a working way"));
         // белые списки (шаг 9): если они включены, обычные серверы всё равно недоступны — сразу подходящие
         if (Json.bool(settings, "whitelist_auto", true) && checkWhitelist() && tryWhitelist()) {
@@ -1955,7 +2046,7 @@ public final class Engine {
             {"Telegram", "https://web.telegram.org/"}, {"Яндекс", "https://ya.ru/"}, {"VK", "https://vk.com/"},
             {"Госуслуги", "https://www.gosuslugi.ru/"}};
     static final int NET_WAYS_MAX = 40;
-    public static long SILENT_MS = 15000L;
+    public static long SILENT_MS = 30000L;
     private volatile long ladderNext;
     private int ladderFails;
     private volatile String ladderStep = "";
@@ -2539,6 +2630,9 @@ public final class Engine {
             } else if (dRx > 0) {
                 silentSince = 0;
             }
+            if (dRx > 2048) {
+                rxAt = now; // с сервера пришли данные — он жив (диспетчер)
+            }
         }
         lastRx = t[0];
         lastTx = t[1];
@@ -2595,6 +2689,9 @@ public final class Engine {
         }
         if (mem == null || cur == null || !isOn()) {
             return;
+        }
+        if (dataFlowing() && !byUser()) {
+            return; // подключение пережило смену сети и данные идут — не трогаем (диспетчер)
         }
         Server s = find(Json.str(mem, "server"));
         if (s == null || !s.usable()) {
@@ -2777,7 +2874,7 @@ public final class Engine {
         dataWatch(on, now);
         // Автопереход: связь проверяется раз в 20 секунд (после неудачи — сразу ещё раз, через 5 секунд).
         // Пока с сервера идут данные, он жив — лишних запросов не делаем (пинг на экране — раз в минуту).
-        boolean flowing = speedDown > 2048;
+        boolean flowing = dataFlowing();
         boolean due = healthFails > 0 || (tick % 4 == 0 && (!flowing || now - pingAt > 60000L));
         if (on && due) {
             long d = -1;
@@ -2801,6 +2898,16 @@ public final class Engine {
             // идёт видео или загрузка — проверка могла не пробиться сквозь неё: даём серверу больше попыток,
             // смена сервера оборвала бы всё, что сейчас качается
             int need = speedDown > 200 * 1024 ? 4 : 2;
+            if (healthFails >= need && dataFlowing()) {
+                synchronized (lock) {
+                    healthFails = 0; // проверка не прошла, а данные с сервера идут — он работает
+                }
+            }
+            String whyNot = healthFails >= need && Json.bool(settings, "autopilot", true) && now >= ladderNext ? maySwitch() : "";
+            if (!whyNot.isEmpty()) {
+                denyNote(whyNot); // например, тишина ещё меньше 30 с — перепроверка в следующий раз
+                return;
+            }
             if (d > 0 && waySaved.isEmpty() && now - rememberAt > 300000L) {
                 rememberAt = now; // не чаще раза в 5 минут, пока не запомнили
                 pool.submit(new Runnable() {
@@ -2921,6 +3028,9 @@ public final class Engine {
     }
 
     void backToBest() {
+        if (dataFlowing() && !byUser()) {
+            return; // текущий сервер работает — к «лучшему» вернёмся, когда затихнет трафик
+        }
         testServers(true);
         final Server cur;
         synchronized (lock) {

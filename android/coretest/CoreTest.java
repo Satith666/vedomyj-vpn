@@ -663,6 +663,11 @@ public class CoreTest {
     public static void main(String[] args) throws Exception {
         startHttp();
         Text.lang = "ru";
+        // правила диспетчера (30 с тишины, 2 минуты между автосменами, минута после твоих действий) проверяет
+        // отдельный тест «Диспетчер»; в остальных время сжато, иначе тесты ждали бы минутами
+        Engine.SILENCE_MS = 0;
+        Engine.SWITCH_GAP_MS = 0;
+        Engine.USER_QUIET_MS = 0;
         Certs.FETCH = CLEAN_CERTS; // в проверке интернета нет: «контрольные сайты» отвечают как настоящие
         Engine.PINS = (h, p, sni) -> { // отпечаток сертификата без сети: «мёртвые» серверы не отвечают
             if (h.contains("dead")) throw new java.io.IOException("не отвечает");
@@ -987,6 +992,27 @@ public class CoreTest {
             check(fake.lastConfig.contains("\"protocol\":\"tun\""), "ядро получило настройки с туннелем");
             String rep = e.report();
             check(!rep.contains(U) && !rep.contains("127.0.0.1") && !rep.contains("example.com"), "в отчёте нет ссылок и ключей");
+        });
+
+        test("Диспетчер: идут данные — сервер не меняется; 30 с тишины; минута после твоих действий", () -> {
+            long s0 = Engine.SILENCE_MS, g0 = Engine.SWITCH_GAP_MS, u0 = Engine.USER_QUIET_MS;
+            Engine.SILENCE_MS = 30000; Engine.SWITCH_GAP_MS = 120000; Engine.USER_QUIET_MS = 60000;
+            try {
+                check(e.isOn(), "подключено");
+                long now = System.currentTimeMillis();
+                e.rxAt = now;
+                check(e.maySwitch().contains("идут данные"), "данные идут: " + e.maySwitch());
+                e.rxAt = now - 12000;
+                check(e.maySwitch().contains("тишина меньше"), "тишина 12 с: " + e.maySwitch());
+                e.rxAt = now - 40000;
+                e.userConnAt = now;
+                check(e.maySwitch().contains("сам подключал"), "после твоего действия: " + e.maySwitch());
+                e.userConnAt = 0;
+                check(e.maySwitch().isEmpty(), "40 с тишины — можно: " + e.maySwitch());
+            } finally {
+                Engine.SILENCE_MS = s0; Engine.SWITCH_GAP_MS = g0; Engine.USER_QUIET_MS = u0;
+                e.rxAt = 0;
+            }
         });
 
         test("Автопереход: сервер умер — переключение на другой без участия человека", () -> {
@@ -2055,7 +2081,7 @@ public class CoreTest {
                 Thread.sleep(500);
                 waitIdle(el);
             } finally {
-                Engine.SILENT_MS = 15000;
+                Engine.SILENT_MS = 30000;
             }
             check(String.join("\n", el.logLines()).contains("Сторож данных") && !"Пустой".equals(currentName(el)),
                     "сторож заметил тишину и сменил сервер: " + currentName(el));
