@@ -995,6 +995,13 @@ public class CoreTest {
             waitIdle(e);
             check(e.isOn(), "VPN остался включённым");
             check("Средний".equals(currentName(e)), "переключился на следующий лучший: " + currentName(e));
+            // журнал подключения: видно, что переключила автоматика и почему
+            Map<String, Object> last = (Map<String, Object>) Json.list(Json.map(e.state(), "journal"), "items").get(0);
+            check("switch".equals(Json.str(last, "kind")) && "Средний".equals(Json.str(last, "server"))
+                    && !"user".equals(Json.str(last, "who")) && Json.str(last, "why").contains("перестал отвечать"),
+                    "журнал: " + Json.write(last));
+            check(Json.num(Json.map(e.state(), "journal"), "auto_hour", 0) >= 1, "счётчик автопереключений");
+            check(e.report().contains("Журнал подключения"), "журнал в отчёте");
         });
 
         test("Белые списки: обычные серверы не работают — сам переходит на сервер для белых списков и обратно", () -> {

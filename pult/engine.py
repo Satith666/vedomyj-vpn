@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, errorlog, ladder, leaks, netprofile, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, errorlog, journal, ladder, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -44,6 +44,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         self._raw_notify = notify
         # журнал ошибок (data/errors.jsonl): падения кода, проблемы, итоги проверок — без ключей и адресов
         self.errors = errorlog.ErrorLog(self.paths.data_dir, scrub=self._scrub_secrets, app_dir=self.paths.app_dir)
+        # журнал подключения: кто и почему подключил, переключил или отключил VPN
+        self.journal = journal.Journal(self.paths.data_dir)
         self._ladder_init()
         self.problems: dict[str, dict] = {}
         self._standby_at = 0.0
@@ -104,6 +106,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         self._log_pos = 0
         self._ping_failures = 0
         self._stats_prev = None
+        self._metrics_fail = 0
+        self._health_at = 0.0       # когда последний раз решали, проверять ли связь
+        self._health_running = False
+        self._rx_at = -1e9          # когда с сервера последний раз приходили данные (monotonic)
+        self._ping_at = -1e9        # когда последний раз измерен пинг
+        self._net_event_at = 0.0    # Windows сообщила о смене сети
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
         # обход замедлений: zapret и ByeDPI
@@ -249,9 +257,10 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
     def _in_conn_lane(self) -> bool:
         return getattr(self._lane, "name", "") == "conn"
 
-    def run_task(self, title: str, func, *args, lane: str = "bg") -> bool:
+    def run_task(self, title: str, func, *args, lane: str = "bg", user: bool = False) -> bool:
         """Запускает операцию в фоне. lane="conn" — действия с VPN (подключение, смена сервера, применение
-        настроек): они идут параллельно с долгими задачами (lane="bg"). В каждой очереди — одна задача за раз."""
+        настроек): они идут параллельно с долгими задачами (lane="bg"). В каждой очереди — одна задача за раз.
+        user=True — задачу начал человек (кнопкой), а не автоматика: так и пишется в журнале подключения."""
         conn = lane == "conn"
         lock = self._conn_busy if conn else self._busy
         if not lock.acquire(blocking=False):
@@ -260,6 +269,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
 
         def worker():
             self._lane.name = "conn" if conn else "bg"
+            self._lane.task, self._lane.user, self._lane.why = title, user, ""
             if conn:
                 self.conn_text = title
                 self.conn_stop.clear()
@@ -1012,7 +1022,31 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
 
     # ---------- подключение ----------
 
+    def _journal(self, kind: str, server: Server | None, why: str = "") -> None:
+        """Запись в журнал подключения: кто (ты или какая автоматика) и почему."""
+        lane = self._lane
+        who = "user" if getattr(lane, "user", False) else (getattr(lane, "task", "") or "программа")
+        why = why or getattr(lane, "why", "")
+        try:
+            self.journal.add(kind, server.name if server else "", who, self._scrub_secrets(why) if why else "",
+                             (server.engine or "xray") if server else "")
+            self.notify("journal")
+        except Exception:
+            pass
+
     def connect(self, server: Server) -> None:
+        """Подключиться (или переключиться) к серверу — с записью в журнал подключения."""
+        prev = self.awg_active or (self.current if self.connected else None)
+        try:
+            self._connect(server)
+        except Cancelled:
+            raise
+        except Exception as exc:
+            self._journal("fail", server, str(exc))
+            raise
+        self._journal("connect" if prev is None else "reconnect" if prev.key == server.key else "switch", server)
+
+    def _connect(self, server: Server) -> None:
         if server.engine == "awg":
             self.connect_awg(server)
             return
@@ -1049,6 +1083,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             self._ping_failures = 0
             self._slow_count = 0
             self._stats_prev = None
+            self._health_at = self._mono()  # только что подключились и проверили — следующая проверка через 20 с
             self._silent_since = 0.0
             self._way_saved = ""
             s["last_server_key"] = server.key
@@ -1075,9 +1110,11 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
                 raise RuntimeError(f"Порт {s[name]} занят другой программой (возможно, Happ или v2rayN). "
                                    f"Закрой её или поменяй порт в настройках.")
         if not self.ports.get("health") or not running:
-            extra = netutil.find_free_ports(4, start=21900, avoid=tester.RESERVED_PORTS)
+            extra = netutil.find_free_ports(5, start=21900, avoid=tester.RESERVED_PORTS)
             self.ports = {"socks": int(s["socks_port"]), "http": int(s["http_port"]),
-                          "health": extra[0], "api": extra[1], "direct": extra[2], "direct_http": extra[3]}
+                          "health": extra[0], "api": extra[1], "direct": extra[2], "direct_http": extra[3],
+                          "metrics": extra[4]}
+            self._metrics_fail = 0
         wait = [self.ports["socks"], self.ports["http"], self.ports["health"]]
         try:
             open(self.paths.access_log, "w").close()
@@ -1433,6 +1470,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
 
     def _recover(self, server: Server) -> None:
         """Ядро неожиданно остановилось: переподключаемся; не вышло — kill switch или честно отключаемся."""
+        self._lane.why = "ядро неожиданно остановилось"
         try:
             self.connect(server)
         except Cancelled:
@@ -1448,6 +1486,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         """Отключить VPN. keep_filter — если включена «Блокировка рекламы без VPN», ядро сразу
         запускается снова без сервера (False — при обновлении ядра, смене портов и выходе)."""
         was = self.connected
+        if was and not quiet:
+            self._journal("disconnect", self.current)
         self.vpn_until = 0.0
         self._take_down()
         if was and not quiet:
@@ -4177,6 +4217,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         """Текущий сервер перестал работать: лестница способов (ladder.py) — пока не пойдут данные.
         Ничего не помогло — честно показать, что работает напрямую, и попробовать снова позже (без петли)."""
         self.log(f"Автопилот: {reason}. Ищу рабочий способ.")
+        self._lane.why = reason  # причина попадёт в журнал подключения у каждого переключения
         current_key = self.current.key if self.current else ""
         wl = self._check_whitelist()
         if self.current:
@@ -4273,11 +4314,13 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             self._hotswap_ok = False  # эта версия ядра не умеет — дальше переподключаемся обычным способом
             return False
         self._proxy_tags = [o["tag"] for o in obs]
+        prev = self.current
         with self._conn_lock:
             self.current = srv
             self.settings["last_server_key"] = srv.key
         self.resolve("server_down", "no_working")
         self.log(f"Подключено: {srv.name}. Режим: {routing.MODES.get(self.settings.get('mode'), '')}.")
+        self._journal("hotswap" if prev and prev.key != srv.key else "reconnect", srv)
         self.notify("status")
         threading.Thread(target=self._refresh_exit, daemon=True).start()
         return True
@@ -4297,74 +4340,140 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         finally:
             self._busy.release()
 
+    # Фоновые проверки. Правило: пока всё работает, программа почти ничего не делает —
+    # не запускает других программ и не дёргает сеть без нужды (каждый запуск на Windows проверяет антивирус).
+    STATS_EVERY_UI = 2       # скорость в открытом окне — раз в 2 с (чтение по HTTP, без запуска процессов)
+    STATS_EVERY_BG = 5       # окно закрыто — раз в 5 с (нужно, чтобы заметить, что данные перестали идти)
+    STATS_EVERY_OLD = 10     # старое ядро без страницы метрик: каждый опрос — запуск xray.exe, поэтому реже
+    HEALTH_EVERY = 20        # проверка связи, когда всё хорошо (была каждые 5 с)
+    HEALTH_RECHECK = 5       # после неудачи — перепроверка через 5 с: обрыв подтверждается быстро
+    HEALTH_RX_FRESH = 10     # с сервера приходили данные за последние 10 с — он жив, проверку пропускаем
+    HEALTH_PING_MAX_AGE = 60  # но пинг в окне обновляем хотя бы раз в минуту
+    NET_POLL_EVERY = 600     # запасной опрос сети; обычно смену сети сообщает сама Windows
+    LOG_TAIL_UI, LOG_TAIL_BG = 2, 5  # журнал соединений ядра — раз в 2 с при открытом окне, иначе раз в 5 с
+
     def _monitor_loop(self) -> None:
         tick = 0
+        netwatch.start(self._net_event)  # смена сети — событием от Windows, а не опросом каждые 15 с
         while not self._closing:
             time.sleep(1)
             tick += 1
             try:
-                if self.connected:
-                    self._tail_access_log()
-                    # скорость в окне — раз в 2 секунды; окно закрыто — раз в 10 (каждый опрос — запуск xray.exe)
-                    if tick % (2 if self.ui_clients else 10) == 0:
-                        self._poll_stats()
-                    if tick % 5 == 0:
-                        self._health_check()
-                    if tick % 300 == 0:
-                        self._refresh_exit()
-                    if tick % 3600 == 30:
-                        self._sub_alerts()
-                    if tick % 30 == 0:
-                        self._check_system_proxy()
-                    if self.settings.get("autopilot") and time.time() - self._standby_at > 600:
-                        self._standby_at = time.time()
-                        threading.Thread(target=self._standby_check, daemon=True).start()
-                    if not self.proc.alive() and self.connected:
-                        self.log("Ядро Xray неожиданно остановилось.")
-                        self.problem("core_crash", "Ядро Xray неожиданно остановилось",
-                                     "\n".join(list(self.proc.lines)[-3:]), where="Подключение",
-                                     fix="Программа переподключится сама. Если повторяется — обнови ядро.")
-                        if self.current and not self.conn_busy():
-                            self.run_task("Переподключение", self._recover, self.current, lane="conn")
-                    elif self.tun_active in ("singbox", "tun2proxy") and self.connected and not self.tun_proc.alive():
-                        err = self.tun_proc.error()
-                        self.log(f"Режим TUN неожиданно остановился: {err or 'без подробностей'}.")
-                        self._tun_sig = None
-                        if self.current and not self.is_busy():
-                            self.run_task("Переподключение", self.connect, self.current)
-                elif self.filter_on:
-                    self._tail_access_log()
-                    if tick % 30 == 0:
-                        self._check_system_proxy()
-                    if not self.proc.alive() and not self.is_busy():
-                        self.filter_on = False
-                        self.log("Ядро Xray неожиданно остановилось — снова включаю блокировку рекламы.")
-                        self.notify("status")
-                if self.awg_active and tick % 5 == 2:
-                    self.awg_watch()
-                self._ads_watch()
-                self._vpn_timer()
-                if tick % 15 == 3:
-                    self._net_watch()
-                if tick % 3600 == 90:
-                    threading.Thread(target=self._clock_check, daemon=True).start()
-                if tick % 21600 == 240 and self.settings.get("cert_watch", True):
-                    threading.Thread(target=self._cert_watch, daemon=True).start()
-                if tick % 300 == 60 and self.whitelist_mode:
-                    threading.Thread(target=self._whitelist_watch, daemon=True).start()
-                if tick % 300 == 150 and self.dpi_mode and not self._dpi_watching:
-                    threading.Thread(target=self._dpi_watch, daemon=True).start()
-                if tick % 60 == 0:
-                    self._auto_update_check()
-                if tick % 10800 == 7200 and self.connected and self.settings.get("multi_enabled", True) \
-                        and not self.is_busy():
-                    self.run_task("Мультисервер: проверяю сервисы", self.check_services)
-                if tick % 3600 == 5:
-                    self._check_files()
+                self._monitor_tick(tick)
             except Exception as exc:
                 self.log(f"Монитор: {exc}")
                 if errorlog.is_bug(exc):
                     self.errors.record_exc(exc, "монитор")
+
+    _mono = staticmethod(time.monotonic)  # часы монитора (самопроверка подменяет, чтобы «прокрутить» время)
+
+    def _monitor_tick(self, tick: int) -> None:
+        """Одна секунда монитора. Отдельно от цикла — чтобы самопроверка могла «прокрутить» 10 минут за секунду."""
+        ui = self.ui_clients > 0
+        if not self.connected:
+            self._standby_at = time.time()  # запасные проверяем через 10 минут после подключения, не сразу
+        if self.connected:
+            if tick % (self.LOG_TAIL_UI if ui else self.LOG_TAIL_BG) == 0:
+                self._tail_access_log()
+            metrics = self.ports.get("metrics") and self._metrics_fail < self.METRICS_GIVE_UP
+            every = (self.STATS_EVERY_UI if ui else self.STATS_EVERY_BG) if metrics else \
+                (2 if ui else self.STATS_EVERY_OLD)
+            if tick % every == 0:
+                self._poll_stats()
+            self._health_tick()
+            if tick % 300 == 0:
+                self._refresh_exit()
+            if tick % 3600 == 30:
+                self._sub_alerts()
+            if tick % 30 == 0:
+                self._check_system_proxy()
+            if self.settings.get("autopilot") and time.time() - self._standby_at > 600:
+                self._standby_at = time.time()
+                threading.Thread(target=self._standby_check, daemon=True).start()
+            if not self.proc.alive() and self.connected:
+                self.log("Ядро Xray неожиданно остановилось.")
+                self.problem("core_crash", "Ядро Xray неожиданно остановилось",
+                             "\n".join(list(self.proc.lines)[-3:]), where="Подключение",
+                             fix="Программа переподключится сама. Если повторяется — обнови ядро.")
+                if self.current and not self.conn_busy():
+                    self.run_task("Переподключение", self._recover, self.current, lane="conn")
+            elif self.tun_active in ("singbox", "tun2proxy") and self.connected and not self.tun_proc.alive():
+                err = self.tun_proc.error()
+                self.log(f"Режим TUN неожиданно остановился: {err or 'без подробностей'}.")
+                self._tun_sig = None
+                if self.current and not self.is_busy():
+                    self.run_task("Переподключение", self.connect, self.current)
+        elif self.filter_on:
+            if tick % (self.LOG_TAIL_UI if ui else self.LOG_TAIL_BG) == 0:
+                self._tail_access_log()
+            if tick % 30 == 0:
+                self._check_system_proxy()
+            if not self.proc.alive() and not self.is_busy():
+                self.filter_on = False
+                self.log("Ядро Xray неожиданно остановилось — снова включаю блокировку рекламы.")
+                self.notify("status")
+        if self.awg_active and tick % 5 == 2:
+            self.awg_watch()
+        self._ads_watch()
+        self._vpn_timer()
+        if self._net_due(tick):
+            self._net_watch()
+        if tick % 3600 == 90:
+            threading.Thread(target=self._clock_check, daemon=True).start()
+        if tick % 21600 == 240 and self.settings.get("cert_watch", True):
+            threading.Thread(target=self._cert_watch, daemon=True).start()
+        if tick % 300 == 60 and self.whitelist_mode:
+            threading.Thread(target=self._whitelist_watch, daemon=True).start()
+        if tick % 300 == 150 and self.dpi_mode and not self._dpi_watching:
+            threading.Thread(target=self._dpi_watch, daemon=True).start()
+        if tick % 60 == 0:
+            self._auto_update_check()
+        if tick % 10800 == 7200 and self.connected and self.settings.get("multi_enabled", True) \
+                and not self.is_busy():
+            self.run_task("Мультисервер: проверяю сервисы", self.check_services)
+        if tick % 3600 == 5:
+            self._check_files()
+
+    # ---------- проверка связи ----------
+
+    def _health_tick(self) -> None:
+        """Пора ли проверять связь. Проверка идёт в своём потоке — монитор не ждёт её до 6 секунд."""
+        now = self._mono()
+        if self._health_running:
+            return
+        wait = self.HEALTH_RECHECK if self._ping_failures else self.HEALTH_EVERY
+        if now - self._health_at < wait:
+            return
+        self._health_at = now
+        if not self._ping_failures and now - self._rx_at < self.HEALTH_RX_FRESH \
+                and now - self._ping_at < self.HEALTH_PING_MAX_AGE:
+            return  # с сервера идут данные — он жив; лишний запрос не нужен
+        self._health_running = True
+
+        def run():
+            try:
+                self._health_check()
+            except Exception as exc:
+                self.log(f"Проверка связи: {exc}")
+            finally:
+                self._health_running = False
+        threading.Thread(target=run, daemon=True).start()
+
+    # ---------- смена сети ----------
+
+    def _net_event(self) -> None:
+        """Windows сообщила о смене адресов (другая сеть, переподключение Wi-Fi, кабель)."""
+        self._net_event_at = self._mono()
+
+    def _net_due(self, tick: int) -> bool:
+        if tick == 3:
+            return True  # первая проверка — сразу после запуска
+        ev = self._net_event_at
+        if ev and self._mono() - ev >= 2:  # пара секунд — пока сеть договорится об адресе
+            self._net_event_at = 0.0
+            return True
+        every = self.NET_POLL_EVERY if netwatch.active() else 15
+        return tick % every == 3
 
     def _ads_watch(self) -> None:
         """Реклама без VPN должна работать, когда VPN выключен; пауза заканчивается сама."""
@@ -4424,12 +4533,30 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
                 self.settings["xray_seen"] = True
             self.resolve("xray_missing")
 
+    METRICS_GIVE_UP = 5  # столько неудач подряд — ядро не умеет страницу метрик, дальше по-старому
+
+    def _read_stats(self) -> dict:
+        """Счётчики трафика ядра. Обычно — по HTTP со страницы метрик (без запуска процессов);
+        старое ядро без неё — через «xray api statsquery»."""
+        port = self.ports.get("metrics")
+        if port and self._metrics_fail < self.METRICS_GIVE_UP:
+            try:
+                stats = xray.query_metrics(port)
+                self._metrics_fail = 0
+                return stats
+            except Exception:
+                self._metrics_fail += 1
+                if self._metrics_fail < self.METRICS_GIVE_UP:
+                    raise  # ядро могло ещё не подняться — следующий опрос попробует снова
+                self.log("Ядро не отдаёт страницу метрик — скорость читаю по-старому (запуском xray.exe).")
+        return xray.query_stats(self.paths, self.ports["api"], exe=self.proc.exe)
+
     def _poll_stats(self) -> None:
         try:
-            stats = xray.query_stats(self.paths, self.ports["api"], exe=self.proc.exe)
+            stats = self._read_stats()
         except Exception:
             return
-        now = time.monotonic()
+        now = self._mono()
         prev = self._stats_prev
         self._stats_prev = (now, stats)
         if not prev:
@@ -4447,6 +4574,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             self.live[f"{key}_up"] = up / dt
             moved[key] = down + up
         self.live["main_down"] = delta(["proxy"], "downlink") / dt  # только основной сервер (без запасного)
+        if delta(vpn_tags, "downlink") > 2048:
+            self._rx_at = now  # с сервера пришли данные — он жив (проверку связи можно пропустить)
         if self.connected:
             self._data_watch(delta(vpn_tags, "uplink"), delta(vpn_tags, "downlink"), now)
         self._count_traffic(moved.get("proxy", 0), moved.get("direct", 0))
@@ -4486,8 +4615,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
         return (self.live.get("proxy_down") or 0) + (self.live.get("proxy_up") or 0) > self.BUSY_TRAFFIC
 
     def _health_check(self) -> None:
+        # один запрос (было три): проверка идёт реже и только когда с сервера не приходят данные
         r = netutil.http_ping(self.settings["ping_host"], self.settings["ping_path"], self.ports.get("health"),
-                              rounds=3, timeout=6)
+                              rounds=1, timeout=6)
         busy = self._vpn_busy()
         if not r["ok"] and (self.live.get("main_down") or 0) > 50 * 1024:
             # данные через сервер идут — значит, он жив: проверка просто не пробилась сквозь загрузку
@@ -4499,6 +4629,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             self._ping_failures = 0
             if r["ping_ms"] is not None:
                 self.live["ping"] = r["ping_ms"]
+                self._ping_at = self._mono()
             if self.current and not self._way_saving and not self._way_saved and time.time() - self._remember_at > 300 \
                     and self.settings.get("net_memory", True) and not self.conn_busy():
                 self._way_saving = True  # запомнить сервер и способ для этой сети (если данные идут), не чаще раза в 5 мин
@@ -5075,6 +5206,14 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             or bool(self.awg_active and self.awg_active.key == s.key),
         }
 
+    def journal_state(self) -> dict:
+        """Журнал подключения для окна: последние записи и сколько раз программа переподключала сама."""
+        items = [dict(it, kind_text=i18n.tr(journal.KINDS.get(it["kind"], it["kind"])),
+                      who=it.get("who") if it.get("who") == "user" else i18n.tr(it.get("who") or "программа"),
+                      why=i18n.tr(it.get("why") or "")) for it in self.journal.recent(30)]
+        auto = ("switch", "hotswap", "reconnect", "fail")
+        return {"items": items, "auto_hour": self.journal.count(auto, 3600), "auto_day": self.journal.count(auto, 86400)}
+
     def state(self) -> dict:
         s = self.settings
         best = self.best()
@@ -5172,6 +5311,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin):
             "hotspot": self.hotspot_state(),
             "awg": self.awg_state(),
             "engine": self.engine_state(),
+            "journal": self.journal_state(),
             "ladder": {"step": i18n.tr(self.ladder_step) if self.ladder_step else "",
                        "retry_at": self._ladder_next if self._ladder_next > time.time() else 0,
                        "what_works": self.what_works, "way": i18n.tr(ladder.way_text(self.current))

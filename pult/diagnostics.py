@@ -576,6 +576,9 @@ def finish(r: Report, e) -> dict:
              T(f"Ошибок: {errors}, предупреждений: {warnings}", f"Errors: {errors}, warnings: {warnings}"), ""]
     for item in r.items:
         lines.append(f"{marks.get(item['level'], '[?]')} {item['title']}" + (f" — {item['detail']}" if item["detail"] else ""))
+    if getattr(e, "journal", None) is not None:
+        from . import journal
+        lines += [""] + journal.report_lines(e.journal.recent(journal.KEEP), i18n.tr)
     lines += ["", T("Последние строки журнала:", "Last log lines:")] + e.logs_view()[-60:]
     sec = secrets_of(e)
     text = scrub("\n".join(lines), sec)

@@ -110,6 +110,20 @@ public final class Store {
         }
     }
 
+    /** Дописать в конец файла (журналы). */
+    public static void append(File f, byte[] data) throws IOException {
+        File dir = f.getParentFile();
+        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
+            throw new IOException("mkdir " + dir);
+        }
+        OutputStream out = new FileOutputStream(f, true);
+        try {
+            out.write(data);
+        } finally {
+            out.close();
+        }
+    }
+
     public static void write(File f, byte[] data) throws IOException {
         File dir = f.getParentFile();
         if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {

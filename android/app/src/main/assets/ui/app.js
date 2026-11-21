@@ -395,7 +395,8 @@
           ${kv(t("h_data"), dataTxt, on && !busy ? `<button class="link-btn" data-act="data-run">${esc(t("st_data_check"))}</button>` : "")}
           ${kv(t("st_net"), esc(S.settings.net_memory === false ? t("st_mem_off") : L.net_known ? t("st_mem_known") : t("st_mem_new")))}
           ${kv(t("st_last"), last)}
-        </div></section>
+          ${kv(t("st_journal"), journalSummary())}
+        </div>${journalHtml()}</section>
         <section class="card"><div class="card-head"><h2>${esc(t("st_protect"))}</h2></div><div class="st-kv">
           ${kv(t("h_certs"), `${dot(it[2].cls)}${esc(it[2].value)}`)}
           ${kv(t("h_leaks"), `${dot(it[3].cls)}${esc(it[3].value)}`)}
@@ -408,6 +409,23 @@
         </section>`);
     },
   };
+
+  // журнал подключения: кто (ты или автоматика) и почему подключал, переключал и отключал VPN
+  function journalSummary() {
+    const J = S.journal || {};
+    return `<i class="dot ${(J.auto_hour || 0) >= 3 ? "warn" : "good"}"></i>${esc(t("journal_auto", { h: J.auto_hour || 0, d: J.auto_day || 0 }))}`;
+  }
+
+  function journalHtml() {
+    const items = (S.journal && S.journal.items) || [];
+    if (!items.length) return "";
+    const time = (ts) => new Date(ts * 1000).toLocaleString(lang === "en" ? "en-GB" : "ru-RU",
+      { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return `<details class="journal-box"><summary>${esc(t("journal_title"))}</summary>
+      <p class="muted small">${esc(t("journal_hint"))}</p><ul class="journal">${items.map((it) => `<li class="j-${esc(it.kind)}">
+        <time>${esc(time(it.t))}</time><b>${esc(it.kind_text)}</b>${it.server ? `<span>${esc(it.server)}</span>` : ""}
+        <span class="muted">${esc(it.who === "user" ? t("journal_you") : it.who || t("journal_app"))}${it.why ? ` — ${esc(it.why)}` : ""}</span></li>`).join("")}</ul></details>`;
+  }
 
   // лестница не нашла рабочего способа: что открывается напрямую и когда следующая попытка
   function whatWorksHtml() {

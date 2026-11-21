@@ -227,6 +227,47 @@ def _pipe(a, b):
                 pass
 
 
+class FakeMetrics:
+    """Страница метрик ядра (/debug/vars): счётчики трафика растут с каждым запросом, как у работающего Xray."""
+
+    def __init__(self, port: int):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        owner = self
+        self.hits = 0
+
+        class H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                owner.hits += 1
+                n = owner.hits
+                if self.path != "/debug/vars":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                body = json.dumps({"stats": {"outbound": {
+                    "proxy": {"uplink": n * 1000, "downlink": n * 50000},
+                    "mask@proxy": {"uplink": n, "downlink": n},
+                    "direct": {"uplink": n * 10, "downlink": n * 900}}, "inbound": {}, "user": {}}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+        self.srv.daemon_threads = True
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def stop(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+METRICS: dict = {}  # порт → FakeMetrics последнего запущенного ядра (для проверок)
+
+
 class FakeProxy:
     """Ведёт себя как HTTP-вход Xray: принимает CONNECT/GET и пересылает на локальный веб-сервер."""
 
@@ -351,6 +392,11 @@ def install_fakes():
             key = tag if tag in addr else "proxy"
             BEHAVIOR[ib["port"]] = _addr_behavior(addr.get(key, ""), masked.get(key, False), fps.get(key))
             self._fakes.append(FakeProxy(ib["port"]))
+        listen = (config.get("metrics") or {}).get("listen", "")
+        if listen and not FAKE_OLD_CORE.get("on"):
+            m = FakeMetrics(int(listen.rsplit(":", 1)[1]))
+            METRICS[m.srv.server_address[1]] = m
+            self._fakes.append(m)
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False)
         self.proc = None
@@ -364,6 +410,7 @@ def install_fakes():
 
     def fake_stats(paths, port, exe=None):
         counter["n"] += 1
+        STATSQUERY["n"] += 1
         n = counter["n"]
         return {"proxy": {"uplink": n * 1000, "downlink": n * 50000}, "direct": {"uplink": n * 10, "downlink": n * 900}}
 
@@ -399,6 +446,8 @@ def install_fakes():
 
 HEALTH_PORT: dict = {}
 SINGBOX_CONFIGS: list = []
+FAKE_OLD_CORE: dict = {}
+STATSQUERY: dict = {"n": 0}  # сколько раз скорость читали запуском «xray api statsquery»  # {"on": True} — ядро без страницы метрик (старая версия)
 
 
 def make_engine(tmp: str):
@@ -1453,6 +1502,7 @@ def t_engine_failover():
     try:
         e = make_engine(tmp)
         e.settings["autopilot"] = True
+        e._monitor_tick = lambda tick: None  # проверку связи тест делает сам (см. t_ladder)
         e.startup()
         e.add_subscription(f"http://127.0.0.1:{WEB}/sub")
         e.connect(e.best())
@@ -1481,6 +1531,9 @@ def t_ladder():
     try:
         e = make_engine(tmp)
         e.settings["autopilot"] = True
+        # всё фоновое тест делает сам: монитор запустил бы вторую лестницу параллельно с той, что вызывает
+        # тест напрямую (в программе так не бывает — лестница всегда идёт в очереди подключения)
+        e._monitor_tick = lambda tick: None
         e.startup()
         q = "?security=reality&pbk=K&sni=a.com&type=tcp"
         e.add_servers("\n".join([
@@ -4157,6 +4210,212 @@ def t_engine_links():
     for bad in ("cHJpdmF0ZWtleX", "awg://", "vpn://", "3f1a0000", "awg.example", "hysteria2://", "p@ss"):
         check(bad not in out, f"в отчёте осталось {bad}: {out[:200]}")
     check(i18n.tr("маскировка «x» не поддерживается") == "маскировка «x» не поддерживается", "по-русски без изменений")
+
+
+@case("zapret: архив сверяется с GitHub, зеркало не подсовывает чужие программы")
+def t_zapret_mirror():
+    import hashlib
+    import zipfile as zf
+    from pult import dpi
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    real_dl, real_rel = netutil.download_file, dpi.latest_release
+    try:
+        paths = dpi.DpiPaths(os.path.join(tmp, "bin"), os.path.join(tmp, "data"))
+        os.makedirs(paths.data_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(paths.zapret_dir), exist_ok=True)
+
+        def make_zip(path, exe=b"WINWS-1", top="", version="1.10.4"):
+            with zf.ZipFile(path, "w") as z:
+                z.writestr(top + "bin/winws.exe", exe)
+                z.writestr(top + "bin/WinDivert64.sys", b"DRIVER")
+                z.writestr(top + "lists/list-general.txt", "youtube.com\n" + version)
+                z.writestr(top + "service.bat", f'set "LOCAL_VERSION={version}"\r\n')
+        good = os.path.join(tmp, "good.zip")
+        make_zip(good)
+        digest = hashlib.sha256(open(good, "rb").read()).hexdigest()
+        files = {"https://gh/zapret.zip": good}
+        netutil.download_file = lambda url, dest, proxy_port=None, timeout=60, **kw: shutil.copy(files[url], dest)
+        rel = {"tag_name": "1.10.3", "assets": [{"name": "zapret.zip", "browser_download_url": "https://gh/zapret.zip",
+                                                 "digest": "sha256:" + "0" * 64}]}
+        # 1) архив с GitHub не совпал с его контрольной суммой — не ставится
+        try:
+            dpi.download_zapret(paths, None, rel)
+            check(False, "подменённый архив поставился")
+        except dpi.DpiError as exc:
+            check("контрольной суммой" in str(exc), str(exc))
+        check(not os.path.isfile(os.path.join(paths.zapret_dir, "bin", "winws.exe")), "ничего не поставлено")
+        # 2) GitHub недоступен и проверенных программ ещё нет — зеркалу не верим
+        dpi.latest_release = lambda repo, proxy_port=None: (_ for _ in ()).throw(DpiFail("GitHub не ответил (451)"))
+        try:
+            dpi.download_zapret(paths, None)
+            check(False, "без проверки поставилось с зеркала")
+        except dpi.DpiError as exc:
+            check("GitHub не ответил" in str(exc) and "без проверки не ставлю" in str(exc), str(exc))
+        # 3) правильный архив с GitHub — ставится, программы запоминаются как проверенные
+        rel["assets"][0]["digest"] = "sha256:" + digest
+        check(dpi.download_zapret(paths, None, rel) == "1.10.3", "версия")
+        check(dpi._load_verified(paths).get("bin/winws.exe"), "хеши запомнены")
+        # 4) GitHub пропал: зеркало с теми же программами (в своей папке) — обновляет списки
+        mirror = os.path.join(tmp, "mirror.zip")
+        make_zip(mirror, top="zapret-discord-youtube-1.10.4/", version="1.10.4")
+        files[dpi.ZAPRET_MIRROR] = mirror
+        check(dpi.download_zapret(paths, None) == "1.10.4", "с зеркала")
+        check("1.10.4" in open(os.path.join(paths.zapret_dir, "lists", "list-general.txt")).read(), "списки новые")
+        # 5) в зеркале подменили winws.exe — не ставится, рабочая копия цела
+        make_zip(mirror, exe=b"EVIL", top="x/", version="1.10.5")
+        try:
+            dpi.download_zapret(paths, None)
+            check(False, "чужой winws.exe поставился")
+        except dpi.DpiError as exc:
+            check("другие программы" in str(exc) and "winws.exe" in str(exc), str(exc))
+        check(open(os.path.join(paths.zapret_dir, "bin", "winws.exe"), "rb").read() == b"WINWS-1", "старая копия цела")
+        check(not os.path.isdir(paths.zapret_dir + ".unpack"), "временная папка убрана")
+    finally:
+        netutil.download_file, dpi.latest_release = real_dl, real_rel
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+class DpiFail(Exception):
+    pass
+
+
+@case("Журнал подключения: кто и почему подключал и переключал; в отчёте без адресов")
+def t_journal():
+    from pult import journal
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    try:
+        e = make_engine(tmp)
+        e.startup()
+        q = "?security=reality&pbk=K&sni=a.com&type=tcp"
+        e.add_servers(f"vless://76666666-6666-4666-8666-666666666661@fast.example:443{q}#A\n"
+                      f"vless://76666666-6666-4666-8666-666666666662@fast2.example:443{q}#B")
+        wait_idle(e)
+        a, b = e.servers[0], e.servers[1]
+        check(e.run_task("Подключение", e.connect, a, lane="conn", user=True), "задача")
+        for _ in range(100):
+            if e.connected and not e.conn_busy():
+                break
+            time.sleep(0.05)
+        it = e.journal.recent(1)[0]
+        check(it["kind"] == "connect" and it["who"] == "user" and it["server"] == "A", f"кнопкой: {it}")
+        e.settings["autopilot"] = True
+        e.run_task("Автопилот: поиск рабочего сервера", e.failover, "сервер перестал отвечать", lane="conn")
+        for _ in range(200):
+            if not e.conn_busy():
+                break
+            time.sleep(0.05)
+        it = e.journal.recent(1)[0]
+        check(it["who"].startswith("Автопилот") and it["why"] == "сервер перестал отвечать"
+              and it["kind"] in ("switch", "hotswap", "reconnect"), f"автопилот: {it}")
+        st = e.journal_state()
+        check(st["auto_hour"] >= 1 and st["items"][0]["kind_text"], f"для окна: {st['auto_hour']}")
+        e.disconnect()
+        check(e.journal.recent(1)[0]["kind"] == "disconnect", "отключение")
+        bad = links.parse_link(f"vless://76666666-6666-4666-8666-666666666663@dead.example:443{q}#C")
+        e._need_xray = lambda: (_ for _ in ()).throw(RuntimeError("ядро не скачано: fast2.example"))
+        try:
+            e.connect(bad)
+        except Exception:
+            pass
+        del e._need_xray
+        fail = e.journal.recent(1)[0]
+        check(fail["kind"] == "fail", f"неудача: {fail}")
+        # переживает перезапуск, а в отчёте нет адресов и ключей
+        again = journal.read(e.paths.data_dir)
+        check(len(again) >= 4, f"с диска: {len(again)}")
+        text = "\n".join(journal.report_lines(again))
+        check("Журнал подключения" in text and "сама программа" in text, text[:200])
+        rep = diagnostics.finish(diagnostics.Report(), e)["text"]
+        check("Журнал подключения" in rep and "76666666" not in rep and "fast2.example" not in rep, "отчёт")
+    finally:
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+        HEALTH_PORT.clear()
+
+
+@case("Фон: пока VPN работает, программа не запускает других программ (10 минут за секунду)")
+def t_quiet_background():
+    import subprocess as sp
+    from pult import netwatch
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    real_popen = sp.Popen
+    launches: list = []
+
+    class CountingPopen(real_popen):
+        def __init__(self, args, *a, **kw):
+            launches.append(args if isinstance(args, str) else " ".join(map(str, args))[:80])
+            super().__init__(args, *a, **kw)
+    try:
+        e = make_engine(tmp)
+        e._closing = True  # свой монитор не нужен: секунды «прокручивает» сам тест
+        e.startup()
+        e.add_servers(f"vless://74444444-4444-4444-8444-444444444444@fast.example:443"
+                      f"?security=reality&pbk=K&sni=a.com&type=tcp#Q")
+        wait_idle(e)
+        e.connect(e.servers[0])
+        check(e.connected, "подключение")
+        check(e.ports.get("metrics") in METRICS, "ядро открыло страницу метрик")
+        clock = [1000.0]
+        e._mono = lambda: clock[0]
+        e.ui_clients = 1
+        netwatch._state["ok"] = True  # как в Windows: о смене сети сообщает система
+        STATSQUERY["n"] = 0
+        pings: list = []
+        real_ping = netutil.http_ping
+
+        def counting_ping(*a, **kw):
+            pings.append(kw.get("rounds"))
+            return real_ping(*a, **kw)
+        netutil.http_ping = counting_ping
+        sp.Popen = CountingPopen
+        for tick in range(1, 601):
+            clock[0] += 1
+            e._monitor_tick(tick)
+            for _ in range(200):  # проверка связи идёт в своём потоке — дождаться её
+                if not e._health_running:
+                    break
+                time.sleep(0.01)
+        sp.Popen = real_popen
+        netutil.http_ping = real_ping
+        late = launches[1:] if launches and "netsh" in launches[0] else launches
+        check(not late, f"за 10 минут запущены программы: {late[:5]}")
+        check(STATSQUERY["n"] == 0, f"скорость читалась запуском xray.exe {STATSQUERY['n']} раз")
+        check(e.live.get("proxy_down", 0) > 0, "скорость в окне считается со страницы метрик")
+        # проверка связи: не чаще раза в 20 с и одним запросом (было: каждые 5 с по три)
+        check(len(pings) <= 31 and all(r == 1 for r in pings), f"проверок связи: {len(pings)}, запросов: {pings[:3]}")
+        # данные с сервера идут — лишних проверок нет (пинг в окне — раз в минуту)
+        pings.clear()
+        netutil.http_ping = counting_ping
+        for tick in range(601, 901):
+            clock[0] += 1
+            e._rx_at = clock[0]
+            e._monitor_tick(tick)
+            for _ in range(200):
+                if not e._health_running:
+                    break
+                time.sleep(0.01)
+        netutil.http_ping = real_ping
+        check(len(pings) <= 6, f"при идущих данных проверок связи: {len(pings)} за 5 минут")
+        # старое ядро без страницы метрик — скорость всё равно видна (по-старому, но реже)
+        e.disconnect()
+        FAKE_OLD_CORE["on"] = True
+        e.connect(e.servers[0])
+        for tick in range(1, 31):
+            clock[0] += 1
+            e._monitor_tick(tick)
+        check(e._metrics_fail >= e.METRICS_GIVE_UP and STATSQUERY["n"] > 0, "запасной способ — statsquery")
+        check(STATSQUERY["n"] <= 3 + 30 // 2, f"statsquery: {STATSQUERY['n']}")
+    finally:
+        sp.Popen = real_popen
+        FAKE_OLD_CORE.clear()
+        netwatch._state["ok"] = False
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+        HEALTH_PORT.clear()
 
 
 @case("Движки: мост sing-box (TUIC), выбор движка, AmneziaWG через помощника с проверкой параметров")

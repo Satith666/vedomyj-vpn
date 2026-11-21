@@ -235,14 +235,14 @@ class UIServer:
 
         def task(title, func, *args):
             """Долгая задача (фоновая очередь)."""
-            if not e.run_task(title, func, *args):
+            if not e.run_task(title, func, *args, user=True):
                 raise ActionError(f"Подожди: сейчас выполняется «{e.busy_text}».")
             return True
 
         def vpn_task(title, func, *args):
             """Действие с VPN (подключить, отключить, сменить сервер, применить настройки) — своя очередь:
             не ждёт долгих задач вроде подбора zapret или скачивания списков."""
-            if not e.run_task(title, func, *args, lane="conn"):
+            if not e.run_task(title, func, *args, lane="conn", user=True):
                 raise ActionError(f"Подожди: сейчас выполняется «{e.conn_text}».")
             return True
 

@@ -16,3 +16,5 @@ android/.idea/
 # ключи подписи — только в секретах GitHub, никогда в репозитории
 android/keystore/
 build/release_key.json
+node_modules/
+package-lock.json

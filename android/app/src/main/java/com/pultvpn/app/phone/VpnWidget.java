@@ -43,8 +43,10 @@ public final class VpnWidget extends AppWidgetProvider {
         }
         Engine e = App.engine();
         if (!"off".equals(e.status())) {
+            e.markUser();
             e.disconnect();
         } else if (VpnService.prepare(ctx) == null) {
+            e.markUser();
             e.connect();
         } else {
             // нужно разрешение на VPN — его можно дать только в окне приложения

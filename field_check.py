@@ -117,8 +117,8 @@ def check_core(paths: xray.Paths, exe: str, label: str, legacy: bool = False) ->
         return
     add("ok", T(f"{label}: версия {ver}", f"{label}: version {ver}"))
     s1, s2 = fake_servers()
-    ports = dict(zip(("socks", "http", "health", "api", "direct", "direct_http"),
-                     netutil.find_free_ports(6, start=23100)))
+    ports = dict(zip(("socks", "http", "health", "api", "direct", "direct_http", "metrics"),
+                     netutil.find_free_ports(7, start=23100)))
     access = os.path.join(paths.data_dir, "field-check-access.log")
     geo = paths.geo_ready()
     ads_dat = os.path.isfile(os.path.join(paths.bin_dir, "adblock.dat"))
@@ -209,6 +209,67 @@ def check_live_rules(paths: xray.Paths) -> None:
                 os.remove(p)
             except OSError:
                 pass
+
+
+def check_metrics(paths: xray.Paths) -> None:
+    """Скорость без запуска xray.exe: ядро отдаёт счётчики по HTTP (/debug/vars), программа читает их
+    тем же кодом, что и в работе. Трафик идёт через вход ядра к маленькому веб-серверу на этом компьютере."""
+    import http.server
+    import threading
+    ports = netutil.find_free_ports(3, start=23400)
+    body = b"x" * 200_000
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    web = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=web.serve_forever, daemon=True).start()
+    cfg = {"log": {"loglevel": "warning"},
+           "stats": {}, "policy": {"system": {"statsOutboundUplink": True, "statsOutboundDownlink": True}},
+           "metrics": {"tag": "metrics", "listen": f"127.0.0.1:{ports[1]}"},
+           "inbounds": [{"tag": "http-in", "listen": "127.0.0.1", "port": ports[0], "protocol": "http"}],
+           "outbounds": [{"tag": "proxy", "protocol": "freedom"}, {"tag": "direct", "protocol": "freedom"}],
+           "routing": {"rules": [{"type": "field", "inboundTag": ["http-in"], "outboundTag": "proxy"}]}}
+    proc = xray.XrayProcess(paths)
+    path = os.path.join(paths.data_dir, "field-check-metrics.json")
+    try:
+        proc.start(cfg, path, wait_for=[ports[0], ports[1]])
+    except Exception as exc:
+        add("error", T("Ядро не запустилось со страницей метрик", "Core did not start with the metrics page"),
+            str(exc)[:200])
+        web.shutdown()
+        return
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(
+            {"http": f"http://127.0.0.1:{ports[0]}"}))
+        got = len(opener.open(f"http://127.0.0.1:{web.server_address[1]}/", timeout=10).read())
+        stats, err = {}, ""
+        for _ in range(10):
+            try:
+                stats = xray.query_metrics(ports[1])
+                if stats.get("proxy", {}).get("downlink", 0) >= len(body):
+                    break
+            except Exception as exc:
+                err = str(exc)[:200]
+            time.sleep(0.3)
+        down = stats.get("proxy", {}).get("downlink", 0)
+        add("ok" if down >= got > 0 else "error",
+            T("Скорость без запуска xray.exe (страница метрик ядра)", "Speed without launching xray.exe (core metrics page)"),
+            T(f"через ядро прошло {down} байт", f"{down} bytes went through the core") if down else (
+                err or T("счётчиков трафика нет", "no traffic counters")))
+    finally:
+        proc.stop()
+        web.shutdown()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def tun_paths(paths: xray.Paths) -> tun.TunPaths:
@@ -704,6 +765,13 @@ def save_report(info: dict) -> str:
         lines.append(f"{marks.get(r['level'], '[?]')} {r['title']}" + (f" — {r['detail']}" if r["detail"] else ""))
     lines += ["", T("Проверь руками (это автоматически не проверить):", "Check by hand (cannot be automated):")]
     lines += [f"{i}. {T(ru, en)}" for i, (ru, en) in enumerate(MANUAL, 1)]
+    try:  # журнал подключения: сколько раз программа сама переподключала и почему (главное для «лагает»)
+        from pult import journal
+        items = journal.read(os.path.join(APP_DIR, "data"))
+        if items:
+            lines += [""] + journal.report_lines(items, i18n.tr, n=60)
+    except Exception:
+        pass
     secrets = set()
     try:
         from pult.engine import Engine
@@ -750,6 +818,7 @@ def main() -> None:
     if paths.xray_exists():
         guard(T("Ядро Xray", "Xray core"), lambda: check_core(paths, paths.xray, T("Ядро", "Core")))
         guard(T("Правила на лету", "Live rules"), lambda: check_live_rules(paths))
+        guard(T("Страница метрик", "Metrics page"), lambda: check_metrics(paths))
     else:
         add("warn", T("Ядро Xray ещё не скачано — запусти программу один раз", "Xray core not downloaded yet — start the program once"))
     if paths.legacy_exists():

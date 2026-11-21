@@ -250,18 +250,127 @@ def _swap_in(found: str, dest: str, version: str, keep: tuple[str, ...] = ()) ->
         f.write(version)
 
 
+# Запасной источник сборки Flowseal: точное зеркало SourceForge (копирует выпуски с GitHub). Им пользуемся,
+# только если GitHub не открывается ни напрямую, ни через VPN (так было в июле 2026, когда аккаунт Flowseal
+# приостановили). Программы из зеркала (winws.exe, драйвер WinDivert) берём, только если они побайтно
+# совпадают с теми, что уже были проверены по GitHub: winws.exe работает с правами администратора,
+# и подменённый файл в «зеркале» был бы опасен. Списки сайтов и стратегии (текстовые файлы) — обновляются.
+ZAPRET_MIRROR = "https://sourceforge.net/projects/flowseal.mirror/files/latest/download"
+HASHES_FILE = "zapret_verified.json"  # хеши программ из последней сборки, проверенной по GitHub
+_BINARY = re.compile(r"\.(exe|sys|dll)$", re.I)
+
+
+def _sha256(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _asset_digest(release: dict, url: str) -> str:
+    """Контрольная сумма файла, которую показывает сам GitHub (поле digest: «sha256:…»)."""
+    for a in release.get("assets") or []:
+        if a.get("browser_download_url") == url:
+            d = str(a.get("digest") or "")
+            return d.split(":", 1)[1].lower() if d.lower().startswith("sha256:") else ""
+    return ""
+
+
+def _binary_hashes(folder: str) -> dict[str, str]:
+    out = {}
+    for root, _, files in os.walk(folder):
+        for name in files:
+            if _BINARY.search(name):
+                full = os.path.join(root, name)
+                out[os.path.relpath(full, folder).replace(os.sep, "/").lower()] = _sha256(full)
+    return out
+
+
+def _load_verified(paths: DpiPaths) -> dict[str, str]:
+    try:
+        with open(os.path.join(paths.data_dir, HASHES_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_verified(paths: DpiPaths, hashes: dict[str, str]) -> None:
+    try:
+        with open(os.path.join(paths.data_dir, HASHES_FILE), "w", encoding="utf-8") as f:
+            json.dump(hashes, f, ensure_ascii=False, indent=1, sort_keys=True)
+    except OSError:
+        pass
+
+
 def download_zapret(paths: DpiPaths, proxy_port: int | None = None, release: dict | None = None) -> str:
-    release = release or latest_release(ZAPRET_REPO, proxy_port)
+    try:
+        release = release or latest_release(ZAPRET_REPO, proxy_port)
+    except Exception as exc:
+        try:
+            return download_zapret_mirror(paths, proxy_port)
+        except DpiError as mirror_exc:
+            raise DpiError(f"{exc}; запасное зеркало: {mirror_exc}") from exc
+        except Exception:
+            raise exc
     tag = str(release.get("tag_name") or "").lstrip("vV")
     url = _pick_asset(release, [r"\.zip$"]) or release.get("zipball_url") or ""
     if not url:
         raise DpiError("в выпуске zapret нет архива")
     zip_path = os.path.join(paths.data_dir, "zapret_download.zip")
     netutil.download_file(url, zip_path, proxy_port=proxy_port, timeout=120)
+    want = _asset_digest(release, url)
+    if want and _sha256(zip_path) != want:
+        os.remove(zip_path)
+        raise DpiError("архив zapret не совпал с контрольной суммой на GitHub — не ставлю его")
     found = _extract(zip_path, paths.zapret_dir, os.path.join("bin", "winws.exe"))
+    hashes = _binary_hashes(found)
     _swap_in(found, paths.zapret_dir, tag)
     os.remove(zip_path)
+    _save_verified(paths, hashes)  # эти программы пришли с GitHub — по ним проверяем зеркало
     return tag
+
+
+def download_zapret_mirror(paths: DpiPaths, proxy_port: int | None = None, url: str = ZAPRET_MIRROR) -> str:
+    """Сборка Flowseal из запасного зеркала. Программы внутри должны совпасть с уже проверенными."""
+    verified = _load_verified(paths)
+    if not verified and os.path.isfile(os.path.join(paths.zapret_dir, "bin", "winws.exe")):
+        # уже стоящая сборка когда-то скачана программой с GitHub — её программы и считаем проверенными
+        verified = {k: v for k, v in _binary_hashes(paths.zapret_dir).items()}
+        _save_verified(paths, verified)
+    if not verified:
+        raise DpiError("GitHub недоступен, а с зеркала программы с правами администратора без проверки не ставлю — "
+                       "включи VPN и повтори")
+    zip_path = os.path.join(paths.data_dir, "zapret_mirror.zip")
+    netutil.download_file(url, zip_path, proxy_port=proxy_port, timeout=120)
+    try:
+        found = _extract(zip_path, paths.zapret_dir, os.path.join("bin", "winws.exe"))
+    finally:
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+    got = _binary_hashes(found)
+    strange = sorted(k for k, v in got.items() if verified.get(k) != v)
+    if strange:
+        shutil.rmtree(found, ignore_errors=True)
+        shutil.rmtree(paths.zapret_dir + ".unpack", ignore_errors=True)
+        raise DpiError("в зеркале другие программы, чем на GitHub (" + ", ".join(strange[:3]) +
+                       ") — не ставлю; обновлю, когда GitHub откроется")
+    tag = ""
+    for root, _, files in os.walk(found):  # версия сборки — в service.bat («set "LOCAL_VERSION=1.10.4"»)
+        if "service.bat" in files:
+            try:
+                with open(os.path.join(root, "service.bat"), encoding="utf-8", errors="replace") as f:
+                    m = re.search(r'LOCAL_VERSION=([0-9][0-9A-Za-z.\-]*)', f.read())
+                tag = m.group(1) if m else ""
+            except OSError:
+                pass
+            break
+    _swap_in(found, paths.zapret_dir, tag or "mirror")
+    return tag or "mirror"
 
 
 def download_byedpi(paths: DpiPaths, proxy_port: int | None = None, release: dict | None = None) -> str:

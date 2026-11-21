@@ -549,6 +549,9 @@ def build_run_config(server: Server, settings: dict, ports: dict, access_log: st
         "outbounds": outbounds,
         "routing": {"domainStrategy": routing.domain_strategy(mode), "rules": rules},
     }
+    if ports.get("metrics"):
+        # страница метрик (/debug/vars): скорость и трафик читаются по HTTP, без запуска xray.exe
+        cfg["metrics"] = {"tag": "metrics", "listen": f"127.0.0.1:{ports['metrics']}"}
     if use_dns:
         cfg["dns"] = tunmod.xray_dns(encrypted, ipv6, use_geo)
     if failover:
@@ -712,18 +715,62 @@ def query_stats(paths: Paths, api_port: int, exe: str | None = None) -> dict[str
     if proc.returncode != 0:
         raise XrayError(short_error(proc.stderr or proc.stdout or "statsquery failed"))
     data = json.loads(proc.stdout or "{}")
-    result: dict[str, dict[str, int]] = {}
+    items = []
     for item in data.get("stat", []) or []:
         parts = str(item.get("name", "")).split(">>>")
         if len(parts) == 4 and parts[0] == "outbound" and parts[2] == "traffic":
-            tag = parts[1].rsplit("@", 1)[-1]  # вспомогательные outbound считаем вместе с основным
-            try:
-                value = int(item.get("value", 0) or 0)
-            except (TypeError, ValueError):
-                value = 0
-            bucket = result.setdefault(tag, {"uplink": 0, "downlink": 0})
-            bucket[parts[3]] = bucket.get(parts[3], 0) + value
+            items.append((parts[1], parts[3], item.get("value", 0)))
+    return _merge_outbound_stats(items)
+
+
+def _merge_outbound_stats(items) -> dict[str, dict[str, int]]:
+    """(тег, направление, байты) → {"proxy": {"uplink": n, "downlink": n}, ...}; вспомогательные outbound
+    («имя@proxy») считаем вместе с основным."""
+    result: dict[str, dict[str, int]] = {}
+    for tag, way, value in items:
+        if way not in ("uplink", "downlink"):
+            continue
+        try:
+            value = int(value or 0)
+        except (TypeError, ValueError):
+            value = 0
+        bucket = result.setdefault(str(tag).rsplit("@", 1)[-1], {"uplink": 0, "downlink": 0})
+        bucket[way] = bucket.get(way, 0) + value
     return result
+
+
+def read_metrics(port: int, timeout: float = 2.0) -> dict:
+    """Страница метрик ядра (/debug/vars) — обычный HTTP на 127.0.0.1, без запуска xray.exe.
+    Напрямую, мимо системного прокси (он указывает на само ядро)."""
+    import http.client
+    conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=timeout)
+    try:
+        conn.request("GET", "/debug/vars", headers={"Connection": "close"})
+        resp = conn.getresponse()
+        body = resp.read(4 * 1024 * 1024)
+        if resp.status != 200:
+            raise XrayError(f"метрики ядра: HTTP {resp.status}")
+    finally:
+        conn.close()
+    data = json.loads(body.decode("utf-8", "replace") or "{}")
+    if not isinstance(data, dict):
+        raise XrayError("метрики ядра: непонятный ответ")
+    return data
+
+
+def stats_from_metrics(data: dict) -> dict[str, dict[str, int]]:
+    """Счётчики outbound из страницы метрик: {"stats": {"outbound": {тег: {"uplink", "downlink"}}}}."""
+    stats = data.get("stats")
+    if not isinstance(stats, dict) or not isinstance(stats.get("outbound"), dict):
+        raise XrayError("метрики ядра: нет счётчиков трафика")
+    return _merge_outbound_stats((tag, way, v) for tag, ways in stats["outbound"].items() if isinstance(ways, dict)
+                                 for way, v in ways.items())
+
+
+def query_metrics(port: int, timeout: float = 2.0) -> dict[str, dict[str, int]]:
+    """То же, что query_stats, но через страницу метрик — без запуска процесса (раньше это был
+    запуск xray.exe каждые 2 секунды, и каждый такой запуск проверял антивирус)."""
+    return stats_from_metrics(read_metrics(port, timeout))
 
 
 def api_command(paths: Paths, api_port: int, args: list[str], exe: str | None = None) -> bool:

@@ -248,6 +248,41 @@ public final class Engine {
         String title = "";
         String kind = "";
         volatile boolean stop;
+        String task = "";   // название задачи (title меняется по ходу) — для журнала подключения
+        boolean user;       // задачу начал человек (кнопкой, виджетом, плиткой), а не автоматика
+        String why = "";    // причина (например, «сервер перестал отвечать») — для журнала подключения
+    }
+
+    /** Журнал подключения: кто и почему подключал, переключал и отключал VPN. */
+    private final Journal journal;
+    private volatile long userUntil;
+    private long pingAt; // когда последний раз измерена задержка (монитор)
+
+    /** Следующую задачу начал человек (вызывать прямо перед действием). */
+    public void markUser() {
+        userUntil = System.currentTimeMillis() + 3000;
+    }
+
+    public Journal journal() {
+        return journal;
+    }
+
+    private void journal(String kind, Server s, String why) {
+        Lane l = laneOf.get();
+        String who = l == null ? "" : l.user ? "user" : l.task;
+        String reason = why == null || why.isEmpty() ? (l == null ? "" : l.why) : why;
+        try {
+            journal.add(kind, s == null ? "" : s.name, who, reason, s == null ? "" : (s.engine == null || s.engine.isEmpty() ? "xray" : s.engine));
+        } catch (Exception ignored) {
+            // журнал — помощник
+        }
+    }
+
+    private void journalWhy(String why) {
+        Lane l = laneOf.get();
+        if (l != null) {
+            l.why = why;
+        }
     }
 
     private final Lane conn = new Lane();
@@ -302,6 +337,12 @@ public final class Engine {
         XrayConfig.CERT_PINS.clear();
         loadPins();
         errors = new ErrorLog(dir, platform.appVersion(), "Android " + platform.osVersion(), new ErrorLog.Scrubber() {
+            @Override
+            public String scrub(String text) {
+                return scrubSecrets(text);
+            }
+        });
+        journal = new Journal(dir, new ErrorLog.Scrubber() {
             @Override
             public String scrub(String text) {
                 return scrubSecrets(text);
@@ -604,6 +645,10 @@ public final class Engine {
             lane.title = title;
             lane.kind = kind;
             lane.stop = false;
+            lane.task = title;
+            lane.user = System.currentTimeMillis() < userUntil;
+            lane.why = "";
+            userUntil = 0;
         }
         changed();
         lane.exec.submit(new Runnable() {
@@ -1602,6 +1647,7 @@ public final class Engine {
             String m = e.getMessage() == null ? e.toString() : e.getMessage();
             log("Ядро не запустилось с сервером «" + s.name + "»: " + m,
                     "The core did not start with \"" + s.name + "\": " + m);
+            journal("fail", s, m);
             if (m.toLowerCase().contains("permission") || m.contains("VPN_PERMISSION")) {
                 throw new UserError(Text.t("Нет разрешения на VPN. Нажми «Подключить» ещё раз и разреши.",
                         "No VPN permission. Tap Connect again and allow it."));
@@ -1613,7 +1659,9 @@ public final class Engine {
             try {
                 long d = p.coreDelay(XrayConfig.HEALTH_URL);
                 if (d > 0) {
+                    Server prev;
                     synchronized (lock) {
+                        prev = "on".equals(status) ? current : null;
                         current = s;
                         status = "on";
                         healthFails = 0;
@@ -1621,6 +1669,7 @@ public final class Engine {
                         s.fails = 0;
                         filterOn = false;
                     }
+                    journal(prev == null ? "connect" : prev.key().equals(s.key()) ? "reconnect" : "switch", s, "");
                     settings.put("was_on", true);
                     resolve("connect");
                     waySaved = "";
@@ -1636,6 +1685,7 @@ public final class Engine {
             sleep(1000);
         }
         log("Сервер «" + s.name + "» не пропускает трафик.", "Server \"" + s.name + "\" passes no traffic.");
+        journal("fail", s, Text.t("сервер не пропускает трафик", "the server passes no traffic"));
         synchronized (lock) {
             s.ok = false;
             s.pingMs = -1;
@@ -1751,6 +1801,11 @@ public final class Engine {
         boolean wasVpn;
         synchronized (lock) {
             wasVpn = !"off".equals(status);
+            if (wasVpn && current != null) {
+                Lane l = laneOf.get();
+                String who = l != null ? (l.user ? "user" : l.task) : System.currentTimeMillis() < userUntil ? "user" : "";
+                journal.add("disconnect", current.name, who, l == null ? "" : l.why, current.engine);
+            }
             status = "off";
             current = null;
             liveDelay = -1;
@@ -2506,6 +2561,7 @@ public final class Engine {
                     runTask(Text.t("Переключаю сервер", "Switching server"), "connect", new Runnable() {
                         @Override
                         public void run() {
+                            journalWhy(Text.t("данные через сервер не идут", "no data comes through the server"));
                             failover();
                         }
                     });
@@ -2719,8 +2775,11 @@ public final class Engine {
             return;
         }
         dataWatch(on, now);
-        // Автопереход: связь проверяется каждые 15 секунд
-        if (on && tick % 3 == 0) {
+        // Автопереход: связь проверяется раз в 20 секунд (после неудачи — сразу ещё раз, через 5 секунд).
+        // Пока с сервера идут данные, он жив — лишних запросов не делаем (пинг на экране — раз в минуту).
+        boolean flowing = speedDown > 2048;
+        boolean due = healthFails > 0 || (tick % 4 == 0 && (!flowing || now - pingAt > 60000L));
+        if (on && due) {
             long d = -1;
             try {
                 d = p.coreDelay(XrayConfig.HEALTH_URL);
@@ -2731,6 +2790,7 @@ public final class Engine {
                 if (d > 0) {
                     healthFails = 0;
                     liveDelay = d;
+                    pingAt = now;
                     resolve("connect");
                 } else {
                     healthFails++;
@@ -2765,6 +2825,7 @@ public final class Engine {
                 runTask(Text.t("Переключаю сервер", "Switching server"), "connect", new Runnable() {
                     @Override
                     public void run() {
+                        journalWhy(Text.t("сервер перестал отвечать", "the server stopped answering"));
                         failover();
                     }
                 });
@@ -3760,6 +3821,7 @@ public final class Engine {
                     "count", (long) netWays().size(), "data", dataFresh ? dl : null, "last", ladderLast,
                     "net_known", !waySaved.isEmpty()));
             st.put("errors_count", errors.size());
+            st.put("journal", journal.state());
             st.put("app_update", Json.obj("configured", Update.configured(), "state", appUpdate,
                     "auto", Json.bool(settings, "app_update", true)));
             st.put("ads", adsState());
@@ -4396,6 +4458,7 @@ public final class Engine {
             for (Map<String, Object> pr : problems.values()) {
                 b.append("Проблема: ").append(Json.str(pr, "title")).append(" — ").append(Json.str(pr, "detail")).append('\n');
             }
+            b.append('\n').append(journal.reportText(40));
             b.append("\nЖурнал:\n");
             for (String l : log) {
                 b.append(l).append('\n');

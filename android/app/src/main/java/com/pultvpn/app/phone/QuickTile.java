@@ -32,8 +32,10 @@ public final class QuickTile extends TileService {
     public void onClick() {
         Engine e = App.engine();
         if (!"off".equals(e.status())) {
+            e.markUser();
             e.disconnect();
         } else if (VpnService.prepare(this) == null) {
+            e.markUser();
             e.connect();
         } else {
             // нужно разрешение на VPN — его можно дать только в окне приложения

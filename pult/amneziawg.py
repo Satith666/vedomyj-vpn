@@ -38,10 +38,51 @@ def find_client() -> str:
     return ""
 
 
+def _service_state(name: str) -> int | None:
+    """Состояние службы через API Windows (без запуска sc.exe): 4 — работает, 1 — остановлена,
+    0 — службы нет; None — API недоступно."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        adv = ctypes.WinDLL("advapi32", use_last_error=True)
+        adv.OpenSCManagerW.restype = wintypes.HANDLE
+        adv.OpenSCManagerW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        adv.OpenServiceW.restype = wintypes.HANDLE
+        adv.OpenServiceW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD]
+        adv.CloseServiceHandle.argtypes = [wintypes.HANDLE]
+
+        class Status(ctypes.Structure):
+            _fields_ = [(n, wintypes.DWORD) for n in ("type", "state", "accepted", "exit", "svc_exit",
+                                                       "checkpoint", "wait_hint")]
+        adv.QueryServiceStatus.argtypes = [wintypes.HANDLE, ctypes.POINTER(Status)]
+    except (AttributeError, OSError, ImportError):
+        return None
+    scm = adv.OpenSCManagerW(None, None, 0x0001)  # SC_MANAGER_CONNECT — хватает обычных прав
+    if not scm:
+        return None
+    try:
+        svc = adv.OpenServiceW(scm, name, 0x0004)  # SERVICE_QUERY_STATUS
+        if not svc:
+            return 0 if ctypes.get_last_error() == 1060 else None  # 1060 — такой службы нет
+        try:
+            st = Status()
+            if not adv.QueryServiceStatus(svc, ctypes.byref(st)):
+                return None
+            return int(st.state)
+        finally:
+            adv.CloseServiceHandle(svc)
+    finally:
+        adv.CloseServiceHandle(scm)
+
+
 def service_running(name: str = SERVICE) -> bool:
-    """Работает ли служба туннеля (sc query — без прав администратора)."""
+    """Работает ли служба туннеля. Обычно — через API Windows (без запуска программ: монитор
+    спрашивает каждые 5 секунд); если API недоступно — через «sc query»."""
     if not IS_WINDOWS:
         return False
+    state = _service_state(name)
+    if state is not None:
+        return state == 4  # SERVICE_RUNNING
     try:
         out = subprocess.run(["sc", "query", name], capture_output=True, timeout=8,
                              creationflags=0x08000000).stdout.decode("cp866", "replace")
@@ -131,6 +172,8 @@ class AwgMixin:
                 self.log(f"AmneziaWG: {exc}")
         self.awg.wipe()
         was = self.awg_active
+        if was and not quiet:
+            self._journal("disconnect", was)
         self.awg_active = None
         if was and not quiet:
             self.log(f"AmneziaWG выключен: {was.name}.")
@@ -149,6 +192,8 @@ class AwgMixin:
             self.awg_active = None
             self.awg.wipe()
             self.log(f"Туннель AmneziaWG «{name}» остановился.")
+            self.journal.add("disconnect", name, "AmneziaWG", "туннель остановился сам или выключен в клиенте AmneziaWG",
+                             "awg")
             self.problem("awg_down", "AmneziaWG остановился", name, where="Движок → AmneziaWG",
                          fix="Нажми большую кнопку, чтобы включить снова, или выбери другой движок.")
             self.notify("status")

@@ -474,16 +474,42 @@ function homeSkeleton() {
     </section>`;
 }
 
-function renderHero() {
-  queueMicrotask(syncPopover);  // открытое меню остаётся у своей (новой) кнопки
-  const box = $("#hero");
-  if (!box) return;
+/* Живые цифры главного экрана (пинг, скорость, выход) и цвет кнопки. Обновляются каждые 2 секунды —
+   только они: кнопки и меню не пересоздаются, поэтому нажатие не «проваливается» между обновлениями,
+   а анимация кольца не начинается заново. */
+function heroLive() {
   const live = S.live || {};
   const awgOn = !!(S.awg && S.awg.active);
   const on = S.connected || awgOn;
   const connecting = busy("connect") || !!S.conn_busy; // подключение идёт своей очередью, параллельно с долгими задачами
   let cls = on ? (live.ping == null && !awgOn ? "is-weak" : "is-on") : "";
   if (connecting) cls = "is-busy";
+  const ping = S.connected ? live.ping : null;
+  const [down, downU] = rate(live.proxy_down);
+  const exit = S.connected ? (live.exit_loc ? countryName(live.exit_loc) : "…") : "—";
+  const stats = `<div class="${S.connected ? pingClass(ping) : ""}"><dt>${t("stat_ping")}</dt><dd>${S.connected && ping != null ? `${ping}<small>${t("ms")}</small>` : "—"}</dd></div>
+          <div><dt>${t("stat_speed")}</dt><dd>${S.connected ? `${down}<small>${downU}</small>` : "—"}</dd></div>
+          <div><dt>${t("stat_exit")}</dt><dd>${esc(exit)}</dd></div>`;
+  return { cls: cls ? `power ${cls}` : "power", stats };
+}
+
+function updateHeroLive() {
+  const box = $("#hero");
+  if (!box) return;
+  const { cls, stats } = heroLive();
+  const power = box.querySelector(".power");
+  if (power && power.className !== cls) power.className = cls;
+  const dl = box.querySelector("#heroStats");
+  if (dl && dl._html !== stats) { dl.innerHTML = stats; dl._html = stats; }
+}
+
+function renderHero() {
+  queueMicrotask(syncPopover);  // открытое меню остаётся у своей (новой) кнопки
+  const box = $("#hero");
+  if (!box) return;
+  const awgOn = !!(S.awg && S.awg.active);
+  const on = S.connected || awgOn;
+  const connecting = busy("connect") || !!S.conn_busy;
   const stateText = connecting ? (on ? t("st_switching") : t("st_connecting")) : on ? t("st_connected")
     : S.kill_on ? t("st_killed") : t("st_disconnected");
   const best = S.servers.find(s => s.key === S.best);
@@ -500,29 +526,22 @@ function renderHero() {
   if (!on && S.filter_on) line += `<span class="ads-chip">${icon("block")}${t("ads_chip")}</span>`;
   if (!on && S.kill_on) line = `<span class="kill-chip">${icon("lock")}${t("kill_chip")}</span>`;
   if (on && S.vpn_until) line += `<span class="timer-chip">${t("vpn_until", { n: Math.max(1, Math.round((S.vpn_until - Date.now() / 1000) / 60)) })}</span>`;
-  const ping = S.connected ? live.ping : null;
-  const [down, downU] = rate(live.proxy_down);
-  const exit = S.connected ? (live.exit_loc ? countryName(live.exit_loc) : "…") : "—";
   const st = S.settings;
   const conn = connLabel();
   const autoBtn = busy("auto") ? stopBtn() : `<button class="btn btn-primary hero-act" data-act="auto">${icon("bolt")}${t("auto")}</button>`;
   const tile = (id, ic, name, sub, on2, attrs) => `<button type="button" class="tile ${on2 ? "on" : ""} ${SOON.has(id) ? "soon-tile" : ""}" ${attrs}
       title="${esc(t(`i_${id}_desc`))}">${icon(ic)}<span class="tile-text"><b>${esc(name)}</b><span>${esc(sub)}</span></span></button>`;
   const backup = S.backup ? t("tile_backup", { name: S.backup.name }) : t("on");
-  box.innerHTML = `
+  const html = `
     <div class="hero-top">
-      <button class="power ${cls}" data-act="toggle" aria-label="${on ? t("disconnect") : t("connect")}">
+      <button class="power" data-act="toggle" aria-label="${on ? t("disconnect") : t("connect")}">
         <svg class="ring-svg" viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-bg" cx="60" cy="60" r="54"/><circle class="ring" cx="60" cy="60" r="54"/></svg>
         <span class="glyph">${icon("power")}</span>
       </button>
       <div class="hero-main">
         <div class="hero-state">${stateText}</div>
         <div class="hero-server ${pickAwg && S.awg && !S.awg.client ? "awg-need" : ""}">${line}</div>
-        <dl class="stats">
-          <div class="${S.connected ? pingClass(ping) : ""}"><dt>${t("stat_ping")}</dt><dd>${S.connected && ping != null ? `${ping}<small>${t("ms")}</small>` : "—"}</dd></div>
-          <div><dt>${t("stat_speed")}</dt><dd>${S.connected ? `${down}<small>${downU}</small>` : "—"}</dd></div>
-          <div><dt>${t("stat_exit")}</dt><dd>${esc(exit)}</dd></div>
-        </dl>
+        <dl class="stats" id="heroStats"></dl>
       </div>
       ${autoBtn}
     </div>
@@ -547,6 +566,9 @@ function renderHero() {
       ${tile("dns", "lock", t("i_dns_name"), st.dns_encrypted ? t("on") : t("off"), st.dns_encrypted,
         `data-act="tile_set" data-key="dns_encrypted" aria-pressed="${!!st.dns_encrypted}"`)}
     </div>${whatWorksHtml()}`;
+  // пересобираем только если что-то правда поменялось: иначе кнопка под курсором не пересоздаётся
+  if (box._html !== html) { box.innerHTML = html; box._html = html; }
+  updateHeroLive();
 }
 
 /* Лестница не нашла ни одного рабочего способа: что открывается напрямую и когда следующая попытка. */
@@ -2136,6 +2158,7 @@ function renderStatus(full) {
   const busyAny = !!S.busy || !!S.conn_busy;
   const page = $("#page");
   const openC = $("#stCerts") && $("#stCerts").open, openL = $("#stLeaks") && $("#stLeaks").open, openP = $("#stCheck") && $("#stCheck").open;
+  const openJ = $("#stJournal") && $("#stJournal").open;
   page.innerHTML = `<div class="stack status-page" id="statusPage">
     <section class="verdict ${v.cls}">
       <span class="verdict-mark">${icon(v.cls === "good" ? "check" : v.cls === "idle" ? "power" : "alert")}</span>
@@ -2150,7 +2173,10 @@ function renderStatus(full) {
       ${kv(t("st_backup"), S.backup && on ? esc(S.backup.name) : `<span class="hint">${esc(S.settings.autopilot ? t("st_backup_none") : t("off"))}</span>`)}
       ${kv(t("st_net"), `${esc(netName)} <span class="hint">· ${esc(netMem)}</span>`)}
       ${kv(t("st_last"), last)}
-    </dl></section>
+      ${kv(t("st_journal"), journalSummary())}
+    </dl>
+      <details class="st-more" id="stJournal" ${openJ ? "open" : ""}><summary>${t("journal_title")}</summary><div id="journalBox">${journalHtml()}</div></details>
+    </section>
     <section class="card status-card"><h3>${t("st_protect")}</h3><dl class="kv">
       ${kv(t("h_certs"), `${dot(certSum.cls)}${esc(certSum.value)}${c && c.time ? `<span class="hint"> · ${esc(ago(c.time, "ago"))}</span>` : ""}`)}
       ${kv(t("h_leaks"), `${dot(leakSum.cls)}${esc(leakSum.value)}`)}
@@ -2169,6 +2195,23 @@ function renderStatus(full) {
     </section>
   </div>`;
   renderCheckBox();
+}
+
+/* Журнал подключения: кто (ты или автоматика) и почему подключал, переключал и отключал VPN. */
+function journalSummary() {
+  const J = S.journal || {};
+  const n = (J.auto_hour || 0);
+  return `${`<i class="dot ${n >= 3 ? "warn" : "good"}"></i>`}${esc(t("journal_auto", { h: J.auto_hour || 0, d: J.auto_day || 0 }))}`;
+}
+
+function journalHtml() {
+  const items = (S.journal && S.journal.items) || [];
+  if (!items.length) return `<p class="hint">${esc(t("journal_none"))}</p>`;
+  const time = ts => new Date(ts * 1000).toLocaleString(LANG === "en" ? "en-GB" : "ru-RU",
+    { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return `<p class="hint">${esc(t("journal_hint"))}</p><ul class="journal">${items.map(it => `<li class="j-${esc(it.kind)}">
+    <time>${esc(time(it.t))}</time><b>${esc(it.kind_text)}</b>${it.server ? `<span>${esc(it.server)}</span>` : ""}
+    <span class="hint">${esc(it.who === "user" ? t("journal_you") : it.who)}${it.why ? ` — ${esc(it.why)}` : ""}</span></li>`).join("")}</ul>`;
 }
 
 function renderSettings(full) {
@@ -3166,6 +3209,11 @@ $("#busyStop").addEventListener("click", () => ACTIONS.stop());
 
 /* ---------- поток событий ---------- */
 
+// свёрнутое окно ничего не перерисовывает; развернули — показать свежие цифры
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && S && page === "home") renderHero();
+});
+
 let failures = 0;
 let lostTimer = null;
 
@@ -3204,10 +3252,18 @@ function connectEvents() {
         scheduleRefresh();
         break;
       case "live":
-        if (S) { S.live = d.live; S.connected = d.connected; if (page === "home") renderHero(); }
+        if (S) {
+          const was = S.connected;
+          S.live = d.live; S.connected = d.connected;
+          // обычно меняются только цифры; подключился или отключился — пересобрать экран
+          if (page === "home" && !document.hidden) { if (was !== d.connected) renderHero(); else updateHeroLive(); }
+        }
         break;
       case "connections":
         if (page === "traffic") throttledConnections();
+        break;
+      case "journal":
+        if (page === "status") scheduleRefresh(400);
         break;
       case "check":
         checkReport = d.report;

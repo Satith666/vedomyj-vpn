@@ -278,6 +278,7 @@ public final class MainActivity extends Activity {
             }
             return;
         }
+        App.engine().markUser();
         App.engine().connect();
         askNotifications();
     }
@@ -356,6 +357,7 @@ public final class MainActivity extends Activity {
         }
         if (requestCode == REQ_VPN) {
             if (resultCode == RESULT_OK) {
+                App.engine().markUser();
                 App.engine().connect();
                 askNotifications();
             } else {
@@ -529,6 +531,9 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     Object dispatch(String action, final Map<String, Object> a) throws Exception {
         final Engine e = App.engine();
+        if (!"state".equals(action) && !"log".equals(action)) {
+            e.markUser(); // действие человека: в журнале подключения будет «ты», а не автоматика
+        }
         switch (action) {
             case "state":
                 return e.state();

@@ -700,3 +700,12 @@ form[data-form="ads_lookup"] .input { flex: 1 1 auto; min-width: 0; width: auto;
   .kv-row { grid-template-columns: 1fr auto; }
   .kv-row dt { grid-column: 1 / -1; }
 }
+
+/* журнал подключения */
+.journal { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.journal li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 13px; padding: 6px 0;
+  border-bottom: 1px solid var(--line); }
+.journal li:last-child { border-bottom: 0; }
+.journal time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 118px; }
+.journal .j-fail b { color: var(--bad); }
+.journal .j-switch b, .journal .j-hotswap b { color: var(--warn); }
