@@ -647,11 +647,13 @@ def check_dht() -> None:
         return
     took = time.time() - t0
     got = None
-    for _ in range(3):
+    for i in range(6):  # сеть торрентов отвечает не сразу и не всегда одними и теми же узлами
         got = dht.Client().get(keys.public, salt)
         if got:
             break
-        time.sleep(3)
+        if i == 2:
+            dht.Client().put(keys.item(salt, 1, value))  # переложить: ближайшие узлы могли смениться
+        time.sleep(4)
     ok = bool(got and got[0] == 1 and got[1] == dht.bdecode(dht.bencode(value)))
     add("ok" if ok else "error", T(f"Сеть торрентов: запись легла на {n} узлов за {took:.1f} с и " + ("читается" if ok else "НЕ читается"),
                                    f"Torrent network: the item went to {n} nodes in {took:.1f} s and " + ("reads back" if ok else "does NOT read back")))

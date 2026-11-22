@@ -386,8 +386,12 @@ class Client:
             sock.close()
 
     def get(self, k: bytes, salt: bytes = b"") -> tuple[int, object] | None:
-        """Свежая запись ключа k с солью salt: (номер, значение) или None."""
+        """Свежая запись ключа k с солью salt: (номер, значение) или None. Не нашлась — второй поиск с другим
+        своим адресом в сети: узлы отвечают по-разному, и второй проход часто находит то, что пропустил первый."""
         _, best = self.lookup(target(k, salt), lambda r: check_item(k, salt, r))
+        if best is None and not _LOCAL_OK:
+            self.nid = secrets.token_bytes(20)
+            _, best = self.lookup(target(k, salt), lambda r: check_item(k, salt, r))
         return best
 
     def put(self, item: dict) -> int:

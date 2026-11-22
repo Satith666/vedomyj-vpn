@@ -3542,8 +3542,9 @@ def t_vps_bridge():
           and any("domain:ru" in (r.get("domain") or []) for r in rules) and rules[0]["outboundTag"] == "block",
           "российское — напрямую, локальная сеть — закрыта, остальное — за границу")
     check(cfg["inbounds"][0]["streamSettings"]["realitySettings"]["serverNames"] == ["vk.com"], "вход моста — под vk.com")
-    r = sp.run(["bash", "-n"], input=body, capture_output=True, text=True)
-    check(r.returncode == 0, f"скрипт моста без ошибок синтаксиса bash: {r.stderr[:200]}")
+    if sys.platform != "win32" and shutil.which("bash"):  # в Windows bash — заглушка WSL, проверяем на Linux
+        r = sp.run(["bash", "-n"], input=body, capture_output=True, text=True)
+        check(r.returncode == 0, f"скрипт моста без ошибок синтаксиса bash: {r.stderr[:200]}")
     tmp = tempfile.mkdtemp(prefix="pult-selftest-")
     e = None
     orig_start = vps.start

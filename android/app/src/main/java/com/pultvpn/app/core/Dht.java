@@ -635,7 +635,12 @@ public final class Dht {
 
         /** Свежая запись: {seq, v} или null. */
         public Object[] get(byte[] k, byte[] salt) throws java.io.IOException {
-            return (Object[]) lookup(target(k, salt), k, salt)[1];
+            Object[] best = (Object[]) lookup(target(k, salt), k, salt)[1];
+            if (best == null && !LOCAL_OK) { // второй поиск с другим своим адресом в сети (как dht.Client.get)
+                RND.nextBytes(nid);
+                best = (Object[]) lookup(target(k, salt), k, salt)[1];
+            }
+            return best;
         }
 
         /** Положить запись (Keys.item) на ближайшие узлы → сколько узлов приняли. */
