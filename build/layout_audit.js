@@ -7,6 +7,8 @@ window.__audit = function () {
   const out = [];
   const W = innerWidth;
   const vis = (el) => {
+    // всплывающие подсказки (тосты) висят поверх страницы на время — их не считаем
+    if (el.closest && el.closest(".toasts, #toast")) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return false;
     if (el.checkVisibility && !el.checkVisibility({ contentVisibilityAuto: true, opacityProperty: true, visibilityProperty: true })) return false;

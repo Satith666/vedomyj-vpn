@@ -129,6 +129,35 @@ public final class Api {
             case "family_mode":
                 e.familySetMode(Json.str(a, "pair"), Json.str(a, "mode", "ask"));
                 return true;
+            // сбор ошибок, профессиональные настройки, предохранители
+            case "collect_start":
+                return e.collectStart(Json.num(a, "hours", 24));
+            case "collect_stop":
+                return e.collectStop();
+            case "collect_text":
+                try {
+                    return e.collectText();
+                } catch (java.io.IOException ex) {
+                    throw new Engine.UserError(ex.getMessage());
+                }
+            case "pro_set": {
+                Map<String, Object> vals = Json.map(a, "values");
+                Map<String, Object> ok = new java.util.LinkedHashMap<String, Object>();
+                if (vals != null) {
+                    for (String k : Engine.PRO_KEYS) {
+                        if (vals.get(k) instanceof Boolean) {
+                            ok.put(k, vals.get(k));
+                        }
+                    }
+                }
+                e.setSettings(ok);
+                return e.proState();
+            }
+            case "pro_reset":
+                return e.proReset();
+            case "fuses_clear":
+                e.fusesClear();
+                return true;
             case "family_remove":
                 e.familyRemove(Json.str(a, "pair"));
                 return true;

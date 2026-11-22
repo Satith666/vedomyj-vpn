@@ -21,8 +21,78 @@ def lang() -> str:
     return _lang
 
 
+_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
+
+
+def _names(text: str) -> str:
+    """Перечень названий настроек через запятую → по-английски."""
+    return ", ".join(_NAMES.get(x.strip(), x.strip()) for x in text.split(","))
+
+
 # (регулярное выражение по-русски, замена по-английски)
 RULES: list[tuple[str, str]] = [
+
+    # защита (protect.py), сбор ошибок (collect.py), память сети (ladder.py)
+    (r"Предохранитель: «(.+?)» в этой сети не помогает — пропускаю его (.+?)\.",
+     lambda m: f"Fuse: “{tr(m.group(1))}” doesn't help on this network — skipping it for "
+     + {"час": "an hour", "сутки": "a day"}.get(m.group(2), m.group(2).replace("мин", "min")) + "."),
+    (r"Лестница: «(.+?)» в этой сети на паузе \(предохранитель\) — пропускаю\.",
+     lambda m: f"Ladder: “{tr(m.group(1))}” is paused on this network (fuse) — skipping."),
+    (r"^маскировка (\d+)$", r"masking \1"),
+    (r"^маскировка$", "masking"),
+    (r"^отпечаток (\S+)$", r"fingerprint \1"),
+    (r"Предохранители сброшены: все способы снова пробуются\.", "Fuses reset: all methods are tried again."),
+    (r"Предохранитель: (.+)", r"Fuse: \1"),
+    (r"Изменение прижилось: (.+?) — VPN работает\.", lambda m: f"The change took: {_names(m.group(1))} — the VPN works."),
+    (r"Автооткат: после изменения \((.+?)\) данные через VPN перестали идти — вернул как было\.",
+     lambda m: f"Auto rollback: after the change ({_names(m.group(1))}) data stopped flowing through the VPN — put it back."),
+    (r"Вернул настройки как было: после изменения \((.+?)\) VPN перестал работать\.",
+     lambda m: f"Put the settings back: after the change ({_names(m.group(1))}) the VPN stopped working."),
+    (r"Возвращаю настройки как было", "Putting the settings back"),
+    (r"Автооткат: (.+)", r"Auto rollback: \1"),
+    (r"Безопасный запуск: программа (\d+) раза? подряд закрылась с ошибкой при запуске — в этот раз без необязательной автоматики\.",
+     r"Safe start: the app crashed \1 times in a row while starting — this time without optional automation."),
+    (r"^Безопасный запуск$", "Safe start"),
+    (r"Безопасный запуск — ", "Safe start — "),
+    (r"Программа несколько раз подряд закрылась с ошибкой при запуске, поэтому сейчас работает без необязательной автоматики \(автоподбор сайтов, мультисервер, подбор отпечатка и маскировки\)\.",
+     "The app crashed several times in a row while starting, so it now runs without optional automation (site auto routing, multi-server, fingerprint and masking picking)."),
+    (r"^Дополнительно → Профессиональные$", "More → Advanced"),
+    (r"Пришли отчёт: «Журнал ошибок» → «Отчёт»\. Следующий запуск — обычный\.",
+     "Send a report: “Error log” → “Report”. The next start is normal."),
+    (r"Профессиональные настройки возвращены как было \((.+?)\)\.", lambda m: f"Advanced settings reset to defaults ({_names(m.group(1))})."),
+    (r"Профессиональные настройки возвращены как было\.", "Advanced settings reset to defaults."),
+    (r"Профессиональные настройки возвращены как было", "Advanced settings reset to defaults"),
+    (r"Профессиональные настройки: (.+)\.", lambda m: "Advanced settings: " + ", ".join(
+        f"{_names(x.split(' — ')[0])} — {'on' if x.endswith('вкл') else 'off'}" for x in m.group(1).split(", ")) + "."),
+    (r"Сбор ошибок включён на (\d+)(?: час(?:а|ов)?)?\. Отчёт появится сам, когда время выйдет\.",
+     lambda m: f"Error collection is on for {m.group(1)} h. The report appears by itself when the time is up."),
+    (r"Сбор ошибок закончен \((.+?)\)\. Отчёт: (\S+) в папке data\\reports\.",
+     lambda m: "Error collection finished (" + {"время вышло": "time is up", "остановлен вручную": "stopped by hand"}.get(m.group(1), m.group(1))
+     + f"). Report: {m.group(2)} in the data\\reports folder."),
+    (r"^время вышло$", "time is up"),
+    (r"^остановлен вручную$", "stopped by hand"),
+    (r"^(\d+) мин$", r"\1 min"),
+    (r"^сутки$", "a day"),
+    (r"^час$", "an hour"),
+    (r"^Профессиональные настройки: $", "Advanced settings: "),
+    (r"^Сервер$", "The server"),
+    (r"^Запасной путь$", "The backup route"),
+    (r"настройки от «(.+?)»", r"settings from “\1”"),
+    (r"^настройки$", "settings"),
+    (r"Сбор ошибок закончен — отчёт готов \(Дополнительно → Профессиональные → «Показать файл»\)\.",
+     "Error collection finished — the report is ready (More → Advanced → “Show file”)."),
+    (r"Сбор ошибок: не удалось создать файл: (.+)", r"Error collection: couldn't create the file: \1"),
+    (r"Сбор ошибок: не удалось сохранить отчёт: (.+)", r"Error collection: couldn't save the report: \1"),
+    (r"Собираю отчёт об ошибках", "Building the error report"),
+    (r"Отчёта пока нет: включи «Сбор ошибок» и дождись, пока он закончится\.",
+     "No report yet: turn on “Error collection” and wait until it finishes."),
+    (r"^Отчёта пока нет\.$", "No report yet."),
+    (r"(.+?) из памяти сети не подключился \((.+)\)\.",
+     lambda m: {"Сервер": "The server", "Запасной путь": "The backup route"}.get(m.group(1), m.group(1))
+     + f" from network memory didn't connect ({m.group(2)})."),
+    (r"Память сети не помогла — беру лучший сервер\.", "Network memory didn't help — taking the best server."),
+    (r"запасной путь из памяти этой сети", "a backup route from this network's memory"),
+    (r"запасной путь этой сети", "this network's backup route"),
     (r"Вставь адрес сайта, например example\.com\.", "Paste a site address, for example example.com."),
     (r"Не похоже на адрес сайта\. Пример: example\.com\.", "This doesn't look like a site address. Example: example.com."),
     (r"Проверяю сайт (\S+)", r"Checking site \1"),
@@ -1363,6 +1433,8 @@ RULES: list[tuple[str, str]] = [
 ]
 
 # Длинные фразы заменяем раньше коротких: иначе «Автонастройка» испортит предложение, где это слово — часть.
+# названия настроек (protect.py) по отдельности — для журнала и окна
+RULES += [(r"^" + re.escape(ru) + r"$", en) for ru, en in _NAMES.items()]
 _COMPILED = [(re.compile(p), r) for p, r in sorted(RULES, key=lambda pr: -len(pr[0]))]
 CYRILLIC = re.compile("[А-Яа-яЁё]")
 
@@ -1385,3 +1457,4 @@ def untranslated(text: str, keep: tuple[str, ...] = ()) -> bool:
     for k in keep:
         t = t.replace(k, "")
     return bool(CYRILLIC.search(t))
+

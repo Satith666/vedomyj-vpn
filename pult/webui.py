@@ -15,7 +15,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from . import autostart, errorlog, happ, i18n, links, qr, routing, share, subscription, tester
+from . import protect, autostart, errorlog, happ, i18n, links, qr, routing, share, subscription, tester
 
 STATIC = {"/": "index.html", "/index.html": "index.html", "/style.css": "style.css", "/app.js": "app.js",
           "/i18n.js": "i18n.js"}
@@ -392,12 +392,16 @@ class UIServer:
                 value = str(a.get(key, "")).strip()
                 bad += routing.split_entries(value)[2]
                 e.settings[key] = value
+            guard_before = {k: e.settings.get(k) for k in ("mode", "ru_direct")}
             if a.get("mode") in routing.MODES:
                 e.settings["mode"] = a["mode"]
             if "ru_direct" in a:
                 e.settings["ru_direct"] = bool(a["ru_direct"])
             e.save()
             if e.core_running:
+                changed = {k: v for k, v in guard_before.items() if e.settings.get(k) != v}
+                if changed:
+                    e.guard_change(changed, protect.change_label(changed))
                 vpn_task("Применяю маршрутизацию", e.reconnect)
             e.notify("settings")
             return {"bad": list(dict.fromkeys(bad))}
@@ -862,6 +866,47 @@ class UIServer:
             else:
                 subprocess.Popen(["xdg-open", os.path.dirname(path)])
             return True
+        # сбор ошибок, профессиональные настройки, предохранители (collect.py, protect.py)
+        if action == "collect_start":
+            return e.collect_start(a.get("hours", 24))
+        if action == "collect_stop":
+            return task("Собираю отчёт об ошибках", e.collect_stop)
+        if action == "collect_report":
+            path = e.settings.get("collect_report") or ""
+            if not path or not os.path.isfile(path):
+                raise ActionError("Отчёта пока нет: включи «Сбор ошибок» и дождись, пока он закончится.")
+            if sys.platform == "win32":
+                subprocess.Popen(f'explorer /select,"{path}"')
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(path)])
+            return True
+        if action == "collect_text":
+            path = e.settings.get("collect_report") or ""
+            if not path or not os.path.isfile(path):
+                raise ActionError("Отчёта пока нет.")
+            with open(path, encoding="utf-8") as f:
+                return f.read()[:400000]
+        if action == "pro_set":
+            vals = a.get("values") or {}
+            before = {k: e.settings.get(k) for k in vals if k in protect.GUARDED_KEYS}
+            e.pro_set(vals)
+            e.notify("settings")
+            if e.connected and any(k in vals for k in ("failover", "fp_auto", "mask_auto")):
+                e.guard_change(before, "профессиональные настройки")
+                vpn_task("Применяю настройки", e.reconnect)
+            return e.pro_state()
+        if action == "pro_reset":
+            before = {k: e.settings.get(k) for k in protect.GUARDED_KEYS}
+            changed = e.pro_reset()
+            e.notify("settings")
+            if e.connected and changed:
+                e.guard_change(before, "«Вернуть как было»")
+                vpn_task("Применяю настройки", e.reconnect)
+            return changed
+        if action == "fuses_clear":
+            e.fuses_clear()
+            e.notify("settings")
+            return True
         if action == "open_folder":
             if sys.platform == "win32":
                 os.startfile(e.paths.app_dir)  # type: ignore[attr-defined]
@@ -944,6 +989,8 @@ class UIServer:
         s["ping_path"] = s["ping_path"] or "/generate_204"
         s["auto_update_hours"] = hours
         s.update({k: max(0.0, v) for k, v in other_hours.items()})
+        guard_before = {k: s.get(k) for k in protect.GUARDED_KEYS
+                        if k in a and k != "block_ads" and s.get(k) != (a[k] if k == "tun_engine" else bool(a[k]))}
         for key in ("system_proxy", "autopilot", "allow_lan", "auto_connect_on_start", "game_mode", "ru_direct",
                     "tun_enabled", "leak_protection", "dns_encrypted", "lan_auth",
                     "mask_auto", "multi_enabled", "whitelist_auto", "background", "block_quic"):
@@ -982,6 +1029,8 @@ class UIServer:
             if ads_download:
                 task("Скачиваю списки рекламы", e.update_adblock)
             elif e.core_running or e._filter_wanted():
+                if guard_before:
+                    e.guard_change(guard_before, protect.change_label(guard_before))
                 vpn_task("Применяю настройки", e.reconnect)
         e.notify("settings")
         return True

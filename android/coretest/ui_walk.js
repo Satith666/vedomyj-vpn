@@ -306,8 +306,39 @@ const out = process.argv[3];
   if (y0 < 100 || Math.abs(y1 - y0) > 4) throw new Error(`settings scroll not restored: ${y0} -> ${y1}`);
   // лестница: переключатели в настройках и карточка «ничего не работает» на главной
   const setTxt = await page.$eval("#setBox", (e) => e.textContent.replace(/\s+/g, " "));
-  if (!setTxt.includes("Подбор отпечатка TLS") || !setTxt.includes("Сторож данных") || !setTxt.includes("Память сетей"))
-    throw new Error("settings: no ladder switches: " + setTxt.slice(0, 400));
+  if (!setTxt.includes("Профессиональные")) throw new Error("settings: no advanced row: " + setTxt.slice(0, 400));
+  // профессиональные: переключатели защиты и лестницы, сбор ошибок, «вернуть как было»
+  await page.click('[data-nav="pro"]');
+  await page.waitForTimeout(500);
+  const proTxt = await page.$eval("#proBox", (e) => e.textContent.replace(/\s+/g, " "));
+  for (const w of ["Предохранители", "Автооткат", "Безопасный запуск", "Подбор отпечатка TLS", "Сторож данных", "Память сетей", "Сбор ошибок"])
+    if (!proTxt.includes(w)) throw new Error("pro: no " + w + ": " + proTxt.slice(0, 500));
+  await page.click('[data-act="flip"][data-k="guard_rollback"]');
+  await page.waitForTimeout(1300);
+  if (await page.evaluate(() => JSON.parse(window.Pult.call("state", "{}")).result.settings.guard_rollback) !== false)
+    throw new Error("pro: guard switch did nothing: " + (await page.textContent("#toast")) + " / " + (await page.$eval('[data-k="guard_rollback"]', (e) => e.outerHTML)));
+  await page.click('[data-act="collect-start"][data-h="1"]');
+  await page.waitForTimeout(1300);
+  const colTxt = await page.$eval("#proBox", (e) => e.textContent.replace(/\s+/g, " "));
+  if (!colTxt.includes("Идёт сбор")) throw new Error("pro: collect not running: " + colTxt.slice(-400));
+  await shot("23-pro-collect");
+  await page.click('[data-act="collect-stop"]');
+  await page.waitForTimeout(400);
+  await waitIdle();
+  await page.waitForTimeout(1300);
+  if (!(await page.$('[data-act="collect-send"]'))) throw new Error("pro: no report after stop: " + (await page.textContent("#toast")));
+  const rep = await page.evaluate(() => JSON.parse(window.Pult.call("collect_text", "{}")).result);
+  if (!rep.includes("VEDOMYJ") || /11111111-2222|vless:\/\//.test(rep)) throw new Error("pro: bad report: " + rep.slice(0, 300));
+  await page.click('[data-act="collect-copy"]');
+  await page.click('[data-act="pro-reset"]');
+  await page.waitForTimeout(300);
+  await page.click("#prYes");
+  await page.waitForTimeout(1300);
+  if (await page.evaluate(() => JSON.parse(window.Pult.call("state", "{}")).result.settings.guard_rollback) !== true)
+    throw new Error("pro: reset did not restore guard");
+  await shot("24-pro", true);
+  await page.click("#back");
+  await page.waitForTimeout(400);
   await page.evaluate(() => window.Pult.call("test_nothing", "{}"));
   await page.click("#back");
   await page.waitForTimeout(1300);
@@ -388,7 +419,7 @@ const out = process.argv[3];
   for (const w of [360, 412]) {
     await page.setViewportSize({ width: w, height: 800 });
     await page.evaluate(audit);
-    for (const v of ["home", "status", "share", "transfer", "vps", "family", "settings", "apps", "rules", "routes", "ads", "dpi", "check", "errors", "log"]) {
+    for (const v of ["home", "status", "share", "transfer", "vps", "family", "settings", "apps", "rules", "routes", "ads", "dpi", "check", "errors", "log", "pro"]) {
       if (v !== "home") await page.evaluate((x) => window.pultGo(x), v);
       await page.waitForTimeout(400);
       for (const [kind, d] of await page.evaluate("__audit()")) tight.push(`${w}/${v}: ${kind} ${d}`);

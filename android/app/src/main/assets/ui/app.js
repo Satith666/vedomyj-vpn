@@ -907,10 +907,7 @@
           ${sw("dns_encrypted", "s_dns", "s_dns_text")}${sw("ads_ask_sites", "s_ads_ask", "s_ads_ask_text")}
           ${sw("sub_alerts", "s_sub_alerts", "s_sub_alerts_text")}
           ${sw("net_profiles", "s_net", "s_net_text")}
-          ${sw("fp_auto", "s_fp", "s_fp_text")}${sw("data_watch", "s_dwatch", "s_dwatch_text")}
-          ${sw("net_memory", "s_netmem", "s_netmem_text")}
-          ${st.net_memory !== false && (S.ladder || {}).count ? `<div class="switch-row"><div class="main"><span>${esc(t("netmem_n", { n: S.ladder.count }))}</span></div>
-            <button class="link-btn" data-act="netmem-clear">${esc(t("netmem_clear"))}</button></div>` : ""}</section>
+          ${navRow('data-nav="pro"', "gear", t("pro_title"), (S.collect || {}).on ? t("collect_running_short") : t("s_pro_text"))}</section>
         <section class="card"><div class="card-head"><h2>${esc(t("s_protect"))}</h2></div>
           ${sw("app_lock", "s_app_lock", "s_app_lock_text")}${sw("encrypt_data", "s_encrypt", "s_encrypt_text")}
           ${sw("cert_watch", "s_certs", "s_certs_text")}</section>
@@ -929,6 +926,56 @@
         </section>
         ${appUpdateHtml()}
         <p class="about">${esc(t("about", { v: S.version, core: (S.core || "").replace(/^.*?(\d+\.\d+\.\d+).*$/, "$1") || "—" }))}</p>`);
+    },
+  };
+
+  // ---------- профессиональные: защита, память маршрутов, автоматика, сбор ошибок ----------
+  const PRO_GROUPS = [
+    ["pg_protect", [["fuses_enabled", "s_fuses"], ["guard_rollback", "s_guard"], ["safe_start", "s_safe"]]],
+    ["pg_memory", [["net_memory", "s_netmem"]]],
+    ["pg_auto", [["autopilot", "s_auto"], ["fp_auto", "s_fp"], ["mask_auto", "s_mask"], ["data_watch", "s_dwatch"], ["whitelist_auto", "s_wl"]]],
+  ];
+  function leftText(sec) {
+    const h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60);
+    return h ? t("left_hm", { h, m }) : t("dur_m", { n: Math.max(1, m) });
+  }
+  function proExtra(key) {
+    const pro = S.pro || {};
+    if (key === "fuses_enabled" && pro.keys && pro.keys.fuses_enabled !== false) {
+      const f = pro.fuses || [];
+      const left = (sec) => sec >= 3600 ? t("left_h", { n: Math.ceil(sec / 3600) }) : t("left_m", { n: Math.max(1, Math.ceil(sec / 60)) });
+      return `<div class="switch-row sub"><div class="main"><span>${esc(f.length ? f.map((x) => `${x.kind} — ${left(x.left)}`).join("; ") : t("fuses_none"))}</span></div>
+        ${f.length ? `<button class="link-btn" data-act="fuses-clear">${esc(t("fuses_clear"))}</button>` : ""}</div>`;
+    }
+    if (key === "net_memory" && S.settings.net_memory !== false && (S.ladder || {}).count) {
+      return `<div class="switch-row sub"><div class="main"><span>${esc(t("netmem_n", { n: S.ladder.count }))}</span></div>
+        <button class="link-btn" data-act="netmem-clear">${esc(t("netmem_clear"))}</button></div>`;
+    }
+    return "";
+  }
+  function collectHtml() {
+    const c = S.collect || {};
+    const body = c.on
+      ? `<p class="hint">${esc(t("collect_running", { left: leftText(c.left || 0), n: c.events || 0 }))}</p>
+         <button class="btn primary wide" data-act="collect-stop">${icon("stop")}${esc(t("collect_stop"))}</button>`
+      : `<p class="hint">${esc(t("collect_desc"))}</p>
+         <div class="btns four">${[1, 6, 24, 72].map((h) => `<button class="btn${h === 24 ? " primary" : ""}" data-act="collect-start" data-h="${h}">${esc(t("collect_for", { h }))}</button>`).join("")}</div>`;
+    const rep = c.report_ok ? `<p class="hint">${esc(t("collect_last", { f: c.report }))}</p>
+      <div class="btns two"><button class="btn" data-act="collect-send">${icon("send")}${esc(t("collect_send"))}</button>
+        <button class="btn" data-act="collect-copy">${icon("copy")}${esc(t("collect_copy"))}</button></div>` : "";
+    return `<section class="card"><div class="card-head"><h2>${esc(t("pg_collect"))}</h2></div><div class="card-body stack">${body}${rep}</div></section>`;
+  }
+  VIEWS.pro = {
+    title: "pro_title",
+    render() { return `<div id="proBox" class="stack"></div>`; },
+    update() {
+      const pro = S.pro || {};
+      setHtml("#proBox", `<p class="hint">${esc(t("pro_intro"))}</p>
+        ${pro.safe_mode ? `<div class="problem"><p>${esc(t("pro_safe_mode"))}</p></div>` : ""}
+        ${PRO_GROUPS.map(([g, items]) => `<section class="card"><div class="card-head"><h2>${esc(t(g))}</h2></div>
+          ${items.map(([k, title]) => sw(k, title, title + "_text") + proExtra(k)).join("")}</section>`).join("")}
+        ${collectHtml()}
+        <button class="btn wide" data-act="pro-reset">${icon("refresh")}${esc(t("pro_reset"))}</button>`);
     },
   };
 
@@ -1533,6 +1580,34 @@
     },
     "ladder-retry"() {
       if (act("ladder_retry", {}) !== undefined) { toast(t("ww_trying"), "ok"); poll(); }
+    },
+    "fuses-clear"() {
+      if (act("fuses_clear", {}) !== undefined) { toast(t("fuses_cleared"), "ok"); poll(); }
+    },
+    "collect-start"(el) {
+      if (act("collect_start", { hours: Number(el.dataset.h) || 24 }) !== undefined) { toast(t("collect_started"), "ok"); poll(); }
+    },
+    "collect-stop"() {
+      if (act("collect_stop", {}) !== undefined) { toast(t("collect_saved"), "ok"); poll(); }
+    },
+    "collect-send"() {
+      const text = act("collect_text", {});
+      if (text != null) act("share_report", { text, name: (S.collect || {}).report || "" });
+    },
+    "collect-copy"() {
+      const text = act("collect_text", {});
+      if (text != null && act("copy", { text })) toast(t("collect_copied"), "ok");
+    },
+    "pro-reset"() {
+      openSheet(`<h2>${esc(t("pro_reset"))}</h2><p class="hint">${esc(t("pro_reset_text"))}</p>
+        <div class="btns two"><button class="btn" id="prNo">${esc(t("cancel_btn"))}</button>
+          <button class="btn primary" id="prYes">${esc(t("pro_reset"))}</button></div>`, (sh) => {
+        $("#prNo", sh).addEventListener("click", () => closeSheet());
+        $("#prYes", sh).addEventListener("click", () => {
+          closeSheet();
+          if (act("pro_reset", {}) !== undefined) { toast(t("pro_reset_done"), "ok"); poll(); }
+        });
+      });
     },
     "netmem-clear"() {
       if (act("net_memory_clear", {}) !== undefined) { toast(t("netmem_cleared"), "ok"); poll(); }

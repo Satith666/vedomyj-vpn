@@ -48,6 +48,7 @@ public final class App extends Application {
             public void uncaughtException(Thread t, Throwable e) {
                 try {
                     engine.errors().recordExc(e, "поток " + t.getName());
+                    engine.noteCrash(); // упало сразу после запуска — следующий запуск будет безопасным
                 } catch (Throwable ignored) {
                     // журнал — помощник
                 }

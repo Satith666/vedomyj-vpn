@@ -1832,6 +1832,109 @@ public class CoreTest {
             check(new ErrorLog(jdir, "1.7.0", "Android 14", null).size() == 0, "очистка сохраняется");
         });
 
+        test("Защита: предохранители, запасные пути памяти сети, автооткат, безопасный запуск, сбор ошибок", () -> {
+            File pdir = tmpDir();
+            Fake fp = new Fake(pdir);
+            fp.appProxy = true;
+            Engine ep = engine(fp);
+            ep.addServers(link("fast8.example.com", "А") + "\n" + link("fast9.example.com", "Б") + "\n"
+                    + link("secret-node8.example.com", "В"));
+            waitIdle(ep);
+            Server a = null, b = null, c = null;
+            for (Object o : Json.list(ep.state(), "servers")) {
+                Server s = ep.find(Json.str(Json.map(o), "key"));
+                if ("А".equals(s.name)) a = s;
+                if ("Б".equals(s.name)) b = s;
+                if ("В".equals(s.name)) c = s;
+            }
+            // предохранители
+            check(ep.fuseOk("маскировка"), "сначала можно");
+            ep.fuseResult("маскировка", false);
+            check(ep.fuseOk("маскировка"), "одна неудача — ещё не пауза");
+            ep.fuseResult("маскировка", false);
+            List<Object> fz = Json.list(Json.map(ep.state(), "pro"), "fuses");
+            check(!ep.fuseOk("маскировка") && fz.size() == 1 && Json.num(Json.map(fz.get(0)), "left", 0) > 500,
+                    "две неудачи — пауза 10 минут: " + Json.write(fz));
+            check(String.join("\n", ep.logLines()).contains("Предохранитель: «маскировка»"), "в журнале — почему");
+            ep.settings.put("fuses_enabled", false);
+            check(ep.fuseOk("маскировка"), "выключены — пробуется");
+            ep.settings.put("fuses_enabled", true);
+            ep.fuseResult("маскировка", true);
+            check(ep.fuseOk("маскировка"), "помог — сброс");
+            ep.fuseResult("отпечаток safari", false);
+            ep.fuseResult("отпечаток safari", false);
+            check(Boolean.TRUE.equals(Api.call(ep, "fuses_clear", Json.obj())) && ep.fuseOk("отпечаток safari"), "«Сбросить»");
+            // память сети: прежний путь — запасной, старше 30 дней — забыт
+            String nid = ep.netId();
+            check(!nid.isEmpty(), "сеть известна");
+            ep.rememberWay(a);
+            ep.rememberWay(b);
+            ep.rememberWay(c);
+            ep.rememberWay(c);
+            Map<String, Object> way = ep.netWay();
+            List<Map<String, Object>> alts = Engine.netAlts(way);
+            check(c.key().equals(Json.str(way, "server")) && alts.size() == 2 && b.key().equals(Json.str(alts.get(0), "server"))
+                    && a.key().equals(Json.str(alts.get(1), "server")), "два запасных пути: " + Json.write(way));
+            way.put("at", System.currentTimeMillis() - 31L * 86_400_000L);
+            check(ep.netWay() == null, "память старше 30 дней не используется");
+            way.put("at", System.currentTimeMillis());
+            // профессиональные настройки
+            Map<String, Object> pst = (Map<String, Object>) Api.call(ep, "pro_set", Json.obj("values", Json.obj("fuses_enabled", false, "x_key", true, "safe_start", "да")));
+            check(!Json.bool(Json.map(pst, "keys"), "fuses_enabled", true) && !ep.settings.containsKey("x_key")
+                    && Json.bool(ep.settings, "safe_start", false), "только свои ключи и только да/нет");
+            ep.settings.put("autopilot", false);
+            List<Object> ch = (List<Object>) Api.call(ep, "pro_reset", Json.obj());
+            check(ch.contains("fuses_enabled") && ch.contains("autopilot") && Json.bool(ep.settings, "fuses_enabled", false)
+                    && Json.bool(ep.settings, "autopilot", false), "«Вернуть как было»: " + Json.write(ch));
+            // автооткат: после изменения данные не идут — вернуть как было
+            long keepWait = Engine.GUARD_WAIT_MS;
+            try {
+                Engine.GUARD_WAIT_MS = 0;
+                ep.select(a.key());
+                ep.connect();
+                waitIdle(ep);
+                check(ep.isOn(), "подключено");
+                for (int i = 0; i < 5; i++) ep.monitor();
+                ep.settings.put("dns_encrypted", false);
+                ep.setSettings(Json.obj("dns_encrypted", true));
+                waitIdle(ep);
+                check(Json.bool(Json.map(ep.state(), "pro"), "guard", false), "изменение под присмотром");
+                ep.settings.put("autopilot", false); // проверяем только автооткат, без автосмены сервера
+                fp.dead.addAll(Arrays.asList("fast8.example.com", "fast9.example.com", "secret-node8.example.com"));
+                for (int i = 0; i < 40 && Json.bool(ep.settings, "dns_encrypted", false); i++) {
+                    ep.monitor();
+                    Thread.sleep(100);
+                }
+                waitIdle(ep);
+                check(!Json.bool(ep.settings, "dns_encrypted", true), "связь пропала — вернул как было: on=" + ep.isOn()
+                        + " guard=" + Json.bool(Json.map(ep.state(), "pro"), "guard", false) + " log=" + String.join(" | ", ep.logLines().subList(Math.max(0, ep.logLines().size() - 8), ep.logLines().size())));
+                check(String.join("\n", ep.logLines()).contains("Автооткат"), "в журнале — автооткат");
+                fp.dead.clear();
+                ep.settings.put("autopilot", true);
+            } finally {
+                Engine.GUARD_WAIT_MS = keepWait;
+            }
+            // сбор ошибок: секреты не попадают в отчёт
+            Map<String, Object> cs = (Map<String, Object>) Api.call(ep, "collect_start", Json.obj("hours", 500));
+            check(Json.bool(cs, "on", false) && Json.num(cs, "left", 0) <= 72 * 3600, "не больше 72 часов: " + Json.write(cs));
+            ep.log("Сервер secret-node8.example.com не ответил", "Server secret-node8.example.com did not answer");
+            String path = (String) Api.call(ep, "collect_stop", Json.obj());
+            check(path != null && new File(path).isFile(), "отчёт сохранён");
+            String rep = (String) Api.call(ep, "collect_text", Json.obj());
+            check(rep.contains("сбор ошибок") && rep.contains("не ответил") && !rep.contains("secret-node8"), "отчёт без адресов: " + rep.substring(0, Math.min(300, rep.length())));
+            check(!Json.bool(Json.map(ep.state(), "collect"), "on", true) && Json.bool(Json.map(ep.state(), "collect"), "report_ok", false), "сбор выключился");
+            ep.shutdown();
+            // безопасный запуск: два падения подряд при запуске
+            Store.write(new File(pdir, "start.json"), "{\"crashes\":2}");
+            Engine es = engine(new Fake(pdir));
+            es.start();
+            check(es.safeMode && !Json.bool(es.settings, "fp_auto", true), "безопасный запуск: автоматика выключена");
+            check(Json.write(Json.list(es.state(), "problems")).contains("Безопасный запуск"), "человек об этом знает");
+            es.saveSettings();
+            check(Json.bool(Json.parseObject(Store.read(new File(pdir, "settings.json"))), "fp_auto", false), "в файле настройка прежняя");
+            es.shutdown();
+        });
+
         test("Журнал ошибок в движке: сбои задач, секреты серверов, действия интерфейса", () -> {
             Fake fe = new Fake(tmpDir());
             Engine ee = engine(fe);
@@ -2063,7 +2166,7 @@ public class CoreTest {
             fl.net = Json.obj("kind", "cell");
             String cellId = el.netId();
             fl.net = Json.obj("kind", "wifi", "open", false);
-            Json.child(el.settings, "net_ways").put(cellId, Json.obj("server", slow.key(), "fp", "", "mask", false, "at", 1L));
+            Json.child(el.settings, "net_ways").put(cellId, Json.obj("server", slow.key(), "fp", "", "mask", false, "at", System.currentTimeMillis()));
             el.netWatch();
             fl.net = Json.obj("kind", "cell");
             el.netWatch();

@@ -43,6 +43,10 @@ public final class Store {
                 "share_pass", "",
                 "selected", "",
                 "engine_pick", "auto",   // «Движок»: auto, xray, hy2; awg — AmneziaWG в своём приложении
+                // защита (как protect.py): предохранители способов, автооткат изменений, безопасный запуск
+                "fuses_enabled", true, "fuses", new LinkedHashMap<String, Object>(), "guard_rollback", true, "safe_start", true,
+                // сбор ошибок (как collect.py)
+                "collect_until", 0L, "collect_started", 0L, "collect_report", "",
                 "last_awg_key", "",
                 "cert_pins", new LinkedHashMap<String, Object>(), // ключ сервера → SHA-256 сертификата (вместо allowInsecure)
                 "auto_update_hours", 12L,
@@ -122,6 +126,10 @@ public final class Store {
         } finally {
             out.close();
         }
+    }
+
+    public static void write(File f, String text) throws IOException {
+        write(f, text.getBytes(StandardCharsets.UTF_8));
     }
 
     public static void write(File f, byte[] data) throws IOException {

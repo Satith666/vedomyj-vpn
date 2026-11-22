@@ -369,6 +369,8 @@ class FamilyMixin:
         ent["pending"] = None
         self._lane.why = f"настройки от «{ent['name']}» (Семья)"
         was_on = bool(self.connected or self.awg_active)
+        guard_keys = ("mode", "dns_encrypted", "block_ads", "engine_pick")
+        before = {k: self.settings.get(k) for k in guard_keys}
         results, reconnect = [], False
         for op in pending["ops"]:
             self.check_stop()
@@ -385,6 +387,9 @@ class FamilyMixin:
             if srv:
                 self.run_task("Семья: подключаю VPN заново", self.connect_start, srv, lane="conn")
         elif reconnect and self.connected:
+            changed = {k: v for k, v in before.items() if self.settings.get(k) != v}
+            if changed:  # не прижилось (данные перестали идти) — автооткат вернёт как было (protect.py)
+                self.guard_change(changed, f"настройки от «{ent['name']}»")
             self.run_task("Семья: применяю настройки", self.reconnect, True, lane="conn")
         ent["applied_seq"] = pending.get("seq", 0)
         ent["reply"] = self._fam_reply(ent, results)

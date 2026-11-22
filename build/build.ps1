@@ -21,7 +21,7 @@ New-Item -ItemType Directory -Force -Path $dist, $cache, $stage, $source | Out-N
 
 # ---------- файлы программы ----------
 Step 'Копирую файлы программы'
-$items = @('main.py', 'check.py', 'field_check.py', 'update_from_zip.py', 'full_check.py', 'start.bat', 'Проверка.bat', 'Проверка новых функций.bat', 'Обновить.bat', 'Полная проверка.bat', 'README.md', 'CHANGELOG.md', 'AI_GUIDE.md', 'pult', 'ui')
+$items = @('main.py', 'check.py', 'field_check.py', 'update_from_zip.py', 'full_check.py', 'start.bat', 'Проверка.bat', 'Проверка новых функций.bat', 'Сбор ошибок.bat', 'Обновить.bat', 'Полная проверка.bat', 'README.md', 'CHANGELOG.md', 'AI_GUIDE.md', 'pult', 'ui')
 foreach ($item in $items) {
     Copy-Item -Path (Join-Path $root $item) -Destination $stage -Recurse -Force
     Copy-Item -Path (Join-Path $root $item) -Destination $source -Recurse -Force

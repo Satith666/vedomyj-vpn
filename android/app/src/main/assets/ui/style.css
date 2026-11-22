@@ -425,3 +425,7 @@ details.card-pad .btns { margin-top: 10px; }
 .power .i { width: 46px; height: 46px; }
 .hero { gap: 10px; padding-top: 12px; }
 .h-cell { padding: 8px 12px; }
+
+/* профессиональные (1.17) */
+.switch-row.sub { border-top: 0; min-height: 0; padding-top: 0; padding-bottom: 12px; }
+.btns.four .btn { flex: 1 1 0; min-width: 0; padding: 0 6px; }

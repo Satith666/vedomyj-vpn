@@ -98,6 +98,10 @@ DEFAULTS: dict = {
     "dpi_youtube": True, "dpi_discord": True, "dpi_custom": "", "dpi_networks": {}, "last_dpi_check": 0,
     "last_geo_check": 0,
     "last_core_check": 0,
+    # защита (protect.py): предохранители способов, автооткат изменений, безопасный запуск
+    "fuses_enabled": True, "fuses": {}, "guard_rollback": True, "safe_start": True,
+    # сбор ошибок (collect.py): до какого времени собирать, когда начали, последний отчёт
+    "collect_until": 0, "collect_started": 0, "collect_report": "",
 }
 
 
@@ -110,6 +114,9 @@ class Settings(dict):
     def __init__(self, path: str):
         super().__init__(copy.deepcopy(DEFAULTS))  # глубокая копия: списки не должны быть общими
         self.path = path
+        # поверх сохранённых значений на один запуск (безопасный запуск выключает необязательную автоматику);
+        # на диск overlay не попадает: save() пишет настоящие значения
+        self.overlay: dict = {}
         self.secure_failed = False  # секреты зашифрованы, но расшифровать не вышло (другой компьютер/пользователь)
         self._secure_raw = ""
         if os.path.isfile(path):
@@ -122,6 +129,16 @@ class Settings(dict):
                         self._load_secure(data["_secure"])
             except (OSError, ValueError):
                 pass
+
+    def __getitem__(self, key):
+        if self.overlay and key in self.overlay:
+            return self.overlay[key]
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if self.overlay and key in self.overlay:
+            return self.overlay[key]
+        return super().get(key, default)
 
     def _load_secure(self, raw: str) -> None:
         from . import secure

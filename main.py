@@ -103,14 +103,45 @@ def existing_instance(ui_file: str) -> str | None:
     return None
 
 
+def _arg_hours(flag: str) -> float:
+    """--collect 24 → 24.0; флаг без числа — 24; нет флага — 0."""
+    if flag not in sys.argv:
+        return 0.0
+    i = sys.argv.index(flag)
+    try:
+        return max(1.0, min(72.0, float(sys.argv[i + 1])))
+    except (IndexError, ValueError):
+        return 24.0
+
+
+def _send_action(ui_file: str, action: str, args: dict) -> bool:
+    """Действие уже запущенной программе (как кнопка в её окне)."""
+    try:
+        with open(ui_file, encoding="utf-8") as f:
+            info = json.load(f)
+        req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/api/action", method="POST",
+                                     data=json.dumps({"action": action, "args": args}).encode("utf-8"),
+                                     headers={"X-Token": info["token"], "Content-Type": "application/json"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=5) as resp:
+            return bool(json.loads(resp.read()).get("ok"))
+    except Exception:
+        return False
+
+
 def main() -> None:
     data_dir = os.path.join(APP_DIR, "data")
     os.makedirs(data_dir, exist_ok=True)
     ui_file = os.path.join(data_dir, "ui.json")
     profile_dir = os.path.join(data_dir, "window")
 
+    collect_hours = _arg_hours("--collect")
     url = existing_instance(ui_file)
     if url:
+        if collect_hours:
+            if not _send_action(ui_file, "collect_start", {"hours": collect_hours}):
+                open_window(url, profile_dir)  # окно закрыто пин-кодом — включить сбор можно в самом окне
+            return
         open_window(url, profile_dir)
         return
 
@@ -127,6 +158,8 @@ def main() -> None:
         json.dump({"port": port, "token": token, "pid": os.getpid()}, f)
 
     engine.startup()
+    if collect_hours:
+        engine.collect_start(collect_hours)
     try:
         # автозапуск включён — обновить запись: новый путь программы и новое имя (старая «PultVPN» убирается)
         if autostart.is_enabled():

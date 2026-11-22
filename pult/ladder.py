@@ -35,6 +35,8 @@ BACKOFF = (120, 300, 600, 1200)  # с: «ничего не работает» �
 SILENT_S = 30.0                  # с: уходит, но не приходит — пора проверить, идут ли данные (диспетчер: 30 с тишины)
 SILENT_RECHECK = 60.0            # с: не чаще раза в минуту
 NET_WAYS_MAX = 40
+NET_WAY_TTL = 30 * 86400        # с: память сети старше 30 дней не используется
+NET_ALTS = 2                     # запасных путей на сеть
 WHAT_WORKS = ("Google", "YouTube", "Telegram", "Яндекс", "VK", "Госуслуги")
 PROBE_BATCH = 6
 
@@ -87,6 +89,16 @@ def transport_of(srv: Server) -> str:
     return "tcp"
 
 
+def way_kind(srv: Server) -> str:
+    """Вид способа для предохранителя: другой отпечаток TLS или маскировка; '' — обычный путь."""
+    w = way_of(srv)
+    if w["fp"]:
+        return f"отпечаток {w['fp']}"
+    if w["mask"]:
+        return "маскировка" if w["mask"] == 1 else f"маскировка {w['mask']}"
+    return ""
+
+
 def way_text(srv: Server) -> str:
     """Как сейчас подключён сервер — коротко, для журнала и окна: «отпечаток firefox, маскировка 2»."""
     w = way_of(srv)
@@ -136,7 +148,17 @@ class LadderMixin:
         if not self.settings.get("net_memory", True):
             return None
         nid = self._net_id(cached_only)
-        return (self.settings.get("net_ways") or {}).get(nid) if nid else None
+        way = (self.settings.get("net_ways") or {}).get(nid) if nid else None
+        if way and time.time() - float(way.get("at") or 0) > NET_WAY_TTL:
+            return None  # запись старше 30 дней: сеть могла измениться — ищем заново
+        return way
+
+    @staticmethod
+    def _net_alts(way: dict | None) -> list[dict]:
+        """Запасные пути из памяти сети (до двух), без устаревших."""
+        now = time.time()
+        return [a for a in (way or {}).get("alt") or [] if isinstance(a, dict) and a.get("server")
+                and now - float(a.get("at") or 0) <= NET_WAY_TTL][:NET_ALTS]
 
     def connect_start(self, srv: Server) -> None:
         """Большая кнопка и запуск программы: если в этой сети уже что-то работало — сразу оно
@@ -144,17 +166,21 @@ class LadderMixin:
         mem = self._net_way(cached_only=True)
         pick = self.settings.get("engine_pick", "auto")
         if mem and srv and srv.engine != "awg":
-            real = self.find(mem.get("server", ""))
-            if real and real in self.pool() and real.supported and not real.stub \
-                    and (pick == "auto" or real.engine == srv.engine):
-                way = self._apply_way(way_copy(real, mem.get("fp") or "", mem.get("mask") or 0))
-                if way:
-                    self._lane.why = "в этой сети работал этот сервер"
-                    try:
-                        self.connect(way)
-                        return
-                    except Exception as exc:
-                        self.log(f"Сервер из памяти сети не подключился ({exc}) — беру лучший.")
+            for i, w in enumerate([mem] + self._net_alts(mem)):
+                real = self.find(w.get("server", ""))
+                if not (real and real in self.pool() and real.supported and not real.stub
+                        and (pick == "auto" or real.engine == srv.engine)):
+                    continue
+                way = self._apply_way(way_copy(real, w.get("fp") or "", w.get("mask") or 0))
+                if not way:
+                    continue
+                self._lane.why = "в этой сети работал этот сервер" if not i else "запасной путь из памяти этой сети"
+                try:
+                    self.connect(way)
+                    return
+                except Exception as exc:
+                    self.log(f"{'Сервер' if not i else 'Запасной путь'} из памяти сети не подключился ({exc}).")
+            self.log("Память сети не помогла — беру лучший сервер.")
         self.connect(srv)
 
     def _remember_way(self, srv: Server) -> None:
@@ -167,6 +193,14 @@ class LadderMixin:
         way = dict(way_of(srv), at=time.time())
         ways = self.settings.setdefault("net_ways", {})
         old = ways.get(nid) or {}
+        # прежний рабочий путь этой сети не выбрасываем — он становится запасным (до двух запасных)
+        sig = lambda w: (w.get("server"), w.get("fp") or "", w.get("mask") or 0)  # noqa: E731
+        alts = []
+        for a in ([{k: old.get(k) for k in ("server", "fp", "mask", "at")}] if old.get("server") else []) + self._net_alts(old):
+            if sig(a) != sig(way) and sig(a) not in [sig(x) for x in alts]:
+                alts.append(a)
+        if alts:
+            way["alt"] = alts[:NET_ALTS]
         ways[nid] = way
         if len(ways) > NET_WAYS_MAX:
             for k in sorted(ways, key=lambda k: ways[k].get("at", 0))[:len(ways) - NET_WAYS_MAX]:
@@ -252,6 +286,13 @@ class LadderMixin:
         self.ladder_step = title
         self.progress(f"Ищу рабочий способ: {title}")
         found = self._probe(cands)
+        kinds = getattr(self, "_ladder_kinds", None)
+        if kinds is not None:
+            ok_ids = {id(c) for _, c in found}
+            for _, c in [(lb, c) for lb, c in cands if c.supported and not c.stub][:PROBE_BATCH]:
+                kind = way_kind(c)
+                if kind:
+                    kinds[kind] = kinds.get(kind, False) or id(c) in ok_ids
         if not found:
             self.log(f"Лестница: {title} — данные не идут.")
             return None
@@ -281,11 +322,19 @@ class LadderMixin:
         fp_on = bool(self.settings.get("fp_auto", True))
         mask_on = bool(self.settings.get("mask_auto", True))
         tried: set[tuple] = set()
+        self._ladder_kinds = {}   # вид способа → помог ли (для предохранителей, protect.py)
+        fused: set[str] = set()
 
         def fresh(label: str, c: Server) -> list[tuple[str, Server]]:
             w = way_of(c)
             sig = (w["server"], w["fp"], w["mask"])
             if sig in tried:
+                return []
+            kind = way_kind(c)
+            if kind and not self.fuse_ok(kind):
+                if kind not in fused:
+                    fused.add(kind)
+                    self.log(f"Лестница: «{kind}» в этой сети на паузе (предохранитель) — пропускаю.")
                 return []
             tried.add(sig)
             return [(label, c)]
@@ -293,9 +342,10 @@ class LadderMixin:
         # шаги 1–4: память сети, тот же сервер, другой отпечаток, маскировка — одним временным ядром
         first: list[tuple[str, Server]] = []
         mem = self._net_way()
-        if mem and self.find(mem.get("server", "")):
-            first += fresh("память этой сети", way_copy(self.find(mem["server"]), mem.get("fp") or "",
-                                                        mem.get("mask") or 0))
+        for i, w in enumerate([mem] + self._net_alts(mem) if mem else []):
+            if self.find(w.get("server", "")):
+                first += fresh("память этой сети" if not i else "запасной путь этой сети",
+                               way_copy(self.find(w["server"]), w.get("fp") or "", w.get("mask") or 0))
         if cur:
             first += fresh("тот же сервер", way_copy(cur))
             cur_fp = tester.fp_of(cur)
@@ -333,9 +383,20 @@ class LadderMixin:
             self.check_stop()
             got = self._ladder_step(title, cands[i:i + PROBE_BATCH])
             if got:
+                self._ladder_fuses()
                 self._ladder_success(got[1], got[0])
                 return True
         return False
+
+    def _ladder_fuses(self) -> None:
+        """Что-то помогло — значит, сеть жива: способы, которые в этот раз не помогли, получают неудачу,
+        помогший — сброс. Если не помогло ничего, неудачи не считаются (виноват не способ)."""
+        for kind, ok in (getattr(self, "_ladder_kinds", None) or {}).items():
+            try:
+                self.fuse_result(kind, ok)
+            except Exception as exc:
+                self.log(f"Предохранитель: {exc}")
+        self._ladder_kinds = {}
 
     def _remember_current(self) -> None:
         """После подключения: данные идут — запомнить сервер и способ для этой сети."""

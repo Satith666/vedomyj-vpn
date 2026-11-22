@@ -156,7 +156,7 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
   const PAGES = ["home", "status", "more", "features", "zapret", "byedpi", "services", "routes", "traffic", "updates", "settings",
-    "log", "tips", "manual", "share", "ads", "errors", "family"];
+    "log", "tips", "manual", "share", "ads", "errors", "family", "pro"];
   const MODALS = ["modalAddSub()", "modalAddServer()", "modalAwgStart()", "modalFamInvite()", "modalVps()"];
   const tight = [];
   for (const [w, h] of [[1180, 760], [900, 700], [720, 640]]) {

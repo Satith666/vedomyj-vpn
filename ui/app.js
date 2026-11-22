@@ -375,7 +375,7 @@ const PAGES = {
   tips: { back: "more", title: "nav_tips" }, manual: { back: "more", title: "nav_manual" },
   share: { back: "more", title: "nav_share" }, ads: { back: "more", title: "nav_ads" },
   errors: { back: "more", title: "nav_errors" }, status: { back: "home", title: "nav_status" },
-  family: { back: "home", title: "nav_family" },
+  family: { back: "home", title: "nav_family" }, pro: { back: "more", title: "nav_pro" },
 };
 
 function renderTop() {
@@ -1012,6 +1012,7 @@ function renderMore() {
       ${row("updates", "updates", t("nav_updates"), t("more_updates"))}
       ${row("log", "log", t("nav_log"), t("more_log"))}
       ${row("settings", "gear", t("nav_settings"), t("more_settings"))}
+      ${row("pro", "shield", t("nav_pro"), t("more_pro"), S.collect && S.collect.on ? esc(t("collect_on_short")) : "")}
     </section>
     <div class="more-foot">
       <button class="btn btn-small" data-act="theme">${icon(isLight() ? "moon" : "sun")}${isLight() ? t("theme_dark") : t("theme_light")}</button>
@@ -1125,6 +1126,64 @@ function renderFeatures() {
     e.preventDefault();
     act("hotkey_set", { value: $("#hotkeyInput").value }).then(r => { if (r.ok) { toast(t("hotkey_saved", { k: r.result }), "ok", 3000); scheduleRefresh(50); } });
   });
+}
+
+/* ---------- профессиональные настройки: защита, память маршрутов, автоматика, сбор ошибок ---------- */
+
+const PRO_GROUPS = [
+  { title: "pg_protect", items: [
+    { id: "fuses", key: "fuses_enabled", extra: () => fusesExtra() },
+    { id: "guard", key: "guard_rollback" },
+    { id: "safe", key: "safe_start" },
+  ] },
+  { title: "pg_memory", items: [{ id: "net_memory", key: "net_memory", extra: () => netMemoryExtra() }] },
+  { title: "pg_auto", items: [
+    { id: "autopilot", key: "autopilot" }, { id: "fp_auto", key: "fp_auto" }, { id: "mask", key: "mask_auto" },
+    { id: "failover", key: "failover" }, { id: "data_watch", key: "data_watch" }, { id: "whitelist", key: "whitelist_auto" },
+    { id: "auto_routes", key: "auto_routes" }, { id: "auto_stall", key: "auto_stall" }, { id: "multi", key: "multi_enabled" },
+  ] },
+];
+
+function fusesExtra() {
+  const f = (S.pro && S.pro.fuses) || [];
+  if (!f.length) return `<div class="net-now"><span class="hint">${esc(t("fuses_none"))}</span></div>`;
+  const left = sec => sec >= 3600 ? t("left_h", { n: Math.ceil(sec / 3600) }) : t("left_m", { n: Math.max(1, Math.ceil(sec / 60)) });
+  return `<div class="net-now"><span class="hint">${esc(f.map(x => `${x.kind} — ${left(x.left)}`).join("; "))}</span>
+    <button class="btn btn-small btn-ghost" data-act="fuses_clear">${t("fuses_clear")}</button></div>`;
+}
+
+function collectCard() {
+  const c = S.collect || {};
+  const fmtLeft = sec => {
+    const h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60);
+    return h ? t("left_hm", { h, m }) : t("dur_m", { n: Math.max(1, m) });
+  };
+  const body = c.on
+    ? `<p class="hint">${esc(t("collect_running", { left: fmtLeft(c.left || 0), n: c.events || 0 }))}</p>
+       <div class="toolbar"><button class="btn btn-primary" data-act="collect_stop">${t("collect_stop")}</button></div>`
+    : `<p class="hint">${esc(t("collect_desc"))}</p>
+       <div class="toolbar">${[1, 6, 24, 72].map(h => `<button class="btn ${h === 24 ? "btn-primary" : ""}" data-act="collect_start" data-hours="${h}">${esc(t("collect_for", { h }))}</button>`).join("")}</div>`;
+  const rep = c.report_ok ? `<div class="net-now"><span class="hint">${esc(t("collect_last", { f: c.report }))}</span>
+      <button class="btn btn-small" data-act="collect_report">${t("collect_open")}</button>
+      <button class="btn btn-small btn-ghost" data-act="collect_copy">${t("collect_copy")}</button></div>` : "";
+  return `<section class="list-card"><h2>${t("pg_collect")}</h2><div class="card-pad stack" style="gap:10px;padding-top:0">${body}${rep}</div></section>`;
+}
+
+function renderPro() {
+  const pro = S.pro || { keys: {} };
+  const row = f => `<div class="feat-row">
+      <div class="feat-text"><b>${esc(t(`i_${f.id}_name`))}</b>
+        <div class="desc">${esc(t(`i_${f.id}_desc`, infoVars()))}</div>
+        ${f.extra ? f.extra() : ""}</div>
+      ${sw(pro.keys[f.key] !== false && !!pro.keys[f.key], `data-pset="${f.key}" aria-label="${esc(t(`i_${f.id}_name`))}"`)}
+    </div>`;
+  $("#page").innerHTML = `<div id="proPage" class="stack">
+    <p class="page-intro">${t("pro_intro")}</p>
+    ${pro.safe_mode ? `<p class="warn-line">${esc(t("pro_safe_mode"))}</p>` : ""}
+    ${PRO_GROUPS.map(g => `<section class="list-card"><h2>${t(g.title)}</h2>${g.items.map(row).join("")}</section>`).join("")}
+    ${collectCard()}
+    <div class="toolbar"><button class="btn" data-act="pro_reset">${icon("updates")}${t("pro_reset")}</button></div>
+  </div>`;
 }
 
 /* ---------- zapret и ByeDPI ---------- */
@@ -2665,6 +2724,7 @@ function renderPage(full = false) {
     case "errors": return full || !$("#errorsPage") ? renderErrors() : null;
     case "status": return renderStatus(full);
     case "family": return renderFamily(full);
+    case "pro": return renderPro();
     default: page = "home"; return renderHome(true);
   }
 }
@@ -3374,6 +3434,13 @@ const ACTIONS = {
   data_check: () => act("data_check"),
   health_check: () => act("health_check"),
   ladder_retry: () => act("ladder_retry").then(r => r.ok && toast(t("ww_trying"), "info", 3000)),
+  fuses_clear: () => act("fuses_clear").then(r => r.ok && (toast(t("fuses_cleared"), "ok", 2500), scheduleRefresh(50))),
+  collect_start: el => act("collect_start", { hours: Number(el.dataset.hours) || 24 }).then(r => r.ok && (toast(t("collect_started"), "ok", 3500), scheduleRefresh(50))),
+  collect_stop: () => act("collect_stop").then(r => r.ok && scheduleRefresh(800)),
+  collect_report: () => act("collect_report"),
+  collect_copy: () => act("collect_text").then(r => r.ok && copy(r.result, t("collect_copied"))),
+  pro_reset: () => confirmModal(t("pro_reset_q"), t("pro_reset_text"), t("pro_reset"), false).then(yes => yes &&
+    act("pro_reset").then(r => r.ok && (toast(t("pro_reset_done"), "ok", 3000), scheduleRefresh(50)))),
   net_memory_clear: () => act("net_memory_clear").then(r => r.ok && (toast(t("netmem_cleared"), "ok", 2500), scheduleRefresh(50))),
   cert_ack: () => act("cert_ack").then(r => r.ok && scheduleRefresh(50)),
   open_folder: () => act("open_folder"),
@@ -3451,6 +3518,14 @@ document.addEventListener("click", e => {
     const id = feat.dataset.feat;
     openFeats.has(id) ? openFeats.delete(id) : openFeats.add(id);
     return renderFeatures();
+  }
+
+  const pset = e.target.closest("[data-pset]");
+  if (pset && !pset.disabled) {
+    const v = pset.getAttribute("aria-checked") !== "true";
+    pset.setAttribute("aria-checked", String(v));
+    act("pro_set", { values: { [pset.dataset.pset]: v } }).then(r => { if (!r.ok) pset.setAttribute("aria-checked", String(!v)); scheduleRefresh(50); });
+    return;
   }
 
   const fset = e.target.closest("[data-fset]");

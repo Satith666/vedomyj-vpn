@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, countries, dispatcher, errorlog, family, journal, ladder, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -30,7 +30,8 @@ class Cancelled(RuntimeError):
     """Человек нажал «Стоп»."""
 
 
-class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin, family.FamilyMixin):
+class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin, family.FamilyMixin,
+             protect.ProtectMixin, collect.CollectMixin):
     """События для интерфейса (notify(event, **data)) приходят из рабочих потоков:
     log, busy, servers, server, status, live, connections, services, service, summary, error, settings."""
 
@@ -115,6 +116,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._vpn_wanted = False    # идёт подключение VPN (до того, как connected станет True)
         self._tail_lock = threading.Lock()
         self._dispatcher_init()     # диспетчер: можно ли автоматике трогать VPN (dispatcher.py)
+        self._protect_init()        # предохранители, автооткат, безопасный запуск (protect.py)
+        self._collect_init()        # «Сбор ошибок» (collect.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
         # обход замедлений: zapret и ByeDPI
@@ -168,6 +171,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         stamp = time.strftime("%H:%M:%S ")
         self.logs.append(stamp + text)
         self._raw_notify("log", text=stamp + i18n.tr(text))
+        if self.settings.get("collect_until"):
+            self._collect_add("log", text=text)
 
     def _scrub_secrets(self, text: str) -> str:
         """Для журнала ошибок: убрать ссылки, ключи, адреса и папку пользователя."""
@@ -197,6 +202,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         if not old:
             self.log("Проблема: " + title + (f" — {detail}" if detail else ""))
             self.errors.record("problem", title, str(detail), where=key)
+            self._collect_add("problem", key=key, title=title, detail=str(detail)[:600])
         self.notify("problems")
 
     def resolve(self, *keys: str) -> None:
@@ -342,6 +348,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     # ---------- запуск и завершение ----------
 
     def startup(self) -> None:
+        self.safe_start_begin()  # прошлые запуски падали — этот без необязательной автоматики (protect.py)
+        if self.safe_mode:
+            self.settings.overlay = {k: False for k in protect.SAFE_OFF}
         if xray.kill_stale(self.paths):
             self.log("Остановлен Xray, оставшийся от прошлого запуска.")
         self._install_pending_core()
@@ -418,6 +427,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     def shutdown(self) -> None:
         self._closing = True
         self.stop_event.set()
+        self.safe_start_end()
         try:
             self.disconnect(quiet=True, keep_filter=False)
             if self.awg_active:
@@ -4505,6 +4515,10 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         if self.awg_active and tick % self.WARP_HEALTH_EVERY == 33:
             self._warp_health()
         self._deferred_tick()
+        self._guard_tick()
+        self.collect_tick(tick)
+        if tick == protect.SAFE_OK_AFTER:
+            self.safe_start_ok()
         self._ads_watch()
         self._vpn_timer()
         if self._net_due(tick):
@@ -5412,6 +5426,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             "routes": {"sites": routes["sites"], "sites_total": routes["sites_total"], "proxies": routes["proxies"]},
             "dpi": self.dpi_state(),
             "tun": self.tun_state(),
+            "pro": self.pro_state(),
+            "collect": self.collect_state(),
             "multi": self.multi_state(),
             "whitelist_mode": self.whitelist_mode,
             "hotspot": self.hotspot_state(),

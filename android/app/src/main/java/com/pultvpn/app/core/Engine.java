@@ -230,7 +230,7 @@ public final class Engine {
 
     private final Platform p;
     private final Object lock = new Object();
-    public final Map<String, Object> settings;
+    public final OverlayMap settings;
     private final File settingsFile;
     private final File serversFile;
     private final List<Server> servers = new ArrayList<Server>();
@@ -415,7 +415,7 @@ public final class Engine {
         dir.mkdirs();
         settingsFile = new File(dir, "settings.json");
         serversFile = new File(dir, "servers.json");
-        settings = Store.loadSettings(settingsFile);
+        settings = new OverlayMap(Store.loadSettings(settingsFile));
         XrayConfig.CERT_PINS.clear();
         loadPins();
         errors = new ErrorLog(dir, platform.appVersion(), "Android " + platform.osVersion(), new ErrorLog.Scrubber() {
@@ -489,6 +489,7 @@ public final class Engine {
             }
             timer = Executors.newSingleThreadScheduledExecutor();
         }
+        safeStartBegin(); // два падения подряд при запуске — этот запуск без необязательной автоматики
         timer.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
@@ -553,6 +554,590 @@ public final class Engine {
         return Diagnostics.scrub(out, reportSecrets());
     }
 
+    // ---------- защита: предохранители, автооткат, безопасный запуск (как protect.py) ----------
+
+    static final int FUSE_FAILS = 2;
+    static final long[] FUSE_STEPS = {600_000L, 3_600_000L, 86_400_000L};
+    public static long GUARD_WAIT_MS = 40_000L; // самопроверка укорачивает
+    static final long SAFE_OK_MS = 90_000L;
+    static final String[] SAFE_OFF = {"fp_auto", "mask_auto", "net_profiles", "app_update"};
+    static final String[] GUARDED_KEYS = {"mode", "ru_direct", "block_quic", "dns_encrypted", "block_ads", "mask_auto",
+            "fp_auto", "engine_pick"};
+    /** Профессиональные настройки и их значения по умолчанию («Вернуть как было»). */
+    static final String[] PRO_KEYS = {"fuses_enabled", "guard_rollback", "safe_start", "net_memory", "autopilot", "fp_auto",
+            "mask_auto", "data_watch", "whitelist_auto"};
+    private final Object fuseLock = new Object();
+    private Map<String, Boolean> ladderKinds;
+    private volatile Map<String, Object> guard;
+    private volatile boolean guardChecking;
+    public volatile boolean safeMode;
+    private final long startedAt = System.currentTimeMillis();
+
+    /** Вид способа для предохранителя: другой отпечаток TLS или маскировка; "" — обычный путь. */
+    static String wayKind(Server c) {
+        if (c.fp != null && !c.fp.isEmpty()) {
+            return "отпечаток " + c.fp;
+        }
+        return c.mask ? "маскировка" : "";
+    }
+
+    static String wayKindEn(String kind) {
+        return kind.startsWith("отпечаток ") ? "fingerprint " + kind.substring(10) : "маскировка".equals(kind) ? "masking" : kind;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> fuses() {
+        Object v = settings.get("fuses");
+        if (!(v instanceof Map)) {
+            v = new LinkedHashMap<String, Object>();
+            settings.put("fuses", v);
+        }
+        return (Map<String, Object>) v;
+    }
+
+    private String fuseKey(String kind) {
+        String id = netId();
+        return (id.isEmpty() ? "any" : id) + "|" + kind;
+    }
+
+    public boolean fuseOk(String kind) {
+        if (kind == null || kind.isEmpty() || !Json.bool(settings, "fuses_enabled", true)) {
+            return true;
+        }
+        synchronized (fuseLock) {
+            Map<String, Object> rec = Json.map(fuses(), fuseKey(kind));
+            return rec == null || Json.num(rec, "until", 0) <= System.currentTimeMillis();
+        }
+    }
+
+    public void fuseResult(String kind, boolean ok) {
+        if (kind == null || kind.isEmpty()) {
+            return;
+        }
+        String msgRu = null;
+        String msgEn = null;
+        synchronized (fuseLock) {
+            Map<String, Object> all = fuses();
+            String key = fuseKey(kind);
+            if (ok) {
+                if (all.remove(key) == null) {
+                    return;
+                }
+            } else {
+                Map<String, Object> rec = Json.map(all, key);
+                if (rec == null) {
+                    rec = Json.obj("n", 0L, "level", 0L, "until", 0L);
+                }
+                long n = Json.num(rec, "n", 0) + 1;
+                long level = Json.num(rec, "level", 0);
+                rec.put("at", System.currentTimeMillis());
+                if (n >= FUSE_FAILS) {
+                    int i = (int) Math.min(level, FUSE_STEPS.length - 1);
+                    rec.put("until", System.currentTimeMillis() + FUSE_STEPS[i]);
+                    rec.put("level", level + 1);
+                    n = 0;
+                    String[] dur = i == 0 ? new String[]{"10 мин", "10 min"} : i == 1 ? new String[]{"час", "an hour"} : new String[]{"сутки", "a day"};
+                    msgRu = "Предохранитель: «" + kind + "» в этой сети не помогает — пропускаю его " + dur[0] + ".";
+                    msgEn = "Fuse: “" + wayKindEn(kind) + "” doesn't help on this network — skipping it for " + dur[1] + ".";
+                }
+                rec.put("n", n);
+                all.put(key, rec);
+                while (all.size() > 300) {
+                    all.remove(all.keySet().iterator().next());
+                }
+            }
+        }
+        if (msgRu != null) {
+            log(msgRu, msgEn);
+        }
+        saveSettings();
+    }
+
+    public List<Object> fusesState() {
+        List<Object> out = new ArrayList<Object>();
+        String id = netId();
+        String prefix = (id.isEmpty() ? "any" : id) + "|";
+        long now = System.currentTimeMillis();
+        synchronized (fuseLock) {
+            for (Map.Entry<String, Object> e : fuses().entrySet()) {
+                long until = Json.num(Json.map(e.getValue()), "until", 0);
+                if (e.getKey().startsWith(prefix) && until > now) {
+                    String kind = e.getKey().substring(prefix.length());
+                    out.add(Json.obj("kind", Text.t(kind, wayKindEn(kind)), "left", (until - now) / 1000));
+                }
+            }
+        }
+        return out;
+    }
+
+    public void fusesClear() {
+        synchronized (fuseLock) {
+            settings.put("fuses", new LinkedHashMap<String, Object>());
+        }
+        saveSettings();
+        log("Предохранители сброшены: все способы снова пробуются.", "Fuses reset: all methods are tried again.");
+        changed();
+    }
+
+    /** Что-то в лестнице помогло — не помогшие способы получают неудачу, помогший — сброс. */
+    private void ladderFuses() {
+        Map<String, Boolean> k = ladderKinds;
+        ladderKinds = null;
+        if (k == null) {
+            return;
+        }
+        for (Map.Entry<String, Boolean> e : k.entrySet()) {
+            fuseResult(e.getKey(), e.getValue());
+        }
+    }
+
+    private boolean workingNow() {
+        if (!isOn()) {
+            return false;
+        }
+        if (dataFlowing()) {
+            return true;
+        }
+        synchronized (lock) {
+            return healthFails == 0 && System.currentTimeMillis() - pingAt < 180_000L;
+        }
+    }
+
+    /** Перед изменением настроек: если VPN работал, через 40 с проверим, работает ли он с новыми. */
+    public void guardChange(Map<String, Object> before, String labelRu, String labelEn) {
+        Map<String, Object> keep = new LinkedHashMap<String, Object>();
+        for (String k : GUARDED_KEYS) {
+            if (before.containsKey(k)) {
+                keep.put(k, before.get(k));
+            }
+        }
+        if (keep.isEmpty() || !Json.bool(settings, "guard_rollback", true) || !workingNow()) {
+            return;
+        }
+        Map<String, Object> g = guard;
+        if (g != null) {
+            Map<String, Object> first = Json.map(g, "before");
+            if (first != null) {
+                keep.putAll(first);
+            }
+        }
+        guard = Json.obj("before", keep, "ru", labelRu, "en", labelEn, "at", System.currentTimeMillis());
+    }
+
+    private void guardTick() {
+        final Map<String, Object> g = guard;
+        if (g == null || guardChecking) {
+            return;
+        }
+        if (!isOn()) {
+            guard = null;
+            return;
+        }
+        long at = Json.num(g, "at", 0);
+        if (connBusy() || System.currentTimeMillis() - at < GUARD_WAIT_MS) {
+            return;
+        }
+        boolean fresh;
+        synchronized (lock) {
+            fresh = healthFails == 0 && pingAt > at;
+        }
+        if (dataFlowing() || fresh) {
+            guard = null;
+            log("Изменение прижилось: " + Json.str(g, "ru") + " — VPN работает.",
+                    "The change took: " + Json.str(g, "en") + " — the VPN works.");
+            return;
+        }
+        guardChecking = true;
+        pool.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    long d = -1;
+                    try {
+                        d = p.coreDelay(XrayConfig.HEALTH_URL);
+                    } catch (Exception ignored) {
+                        d = -1;
+                    }
+                    if (guard != g) {
+                        return;
+                    }
+                    guard = null;
+                    if (d > 0) {
+                        log("Изменение прижилось: " + Json.str(g, "ru") + " — VPN работает.",
+                                "The change took: " + Json.str(g, "en") + " — the VPN works.");
+                        return;
+                    }
+                    Map<String, Object> before = Json.map(g, "before");
+                    boolean changedAny = false;
+                    synchronized (lock) {
+                        for (Map.Entry<String, Object> e : before.entrySet()) {
+                            Object now = settings.get(e.getKey());
+                            if (now == null ? e.getValue() != null : !now.equals(e.getValue())) {
+                                settings.put(e.getKey(), e.getValue());
+                                changedAny = true;
+                            }
+                        }
+                    }
+                    if (!changedAny) {
+                        return;
+                    }
+                    saveSettings();
+                    log("Автооткат: после изменения (" + Json.str(g, "ru") + ") данные через VPN перестали идти — вернул как было.",
+                            "Auto rollback: after the change (" + Json.str(g, "en") + ") data stopped flowing through the VPN — put it back.");
+                    say(Text.t("Вернул настройки как было: после изменения (" + Json.str(g, "ru") + ") VPN перестал работать.",
+                            "Put the settings back: after the change (" + Json.str(g, "en") + ") the VPN stopped working."), "info");
+                    applyCore();
+                    changed();
+                } finally {
+                    guardChecking = false;
+                }
+            }
+        });
+    }
+
+    private File startFile() {
+        return new File(p.dataDir(), "start.json");
+    }
+
+    /** При создании движка: два падения подряд в первые 90 с после запуска — этот запуск безопасный. */
+    private void safeStartBegin() {
+        long crashes = 0;
+        try {
+            if (startFile().isFile()) {
+                crashes = Json.num(Json.parseObject(Store.read(startFile())), "crashes", 0);
+            }
+        } catch (Exception ignored) {
+            crashes = 0;
+        }
+        safeMode = Json.bool(settings, "safe_start", true) && crashes >= 2;
+        if (safeMode) {
+            for (String k : SAFE_OFF) {
+                settings.overlay.put(k, false);
+            }
+            log("Безопасный запуск: приложение " + crashes + " раза подряд закрылось с ошибкой при запуске — в этот раз без необязательной автоматики.",
+                    "Safe start: the app crashed " + crashes + " times in a row while starting — this time without optional automation.");
+            problem("safe_mode", Text.t("Безопасный запуск", "Safe start"),
+                    Text.t("Приложение несколько раз подряд закрылось с ошибкой при запуске, поэтому сейчас работает без необязательной автоматики. Следующий запуск — обычный.",
+                            "The app crashed several times in a row while starting, so it now runs without optional automation. The next start is normal."));
+        }
+    }
+
+    /** Из обработчика падений: упало в первые 90 с — считаем; позже — это не падение при запуске. */
+    public void noteCrash() {
+        if (System.currentTimeMillis() - startedAt > SAFE_OK_MS) {
+            return;
+        }
+        long crashes = 0;
+        try {
+            if (startFile().isFile()) {
+                crashes = Json.num(Json.parseObject(Store.read(startFile())), "crashes", 0);
+            }
+        } catch (Exception ignored) {
+            crashes = 0;
+        }
+        try {
+            Store.write(startFile(), Json.write(Json.obj("crashes", crashes + 1, "at", System.currentTimeMillis())));
+        } catch (Exception ignored) {
+            // не вышло — не страшно
+        }
+    }
+
+    private void safeStartOk() {
+        try {
+            Store.write(startFile(), Json.write(Json.obj("crashes", 0L, "at", System.currentTimeMillis())));
+        } catch (Exception ignored) {
+            // не вышло — не страшно
+        }
+    }
+
+    public Map<String, Object> proState() {
+        Map<String, Object> keys = new LinkedHashMap<String, Object>();
+        Map<String, Object> defs = Store.defaults();
+        Map<String, Object> d = new LinkedHashMap<String, Object>();
+        for (String k : PRO_KEYS) {
+            keys.put(k, Json.bool(settings, k, Json.bool(defs, k, true)));
+            d.put(k, Json.bool(defs, k, true));
+        }
+        return Json.obj("keys", keys, "defaults", d, "fuses", fusesState(), "safe_mode", safeMode, "guard", guard != null);
+    }
+
+    public List<Object> proReset() {
+        Map<String, Object> defs = Store.defaults();
+        Map<String, Object> vals = new LinkedHashMap<String, Object>();
+        List<Object> changedKeys = new ArrayList<Object>();
+        for (String k : PRO_KEYS) {
+            boolean def = Json.bool(defs, k, true);
+            if (Json.bool(settings, k, def) != def) {
+                changedKeys.add(k);
+            }
+            vals.put(k, def);
+        }
+        synchronized (fuseLock) {
+            settings.put("fuses", new LinkedHashMap<String, Object>());
+        }
+        setSettings(vals);
+        log("Профессиональные настройки возвращены как было.", "Advanced settings reset to defaults.");
+        return changedKeys;
+    }
+
+    // ---------- сбор ошибок (как collect.py) ----------
+
+    private final Object collectLock = new Object();
+    private volatile int collectEvents;
+    private volatile long collectBytes;
+    private volatile boolean collectFinishing;
+
+    private File collectFile() {
+        return new File(p.dataDir(), "collect.jsonl");
+    }
+
+    public boolean collecting() {
+        return Json.num(settings, "collect_until", 0) > System.currentTimeMillis();
+    }
+
+    public Map<String, Object> collectStart(double hours) {
+        if (!(hours >= 1)) {
+            hours = hours > 0 ? 1 : 24;
+        }
+        hours = Math.min(72, hours);
+        long now = System.currentTimeMillis();
+        synchronized (collectLock) {
+            settings.put("collect_until", now + (long) (hours * 3_600_000L));
+            settings.put("collect_started", now);
+            collectEvents = 0;
+            collectBytes = 0;
+            try {
+                Store.write(collectFile(), Json.write(Json.obj("t", now, "k", "start", "hours", hours)) + "\n");
+            } catch (Exception e) {
+                log("Сбор ошибок: не удалось создать файл: " + e.getMessage(), "Error collection: couldn't create the file: " + e.getMessage());
+            }
+        }
+        saveSettings();
+        long h = Math.round(hours);
+        log("Сбор ошибок включён на " + h + " ч. Отчёт появится сам, когда время выйдет.",
+                "Error collection is on for " + h + " h. The report appears by itself when the time is up.");
+        collectSnapshot();
+        changed();
+        return collectState();
+    }
+
+    private void collectAdd(String kind, Map<String, Object> data) {
+        if (collectFinishing || !collecting()) {
+            return;
+        }
+        try {
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            item.put("t", System.currentTimeMillis());
+            item.put("k", kind);
+            for (Map.Entry<String, Object> e : data.entrySet()) {
+                Object v = e.getValue();
+                item.put(e.getKey(), v instanceof String ? scrubSecrets((String) v) : v);
+            }
+            String line = Json.write(item) + "\n";
+            if ("log".equals(kind) && collectBytes > 8L * 1024 * 1024) {
+                return;
+            }
+            synchronized (collectLock) {
+                Store.append(collectFile(), line.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                collectBytes += line.length();
+                collectEvents++;
+            }
+        } catch (Exception ignored) {
+            // сбор ошибок сам ничего не ломает
+        }
+    }
+
+    private void collectSnapshot() {
+        Server cur;
+        synchronized (lock) {
+            cur = current;
+        }
+        boolean on = isOn();
+        collectAdd("state", Json.obj("on", on, "server", on && cur != null ? cur.name : "",
+                "method", Json.str(settings, "engine_pick", "auto"), "mode", Json.str(settings, "mode"),
+                "ping", liveDelay, "wl", whitelistMode, "step", ladderStep, "problems", problems.size(),
+                "safe", safeMode, "ads", Json.bool(settings, "block_ads", false), "filter", filterOn()));
+    }
+
+    private void collectTick() {
+        long until = Json.num(settings, "collect_until", 0);
+        if (until <= 0) {
+            return;
+        }
+        if (System.currentTimeMillis() >= until) {
+            pool.submit(new Runnable() {
+                @Override
+                public void run() {
+                    collectFinish(Text.t("время вышло", "time is up"));
+                }
+            });
+            return;
+        }
+        if (tick % 60 == 7) {
+            collectSnapshot();
+        }
+    }
+
+    public String collectStop() {
+        return collectFinish(Text.t("остановлен вручную", "stopped by hand"));
+    }
+
+    private List<Map<String, Object>> collectRead() {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        try {
+            for (String line : Store.read(collectFile()).split("\n")) {
+                if (!line.trim().isEmpty()) {
+                    try {
+                        out.add(Json.parseObject(line));
+                    } catch (Exception ignored) {
+                        // испорченная строка
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // файла нет
+        }
+        return out;
+    }
+
+    public String collectFinish(String reason) {
+        if (collectFinishing || Json.num(settings, "collect_until", 0) <= 0) {
+            return "";
+        }
+        collectFinishing = true;
+        try {
+            long started = Json.num(settings, "collect_started", 0);
+            String path = collectReport(collectRead(), started, reason);
+            settings.put("collect_until", 0L);
+            settings.put("collect_report", path);
+            saveSettings();
+            collectFile().delete();
+            if (!path.isEmpty()) {
+                log("Сбор ошибок закончен (" + reason + "). Отчёт готов: Настройки → Профессиональные.",
+                        "Error collection finished (" + reason + "). The report is ready: Settings → Advanced.");
+                say(Text.t("Сбор ошибок закончен — отчёт готов (Настройки → Профессиональные).",
+                        "Error collection finished — the report is ready (Settings → Advanced)."), "info");
+            }
+            changed();
+            return path;
+        } finally {
+            collectFinishing = false;
+        }
+    }
+
+    private String collectReport(List<Map<String, Object>> items, long started, String reason) {
+        SimpleDateFormat fmt = new SimpleDateFormat("dd.MM HH:mm:ss", Locale.US);
+        long now = System.currentTimeMillis();
+        List<Map<String, Object>> logs = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> probs = new ArrayList<Map<String, Object>>();
+        List<Map<String, Object>> states = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> it : items) {
+            String k = Json.str(it, "k");
+            if ("log".equals(k)) {
+                logs.add(it);
+            } else if ("problem".equals(k)) {
+                probs.add(it);
+            } else if ("state".equals(k)) {
+                states.add(it);
+            }
+        }
+        StringBuilder b = new StringBuilder();
+        b.append("VEDOMYJ VPN для Android ").append(p.appVersion()).append(" — сбор ошибок\n");
+        b.append("С ").append(started > 0 ? fmt.format(new Date(started)) : "?").append(" по ").append(fmt.format(new Date(now)))
+                .append(String.format(Locale.US, " (%.1f ч); закончен: ", started > 0 ? (now - started) / 3_600_000.0 : 0.0))
+                .append(reason).append(".\n\n");
+        int crashes = 0;
+        List<Map<String, Object>> errs = new ArrayList<Map<String, Object>>();
+        for (Map<String, Object> e : errors.recent(300)) {
+            if (Json.num(e, "last", 0) * 1000L >= started) {
+                errs.add(e);
+                if ("crash".equals(Json.str(e, "kind"))) {
+                    crashes++;
+                }
+            }
+        }
+        b.append("Итого:\n- новых проблем: ").append(probs.size()).append("\n- сбоев кода: ").append(crashes)
+                .append("\n- строк журнала: ").append(logs.size()).append("\n\nПроблемы (по порядку):\n");
+        if (probs.isEmpty()) {
+            b.append("- нет\n");
+        }
+        for (Map<String, Object> it : probs) {
+            b.append("- ").append(fmt.format(new Date(Json.num(it, "t", 0)))).append("  ").append(Json.str(it, "title"));
+            if (!Json.str(it, "detail").isEmpty()) {
+                b.append(" — ").append(Json.str(it, "detail"));
+            }
+            b.append('\n');
+        }
+        b.append("\nЖурнал ошибок за это время:\n");
+        if (errs.isEmpty()) {
+            b.append("- пусто\n");
+        }
+        for (Map<String, Object> e : errs) {
+            b.append("- [").append(Json.str(e, "kind")).append("] ").append(Json.str(e, "title"))
+                    .append(" (раз: ").append(Json.num(e, "count", 1)).append(")\n");
+            String tr = Json.str(e, "trace");
+            if (!tr.isEmpty()) {
+                b.append("  ").append(tr.length() > 1500 ? tr.substring(tr.length() - 1500) : tr).append('\n');
+            }
+        }
+        b.append("\nСостояние каждые 5 минут:\n");
+        for (Map<String, Object> st : states) {
+            b.append("- ").append(fmt.format(new Date(Json.num(st, "t", 0)))).append("  ")
+                    .append(Json.bool(st, "on", false) ? "VPN вкл" : "VPN выкл");
+            if (!Json.str(st, "server").isEmpty()) {
+                b.append(", ").append(Json.str(st, "server"));
+            }
+            b.append(", способ ").append(Json.str(st, "method"));
+            if (Json.bool(st, "wl", false)) {
+                b.append(", белые списки");
+            }
+            if (!Json.str(st, "step").isEmpty()) {
+                b.append(", лестница: ").append(Json.str(st, "step"));
+            }
+            if (Json.bool(st, "filter", false)) {
+                b.append(", защита без VPN");
+            }
+            if (Json.bool(st, "safe", false)) {
+                b.append(", безопасный запуск");
+            }
+            b.append('\n');
+        }
+        b.append("\nСейчас:\n").append(report()).append("\nЖурнал программы за время сбора:\n");
+        int from = Math.max(0, logs.size() - 4000);
+        for (int i = from; i < logs.size(); i++) {
+            Map<String, Object> it = logs.get(i);
+            b.append(fmt.format(new Date(Json.num(it, "t", 0)))).append("  ").append(Json.str(it, "text")).append('\n');
+        }
+        String text = scrubSecrets(b.toString());
+        try {
+            File dir = new File(p.dataDir(), "reports");
+            dir.mkdirs();
+            File f = new File(dir, "errors-" + new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new Date(now)) + ".txt");
+            Store.write(f, text);
+            return f.getAbsolutePath();
+        } catch (Exception e) {
+            log("Сбор ошибок: не удалось сохранить отчёт: " + e.getMessage(), "Error collection: couldn't save the report: " + e.getMessage());
+            return "";
+        }
+    }
+
+    public Map<String, Object> collectState() {
+        long until = Json.num(settings, "collect_until", 0);
+        String rep = Json.str(settings, "collect_report");
+        long now = System.currentTimeMillis();
+        return Json.obj("on", until > now, "until", until, "left", until > now ? (until - now) / 1000 : 0L,
+                "events", (long) collectEvents, "report", rep.isEmpty() ? "" : new File(rep).getName(),
+                "report_ok", !rep.isEmpty() && new File(rep).isFile());
+    }
+
+    public String collectText() throws IOException {
+        String rep = Json.str(settings, "collect_report");
+        if (rep.isEmpty() || !new File(rep).isFile()) {
+            throw new IOException(Text.t("Отчёта пока нет.", "No report yet."));
+        }
+        return Store.read(new File(rep));
+    }
+
     // ---------- журнал, сообщения, проблемы ----------
 
     public void log(String ru, String en) {
@@ -562,6 +1147,9 @@ public final class Engine {
             while (log.size() > 300) {
                 log.removeFirst();
             }
+        }
+        if (settings != null && Json.num(settings, "collect_until", 0) > 0) {
+            collectAdd("log", Json.obj("text", ru));
         }
     }
 
@@ -581,6 +1169,9 @@ public final class Engine {
         }
         if (fresh && errors != null) {
             errors.record("problem", title, detail, "", key);
+        }
+        if (fresh) {
+            collectAdd("problem", Json.obj("key", key, "title", title, "detail", detail == null ? "" : detail));
         }
     }
 
@@ -2304,17 +2895,45 @@ public final class Engine {
         return (Map<String, Object>) v;
     }
 
-    Map<String, Object> netWay() {
+    static final long NET_WAY_TTL = 30L * 86_400_000L; // память сети старше 30 дней не используется
+    static final int NET_ALTS = 2;                     // запасных путей на сеть
+
+    public Map<String, Object> netWay() {
         if (!Json.bool(settings, "net_memory", true)) {
             return null;
         }
         String id = netId();
         synchronized (lock) {
-            return id.isEmpty() ? null : Json.map(netWays(), id);
+            Map<String, Object> w = id.isEmpty() ? null : Json.map(netWays(), id);
+            if (w != null && System.currentTimeMillis() - Json.num(w, "at", 0) > NET_WAY_TTL) {
+                return null;
+            }
+            return w;
         }
     }
 
-    void rememberWay(Server s) {
+    /** Запасные пути из памяти сети (до двух), без устаревших. */
+    public static List<Map<String, Object>> netAlts(Map<String, Object> way) {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        List<Object> alts = way == null ? null : Json.list(way.get("alt"));
+        if (alts == null) {
+            return out;
+        }
+        long now = System.currentTimeMillis();
+        for (Object a : alts) {
+            Map<String, Object> m = Json.map(a);
+            if (m != null && !Json.str(m, "server").isEmpty() && now - Json.num(m, "at", 0) <= NET_WAY_TTL && out.size() < NET_ALTS) {
+                out.add(m);
+            }
+        }
+        return out;
+    }
+
+    private static String waySig(Map<String, Object> w) {
+        return Json.str(w, "server") + "|" + Json.str(w, "fp") + "|" + Json.bool(w, "mask", false);
+    }
+
+    public void rememberWay(Server s) {
         if (s == null || !Json.bool(settings, "net_memory", true)) {
             return;
         }
@@ -2324,8 +2943,28 @@ public final class Engine {
         }
         synchronized (lock) {
             Map<String, Object> ways = netWays();
-            ways.put(id, Json.obj("server", s.key(), "fp", s.fp == null ? "" : s.fp, "mask", s.mask,
-                    "at", System.currentTimeMillis()));
+            Map<String, Object> way = Json.obj("server", s.key(), "fp", s.fp == null ? "" : s.fp, "mask", s.mask,
+                    "at", System.currentTimeMillis());
+            // прежний рабочий путь этой сети не выбрасываем — он становится запасным (до двух запасных)
+            Map<String, Object> old = Json.map(ways, id);
+            List<Object> alts = new ArrayList<Object>();
+            java.util.Set<String> seen = new java.util.HashSet<String>();
+            seen.add(waySig(way));
+            List<Map<String, Object>> prev = new ArrayList<Map<String, Object>>();
+            if (old != null && !Json.str(old, "server").isEmpty()) {
+                prev.add(Json.obj("server", Json.str(old, "server"), "fp", Json.str(old, "fp"),
+                        "mask", Json.bool(old, "mask", false), "at", Json.num(old, "at", 0)));
+                prev.addAll(netAlts(old));
+            }
+            for (Map<String, Object> a : prev) {
+                if (seen.add(waySig(a)) && alts.size() < NET_ALTS) {
+                    alts.add(a);
+                }
+            }
+            if (!alts.isEmpty()) {
+                way.put("alt", alts);
+            }
+            ways.put(id, way);
             while (ways.size() > NET_WAYS_MAX) {
                 String oldest = null;
                 long at = Long.MAX_VALUE;
@@ -3182,11 +3821,21 @@ public final class Engine {
         return out;
     }
 
-    private static void addWay(List<Object[]> to, java.util.Set<String> tried, String[] label, Server c) {
+    private void addWay(List<Object[]> to, java.util.Set<String> tried, String[] label, Server c) {
         String sig = c.key() + "|" + (c.fp == null ? "" : c.fp) + "|" + c.mask;
-        if (tried.add(sig)) {
-            to.add(new Object[]{label, c});
+        if (tried.contains(sig)) {
+            return;
         }
+        String kind = wayKind(c);
+        if (!kind.isEmpty() && !fuseOk(kind)) {
+            if (tried.add("fuse|" + kind)) {
+                log("Лестница: «" + kind + "» в этой сети на паузе (предохранитель) — пропускаю.",
+                        "Ladder: “" + wayKindEn(kind) + "” is paused on this network (fuse) — skipping.");
+            }
+            return;
+        }
+        tried.add(sig);
+        to.add(new Object[]{label, c});
     }
 
     /** Проверить группу способов (по 6), первый рабочий — подключить. */
@@ -3197,6 +3846,19 @@ public final class Engine {
             ladderStep = Text.t(title[0], title[1]);
             progress(Text.t("Ищу рабочий способ: ", "Looking for a working way: ") + ladderStep);
             List<Object[]> good = probeWays(batch);
+            Map<String, Boolean> kinds = ladderKinds;
+            if (kinds != null) {
+                for (Object[] w : batch) {
+                    String kind = wayKind((Server) w[1]);
+                    if (!kind.isEmpty()) {
+                        boolean ok = false;
+                        for (Object[] g : good) {
+                            ok |= g[1] == w[1];
+                        }
+                        kinds.put(kind, Boolean.TRUE.equals(kinds.get(kind)) || ok);
+                    }
+                }
+            }
             if (good.isEmpty()) {
                 log("Лестница: " + title[0] + " — данные не идут.", "Ladder: " + title[1] + " — no data flows.");
                 continue;
@@ -3213,6 +3875,7 @@ public final class Engine {
                     real.mask = cand.mask;
                 }
                 if (startWith(real)) {
+                    ladderFuses();
                     String how = wayText(real);
                     log("Лестница: данные пошли — " + label[0] + ": " + real.name + (how.isEmpty() ? "." : " (" + how + ")."),
                             "Ladder: data flows — " + label[1] + ": " + real.name + (how.isEmpty() ? "." : " (" + how + ")."));
@@ -3245,13 +3908,21 @@ public final class Engine {
         boolean fpOn = Json.bool(settings, "fp_auto", true);
         boolean maskOn = Json.bool(settings, "mask_auto", true);
         java.util.Set<String> tried = new java.util.HashSet<String>();
+        ladderKinds = new LinkedHashMap<String, Boolean>();
         List<Object[]> first = new ArrayList<Object[]>();
         Map<String, Object> mem = netWay();
         if (mem != null) {
-            Server ms = find(Json.str(mem, "server"));
-            if (ms != null && ms.usable()) {
-                addWay(first, tried, new String[]{"память этой сети", "this network's memory"},
-                        ms.withWay(Json.str(mem, "fp"), Json.bool(mem, "mask", false)));
+            List<Map<String, Object>> ways = new ArrayList<Map<String, Object>>();
+            ways.add(mem);
+            ways.addAll(netAlts(mem));
+            for (int i = 0; i < ways.size(); i++) {
+                Map<String, Object> w = ways.get(i);
+                Server ms = find(Json.str(w, "server"));
+                if (ms != null && ms.usable()) {
+                    addWay(first, tried, i == 0 ? new String[]{"память этой сети", "this network's memory"}
+                                    : new String[]{"запасной путь этой сети", "this network's backup route"},
+                            ms.withWay(Json.str(w, "fp"), Json.bool(w, "mask", false)));
+                }
             }
         }
         if (cur != null) {
@@ -3506,16 +4177,28 @@ public final class Engine {
         if (mem == null) {
             return false;
         }
-        Server s = find(Json.str(mem, "server"));
-        if (s == null || !s.usable() || !inPool(s)) {
-            return false;
+        List<Map<String, Object>> ways = new ArrayList<Map<String, Object>>();
+        ways.add(mem);
+        ways.addAll(netAlts(mem));
+        for (int i = 0; i < ways.size(); i++) {
+            Map<String, Object> w = ways.get(i);
+            Server s = find(Json.str(w, "server"));
+            if (s == null || !s.usable() || !inPool(s)) {
+                continue;
+            }
+            synchronized (lock) {
+                s.fp = Json.str(w, "fp");
+                s.mask = Json.bool(w, "mask", false);
+            }
+            journalWhy(i == 0 ? Text.t("в этой сети работал этот сервер", "this server worked in this network")
+                    : Text.t("запасной путь из памяти этой сети", "a backup route from this network's memory"));
+            if (startWith(s)) {
+                return true;
+            }
+            log((i == 0 ? "Сервер" : "Запасной путь") + " из памяти сети не подключился.",
+                    (i == 0 ? "The server" : "The backup route") + " from network memory didn't connect.");
         }
-        synchronized (lock) {
-            s.fp = Json.str(mem, "fp");
-            s.mask = Json.bool(mem, "mask", false);
-        }
-        journalWhy(Text.t("в этой сети работал этот сервер", "this server worked in this network"));
-        return startWith(s);
+        return false;
     }
 
     /** После подключения: данные идут — запомнить сервер и способ для этой сети. */
@@ -3642,6 +4325,11 @@ public final class Engine {
     public void monitor() {
         tick++;
         long now = System.currentTimeMillis();
+        guardTick();
+        collectTick();
+        if (tick == SAFE_OK_MS / TICK_MS) {
+            safeStartOk();
+        }
         boolean on = isOn();
         if (connBusy()) {
             return; // ядро как раз перезапускается — это не сбой
@@ -3949,13 +4637,42 @@ public final class Engine {
 
     static final String[] BOOL_KEYS = {"ru_direct", "autopilot", "dns_encrypted", "block_ads", "mask_auto",
             "whitelist_auto", "ads_ask_sites", "sub_alerts", "encrypt_data", "app_lock", "net_profiles", "app_update", "block_quic", "cert_watch", "fp_auto",
-            "data_watch", "net_memory"};
+            "data_watch", "net_memory", "fuses_enabled", "guard_rollback", "safe_start"};
     static final String[] RESTART_KEYS = {"mode", "ru_direct", "block_quic", "dns_encrypted", "block_ads", "proxy_list",
             "direct_list", "block_list", "excluded_apps"};
+
+    static String guardLabel(Map<String, Object> keys, boolean en) {
+        StringBuilder b = new StringBuilder();
+        for (String k : keys.keySet()) {
+            String ru;
+            String eng;
+            switch (k) {
+                case "mode": ru = "режим маршрутизации"; eng = "routing mode"; break;
+                case "ru_direct": ru = "российские сайты напрямую"; eng = "Russian sites direct"; break;
+                case "block_quic": ru = "блокировка QUIC"; eng = "QUIC blocking"; break;
+                case "dns_encrypted": ru = "шифрование DNS"; eng = "DNS encryption"; break;
+                case "block_ads": ru = "без рекламы"; eng = "no ads"; break;
+                case "mask_auto": ru = "маскировка"; eng = "masking"; break;
+                case "fp_auto": ru = "подбор отпечатка"; eng = "fingerprint picking"; break;
+                case "engine_pick": ru = "способ подключения"; eng = "connection method"; break;
+                default: ru = k; eng = k;
+            }
+            b.append(b.length() > 0 ? ", " : "").append(en ? eng : ru);
+        }
+        return b.toString();
+    }
 
     /** Сохранить настройки из интерфейса. Неизвестные и неверные значения пропускаются. */
     public void setSettings(Map<String, Object> in) {
         boolean restart = false;
+        Map<String, Object> guardBefore = new LinkedHashMap<String, Object>();
+        synchronized (lock) {
+            for (String k : GUARDED_KEYS) {
+                if (in.containsKey(k) && in.get(k) != null && !in.get(k).equals(settings.get(k))) {
+                    guardBefore.put(k, settings.get(k));
+                }
+            }
+        }
         if (in.containsKey("block_ads")) {
             // реклама — отдельно: при включении нужно скачать списки
             Map<String, Object> rest = new LinkedHashMap<String, Object>(in);
@@ -4026,6 +4743,9 @@ public final class Engine {
             restart |= had;
         }
         if (restart) {
+            if (!guardBefore.isEmpty() && isOn()) {
+                guardChange(guardBefore, guardLabel(guardBefore, false), guardLabel(guardBefore, true));
+            }
             applyCore();
         }
         changed();
@@ -4658,6 +5378,8 @@ public final class Engine {
             st.put("conn", Json.obj("title", conn.title, "kind", conn.kind)); // подключение / смена сервера
             st.put("message", message);
             st.put("whitelist", whitelistMode);
+            st.put("pro", proState());
+            st.put("collect", collectState());
             st.put("geo", geoReady());
             st.put("delay", liveDelay);
             Server cur = current;
@@ -4705,7 +5427,7 @@ public final class Engine {
                     "mask_auto", "whitelist_auto", "proxy_list", "direct_list", "block_list", "user_agent",
                     "excluded_apps", "selected", "auto_update_hours", "hint_shown", "ads_ask_sites", "sub_alerts",
                     "encrypt_data", "app_lock", "net_profiles", "block_quic", "cert_watch", "fp_auto", "data_watch",
-                    "net_memory"}) {
+                    "net_memory", "fuses_enabled", "guard_rollback", "safe_start"}) {
                 set.put(k, settings.get(k));
             }
             st.put("settings", set);

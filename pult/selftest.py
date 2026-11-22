@@ -3634,7 +3634,7 @@ def t_build():
     text = raw.decode("utf-8-sig")
     for ref in _re.findall(r"'([^']+\.(?:cs|manifest|py|bat|md|ico))'", text):
         if "\\" in ref or ref in ("main.py", "check.py", "field_check.py", "update_from_zip.py", "full_check.py",
-                                   "start.bat", "Проверка.bat", "Проверка новых функций.bat", "Обновить.bat",
+                                   "start.bat", "Проверка.bat", "Проверка новых функций.bat", "Сбор ошибок.bat", "Обновить.bat",
                                    "Полная проверка.bat", "README.md",
                                    "AI_GUIDE.md"):
             path = os.path.join(app, *ref.split("\\")) if not ref.endswith((".cs", ".manifest")) else os.path.join(build, ref)
@@ -4054,12 +4054,14 @@ def t_i18n_static():
     import re
     cyr = re.compile("[А-Яа-яЁё]")
     # служебные слова (поиск по тексту, внутренние статусы, названия сервисов) показывать не нужно
-    skip_funcs = {"problem_report", "_busy_kind", "status_code", "human_bytes", "describe"}
+    skip_funcs = {"problem_report", "_busy_kind", "status_code", "human_bytes", "describe", "_collect_report",
+                  "_hours_text"}
     skip_strings = set(links.STUB_WORDS) | {s["name"] for s in services.SERVICES} | {
         "VEDOMYJ VPN", "работает", "не отвечает", "не поддерживается", "сообщение провайдера", "ошибка настроек",
         "ошибка ядра", "медленно/обрыв", "проверяю…", "замер скорости…", "перестал отвечать", "<ссылка на подписку>",
         "Провайдер:", engmod.Engine.WL_NAME.pattern, *__import__("pult.netprofile", fromlist=["x"]).PATTERNS,
-        *subscription.BLOCK_PAGE_MARKS, "страницу блокировки", *xray.VIRUS_WORDS}
+        *subscription.BLOCK_PAGE_MARKS, "страницу блокировки", *xray.VIRUS_WORDS,
+        __import__("pult.collect", fromlist=["x"])._IMPORTANT.pattern}
     i18n.set_lang("en")
     bad = []
     try:
@@ -5128,6 +5130,184 @@ def t_family():
                 x.shutdown()
         shutil.rmtree(t1, ignore_errors=True)
         shutil.rmtree(t2, ignore_errors=True)
+
+
+
+@case("Защита: предохранители, автооткат, безопасный запуск, сбор ошибок, запасные пути памяти сети")
+def t_protect():
+    from pult import protect as prot
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = e2 = None
+    try:
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.startup()
+        q = "?security=reality&pbk=K&sni=a.com&type=tcp"
+        e.add_servers("\n".join([f"vless://61111111-1111-4111-8111-11111111111{i}@good{i}.example:443{q}#P{i}" for i in range(3)]))
+        wait_idle(e)
+        a, b, c = e.servers[:3]
+        # --- предохранители ---
+        kind = "маскировка"
+        check(e.fuse_ok(kind), "сначала способ можно пробовать")
+        e.fuse_result(kind, False)
+        check(e.fuse_ok(kind), "одна неудача — ещё не пауза")
+        e.fuse_result(kind, False)
+        check(not e.fuse_ok(kind) and e.fuses_state() and e.fuses_state()[0]["kind"] == kind
+              and 500 < e.fuses_state()[0]["left"] <= 600, f"две неудачи — пауза 10 минут: {e.fuses_state()}")
+        check(any("Предохранитель: «маскировка»" in x for x in e.logs_view()), "в журнале — почему пауза")
+        e.settings["fuses_enabled"] = False
+        check(e.fuse_ok(kind), "предохранители выключены — способ пробуется")
+        e.settings["fuses_enabled"] = True
+        rec = e._fuses()[e._fuse_key(kind)]
+        rec["until"] = time.time() - 1  # пауза прошла
+        e.fuse_result(kind, False)
+        e.fuse_result(kind, False)
+        check(3000 < e.fuses_state()[0]["left"] <= 3600, f"вторая пауза — час: {e.fuses_state()}")
+        e.fuse_result(kind, True)
+        check(e.fuse_ok(kind) and not e.fuses_state(), "способ помог — предохранитель сброшен")
+        # в лестнице: способ на паузе пропускается; если не помогло ничего — неудачи не считаются
+        e._ladder_kinds = {"отпечаток safari": False, "отпечаток firefox": True}
+        e._ladder_fuses()
+        e._ladder_kinds = {"отпечаток safari": False}
+        e._ladder_fuses()
+        check(not e.fuse_ok("отпечаток safari") and e.fuse_ok("отпечаток firefox"), "не помогший способ — на паузе")
+        e.fuses_clear()
+        check(not e.fuses_state(), "«Сбросить» — все способы снова пробуются")
+        # --- память сети: прежний путь становится запасным, старое забывается ---
+        nid = e._net_id()
+        e._remember_way(a)
+        e._remember_way(b)
+        way = e.settings["net_ways"][nid]
+        check(way["server"] == b.key and [x["server"] for x in way.get("alt", [])] == [a.key], f"запасной путь: {way}")
+        e._remember_way(c)
+        way = e.settings["net_ways"][nid]
+        check([x["server"] for x in way["alt"]] == [b.key, a.key], f"два запасных: {way}")
+        e._remember_way(c)
+        check(len(e.settings["net_ways"][nid]["alt"]) == 2, "тот же путь не дублируется")
+        tried = []
+        real_connect = e.connect
+
+        def fake_connect(srv):
+            tried.append(srv.key)
+            if srv.key != a.key:
+                raise RuntimeError("connection refused")
+            real_connect(srv)
+        e.connect = fake_connect
+        e._net_cache = (e._network_key(), time.time())
+        e.connect_start(c)
+        check(tried[:3] == [c.key, b.key, a.key] and e.current.key == a.key,
+              f"основной путь не подключился — запасные из памяти по порядку: {tried}")
+        e.connect = real_connect
+        e.settings["net_ways"][nid]["at"] = time.time() - 31 * 86400
+        check(e._net_way() is None, "память старше 30 дней не используется")
+        # --- автооткат ---
+        e.connect(a)
+        e.settings["dns_encrypted"] = False
+        now = [1000.0]
+        e._mono = lambda: now[0]
+        e._rx_at = now[0] - 5  # данные идут — VPN работает
+        e._ping_failures = 0
+        before = {"dns_encrypted": False}
+        e.settings["dns_encrypted"] = True
+        e.guard_change(before, prot.change_label(before))
+        check(e._guard and e._guard["label"] == "шифрование DNS", f"изменение под присмотром: {e._guard}")
+        e._guard_tick()
+        check(e._guard, "раньше 40 с ничего не решается")
+        now[0] += 50
+        e._rx_at = now[0] - 3  # данные идут и после изменения — прижилось
+        e._guard_tick()
+        check(not e._guard and e.settings["dns_encrypted"] is True, "данные идут — изменение остаётся")
+        # данные перестали идти после изменения — вернуть как было
+        e.guard_change(before, "шифрование DNS")
+        now[0] += 50
+        e._rx_at = now[0] - 400
+        e._ping_failures = 2
+        real_data_ok = e._data_ok
+        e._data_ok = lambda: {"ok": False, "error": "нет данных"}
+        e._guard_tick()
+        for _ in range(50):
+            if not e._guard_checking:
+                break
+            time.sleep(0.05)
+        wait_idle(e)
+        check(e.settings["dns_encrypted"] is False, "после изменения связь пропала — вернул как было")
+        check(any("Автооткат" in x for x in e.logs_view()), "в журнале — автооткат и почему")
+        e._data_ok = real_data_ok
+        # VPN не работал до изменения — защищать нечего
+        e._rx_at = now[0] - 400
+        e._ping_failures = 3
+        e.guard_change({"dns_encrypted": True}, "x")
+        check(not e._guard, "VPN не работал — автооткат не включается")
+        del e._mono
+        # --- через окно: профессиональные настройки ---
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        st = ui.dispatch("pro_set", {"values": {"fuses_enabled": False, "not_a_key": True, "safe_start": "да"}})
+        check(st["keys"]["fuses_enabled"] is False and "not_a_key" not in e.settings and e.settings["safe_start"] is True,
+              "переключаются только свои ключи и только да/нет")
+        e.settings["autopilot"] = False
+        changed = ui.dispatch("pro_reset", {})
+        check("fuses_enabled" in changed and "autopilot" in changed and e.settings["fuses_enabled"] is True
+              and e.settings["autopilot"] is True, f"«Вернуть как было»: {changed}")
+        wait_idle(e)
+        # --- сбор ошибок ---
+        secret = f"http://127.0.0.1:{WEB}/sub?token=SECRETTOKEN123"
+        e.settings["subscriptions"].append({"id": "x1", "name": "Моя", "url": secret})
+        ui.dispatch("collect_start", {"hours": 500})
+        cs = e.collect_state()
+        check(cs["on"] and 71 * 3600 < cs["left"] <= 72 * 3600, f"сбор включён, не больше 72 часов: {cs}")
+        e.log(f"Xray: {secret} failed")
+        e.problem("test_problem", "Test problem 42", "details " + secret)
+        e._collect_snapshot()
+        path = e.collect_stop()
+        check(path and os.path.isfile(path), "отчёт сохранён")
+        with open(path, encoding="utf-8") as f:
+            rep = f.read()
+        check("Test problem 42" in rep and "failed" in rep and "Состояние каждые 5 минут" in rep,
+              "в отчёте — проблемы, журнал и состояние")
+        check("SECRETTOKEN123" not in rep and secret not in rep, "ссылки и ключи в отчёт не попадают")
+        check(not e.collect_state()["on"] and e.collect_state()["report_ok"], "сбор выключился, отчёт виден в окне")
+        check(not os.path.exists(e._collect_path()), "черновик сбора удалён")
+        # время вышло — отчёт появляется сам
+        e.collect_start(1)
+        e.settings["collect_until"] = time.time() - 1
+        e.collect_tick(10)
+        for _ in range(60):
+            if not e.settings.get("collect_until"):
+                break
+            time.sleep(0.05)
+        check(not e.settings.get("collect_until") and e.collect_state()["report_ok"], "время вышло — отчёт готов сам")
+        txt = ui.dispatch("collect_text", {})
+        check(txt.startswith("VEDOMYJ VPN") and "SECRETTOKEN123" not in txt, "текст отчёта для «Скопировать»")
+        e.settings["subscriptions"] = [m for m in e.settings["subscriptions"] if m["id"] != "x1"]
+        # --- безопасный запуск ---
+        e.shutdown()
+        with open(os.path.join(e.paths.data_dir, "start.json"), encoding="utf-8") as f:
+            info = json.load(f)
+        check(info["running"] is False and info["fails"] == 0, f"обычное закрытие записано: {info}")
+        with open(os.path.join(e.paths.data_dir, "start.json"), "w", encoding="utf-8") as f:
+            json.dump({"running": True, "fails": 1}, f)  # прошлый запуск упал, и позапрошлый тоже
+        e.settings["auto_routes"] = True
+        e.save()
+        e = None
+        e2 = make_engine(tmp)
+        e2._monitor_tick = lambda tick: None
+        e2.startup()
+        check(e2.safe_mode and e2.settings.get("auto_routes") is False and e2.settings["auto_routes"] is False,
+              "безопасный запуск: необязательная автоматика выключена")
+        check(any(p["key"] == "safe_mode" for p in e2.problems_list()), "и человек об этом знает")
+        e2.save()
+        with open(os.path.join(tmp, "data", "settings.json"), encoding="utf-8") as f:
+            saved = json.load(f)
+        check(saved.get("auto_routes") is True, "на диске настройка не меняется")
+        e2.safe_start_ok()
+        with open(os.path.join(e2.paths.data_dir, "start.json"), encoding="utf-8") as f:
+            check(json.load(f)["fails"] == 0, "проработала 90 с — счётчик падений обнулён")
+    finally:
+        for x in (e, e2):
+            if x:
+                x.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------- запуск ----------
