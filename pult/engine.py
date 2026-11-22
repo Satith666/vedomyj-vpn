@@ -76,6 +76,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._ads_ask_times: collections.deque = collections.deque(maxlen=10)
         self.ads_suspects: collections.deque = collections.deque(maxlen=20)
         self.ads_check_last: dict | None = None  # «Проверить блокировку рекламы» (adscheck.py)
+        self._fm_warned: set[str] = set()  # кому уже подсказали обновить ядро ради fm / перебора портов
         self.tray_queue: collections.deque = collections.deque(maxlen=5)  # всплывающие сообщения у значка в трее
         self.ports: dict = {}
         self.geo_in_use = False
@@ -865,6 +866,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             msg += f" Лучший: {best[0].name} (пинг {r['ping_ms']} мс)."
         self.log(msg)
         self.notify("servers")
+        if working and self.settings.get("stall_check", True) and not self._closing:
+            threading.Thread(target=self._stall_bg, daemon=True).start()  # «16 КБ» — в фоне, выбор сервера не ждёт
         return working
 
     DNS_RECHECK = 600.0
@@ -975,7 +978,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
 
         def key(r):
             v = base(r)
-            return None if v is None else v + float((r or {}).get("hour_penalty", 0))
+            if v is None:
+                return None
+            return v + float((r or {}).get("hour_penalty", 0)) + (ladder.CUT_PENALTY if (r or {}).get("cut") else 0.0)
         return key
 
     def backup_server(self) -> Server | None:
@@ -1257,6 +1262,10 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         """Запуск ядра; в режиме TUN — ещё и движка TUN. Если TUN не включился ни одним движком,
         программа подключается как обычно (системный прокси) и показывает «!» с причиной."""
         s = self.settings
+        if server.key not in self._fm_warned and xray.needs_new_core(server, self._version_for(exe)):
+            self._fm_warned.add(server.key)
+            self.log(f"Сервер «{server.name}» просит новую маскировку (fm или перебор портов), а ядро Xray старое — "
+                     "пока без неё. Обнови ядро на странице «Обновления».")
         engines = self._tun_engines(server) if s.get("tun_enabled") and self.tun_supported else []
         errors = []
         for engine in engines:
@@ -5382,7 +5391,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             "key": s.key, "sub": s.sub_id, "name": clean, "cc": cc,
             "protocol": self.PROTO_LABELS.get(s.protocol, s.protocol.upper()),
             "supported": s.supported, "note": i18n.tr(s.note), "has_link": bool(s.link), "endpoint": s.endpoint,
-            "mask": bool(r.get("mask")), "wl": self.is_wl_server(s), "fp": r.get("fp") or "",
+            "mask": bool(r.get("mask")), "wl": self.is_wl_server(s), "fp": r.get("fp") or "", "cut": bool(r.get("cut")),
             "ok": r.get("ok"), "delay": r.get("delay_ms"), "ping": r.get("ping_ms"), "jitter": r.get("jitter_ms"),
             "speed": r.get("speed_mbps"), "status": i18n.tr(r.get("status", "")), "error": i18n.tr(r.get("error", "")),
             "tested": bool(r), "best": s.key == best_key, "game": s.key == game_key,

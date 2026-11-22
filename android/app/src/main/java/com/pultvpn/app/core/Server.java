@@ -32,6 +32,7 @@ public final class Server {
     public boolean mask;            // работает только с маскировкой (дробление TLS)
     public String fp = "";          // отпечаток TLS, который подобрала программа ("" — как в ссылке)
     public boolean whitelist;       // доказано, что работает при «белых списках»
+    public boolean cut;             // проверка «16 КБ»: данные обрываются на первых килобайтах — сервер ниже в списке
     public String error = "";
     public long testedAt;
     public int fails;               // подряд неудач во время работы
@@ -69,7 +70,7 @@ public final class Server {
         if (!usable() || !ok || pingMs < 0) {
             return null;
         }
-        return (double) pingMs + (mask ? 15.0 : 0.0);
+        return (double) pingMs + (mask ? 15.0 : 0.0) + (cut ? 3000.0 : 0.0);
     }
 
     /** Копия с другим способом подключения (ключ тот же) — чтобы проверить способ, не трогая сам сервер. */
@@ -95,6 +96,7 @@ public final class Server {
         c.pingMs = pingMs;
         c.ok = ok;
         c.whitelist = whitelist;
+        c.cut = cut;
         c.fp = fp == null ? "" : fp;
         c.mask = mask;
         return c;
@@ -107,6 +109,9 @@ public final class Server {
                 "outbound", outbound, "link", link, "supported", supported, "note", note, "source", source,
                 "sub", subId, "insecure", insecure, "stub", stub,
                 "ping", pingMs, "ok", ok, "mask", mask, "wl", whitelist, "error", error, "tested", testedAt);
+        if (cut) {
+            m.put("cut", true);
+        }
         if (!fp.isEmpty()) {
             m.put("fp", fp);
         }
@@ -146,6 +151,7 @@ public final class Server {
         s.pingMs = Json.num(m, "ping", -1);
         s.ok = Json.bool(m, "ok", false);
         s.mask = Json.bool(m, "mask", false);
+        s.cut = Json.bool(m, "cut", false);
         s.fp = Json.str(m, "fp");
         s.whitelist = Json.bool(m, "wl", false);
         s.error = Json.str(m, "error");

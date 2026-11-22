@@ -89,13 +89,20 @@ def transport_of(srv: Server) -> str:
     return "tcp"
 
 
+def _mask_name(srv: Server, m: int) -> str:
+    """У Hysteria2 (QUIC) «маскировка» — это шум UDP перед пакетами, у остальных — дробление TLS."""
+    ss = (srv.outbound or {}).get("streamSettings") or {}
+    base = "шум UDP" if ss.get("network") == "hysteria" else "маскировка"
+    return base if m == 1 else f"{base} {m}"
+
+
 def way_kind(srv: Server) -> str:
-    """Вид способа для предохранителя: другой отпечаток TLS или маскировка; '' — обычный путь."""
+    """Вид способа для предохранителя: другой отпечаток TLS, маскировка или шум UDP; '' — обычный путь."""
     w = way_of(srv)
     if w["fp"]:
         return f"отпечаток {w['fp']}"
     if w["mask"]:
-        return "маскировка" if w["mask"] == 1 else f"маскировка {w['mask']}"
+        return _mask_name(srv, w["mask"])
     return ""
 
 
@@ -106,12 +113,66 @@ def way_text(srv: Server) -> str:
     if w["fp"]:
         parts.append(f"отпечаток {w['fp']}")
     if w["mask"]:
-        parts.append("маскировка" if w["mask"] == 1 else f"маскировка {w['mask']}")
+        parts.append(_mask_name(srv, w["mask"]))
     return ", ".join(parts)
+
+
+STALL_TOP = 10          # «16 КБ»: столько лучших серверов проверяем, качаются ли через них данные
+CUT_PENALTY = 3000.0    # мс к оценке сервера, через который данные обрываются: он уходит вниз списка, но не удаляется
 
 
 class LadderMixin:
     """Часть движка (Engine): лестница способов, память сетей, сторож данных, «что работает сейчас»."""
+
+    _stall_running = False
+
+    def stall_check(self) -> int:
+        """Проверка «16 КБ»: провайдеры (ТСПУ) пропускают к части серверов только первые ~16 КБ, потом связь
+        замирает — пинг при этом в порядке. Лучшие серверы качают по 64 КБ (повтор перед пометкой); у кого
+        не вышло — оценка хуже, сервер ниже в списке. Возвращает, сколько помечено."""
+        if not self.settings.get("stall_check", True):
+            return 0
+        top = [s for s in tester.ranked(self.pool(), key=self._rank_key()) if s.engine == "xray" and not s.stub][:STALL_TOP]
+        if not top:
+            return 0
+
+        def run(servers):
+            out = {}
+            for exe, group in tester._groups(self.paths, servers, self.ensure_legacy):
+                for c, r in zip(group, tester.probe_data(self.paths, group, self.stop_event, exe=exe, mask=None)):
+                    out[c.key] = r
+            return out
+        res = run(top)
+        if not any(r.get("ok") for r in res.values()):
+            return 0  # ни один не скачал — дело не в серверах (сайт проверки недоступен или нет интернета)
+        bad = [s for s in top if not res.get(s.key, {}).get("ok")]
+        if bad:
+            again = run(bad)
+            bad = [s for s in bad if not again.get(s.key, {}).get("ok")]
+        for s in top:
+            r = s.result if isinstance(s.result, dict) else None
+            if r is None:
+                continue
+            if s in bad:
+                r["cut"] = True
+            else:
+                r.pop("cut", None)
+        if bad:
+            self.log(f"Проверка «16 КБ»: у {len(bad)} из {len(top)} лучших серверов данные обрываются на первых "
+                     "килобайтах — они ниже в списке.")
+        self.notify("servers")
+        return len(bad)
+
+    def _stall_bg(self) -> None:
+        if self._stall_running:
+            return
+        self._stall_running = True
+        try:
+            self.stall_check()
+        except Exception as exc:
+            self.log(f"Проверка «16 КБ»: {netutil.human_error(exc)}")
+        finally:
+            self._stall_running = False
 
     def _ladder_init(self) -> None:
         self._ladder_next = 0.0      # раньше этого времени лестницу заново не начинаем (ничего не работало)
@@ -357,7 +418,7 @@ class LadderMixin:
             if mask_on:
                 for m in (1, 2):
                     if m != cur_mask:
-                        first += fresh("маскировка", way_copy(cur, mask=m))
+                        first += fresh(_mask_name(cur, 1), way_copy(cur, mask=m))
         got = self._ladder_try_many("тот же сервер и способы маскировки", first)
         if got:
             return True

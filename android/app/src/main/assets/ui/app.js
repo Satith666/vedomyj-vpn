@@ -404,6 +404,7 @@
     if (s.current) tags.push(`<i class="tag cur">${esc(t("tag_now"))}</i>`);
     if (s.mask) tags.push(`<i class="tag">${esc(t("tag_mask"))}</i>`);
     if (s.wl) tags.push(`<i class="tag warn">${esc(t("tag_wl"))}</i>`);
+    if (s.cut) tags.push(`<i class="tag warn">${esc(t("tag_cut"))}</i>`);
     if (s.manual) tags.push(`<i class="tag">${esc(t("tag_mine"))}</i>`);
     const ping = !s.usable ? "" : s.ok ? `${s.ping}` : (s.tested ? t("no_answer") : t("not_tested"));
     const pc = !s.usable ? "none" : s.ok ? pingCls(s.ping) : "none";
@@ -1013,7 +1014,8 @@
   const PRO_GROUPS = [
     ["pg_protect", [["fuses_enabled", "s_fuses"], ["guard_rollback", "s_guard"], ["safe_start", "s_safe"]]],
     ["pg_memory", [["net_memory", "s_netmem"]]],
-    ["pg_auto", [["autopilot", "s_auto"], ["fp_auto", "s_fp"], ["mask_auto", "s_mask"], ["data_watch", "s_dwatch"], ["whitelist_auto", "s_wl"]]],
+    ["pg_auto", [["autopilot", "s_auto"], ["fp_auto", "s_fp"], ["mask_auto", "s_mask"], ["data_watch", "s_dwatch"],
+      ["stall_check", "s_stall16"], ["whitelist_auto", "s_wl"]]],
   ];
   function leftText(sec) {
     const h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60);

@@ -466,6 +466,7 @@ public class CoreTest {
     static Engine engine(Fake f) {
         Engine e = new Engine(f);
         e.settings.put("geo_updated", System.currentTimeMillis());
+        e.settings.put("stall_check", false); // «16 КБ» — только в своём тесте
         return e;
     }
 
@@ -2083,6 +2084,40 @@ public class CoreTest {
             waitIdle(em);
             check(Json.map(em.adsState(), "check") != null, "итог проверки виден в окне");
             em.shutdown();
+        });
+
+        test("Способы для Xray: fm, перебор портов Hysteria2, шум UDP, старое ядро, проверка «16 КБ»", () -> {
+            Server h = Links.parseLink("hysteria2://pw@hy.example.com:443,20000-30000/?sni=a.com&obfs=salamander&obfs-password=x#H");
+            List<Map<String, Object>> oldCore = XrayConfig.proxyOutbounds(h, "proxy", false, "26.2.6");
+            Map<String, Object> fmOld = Json.map(Json.map(oldCore.get(0), "streamSettings"), "finalmask");
+            check(fmOld != null && !fmOld.containsKey("quicParams") && Json.write(fmOld).contains("salamander"), "старое ядро — только Salamander: " + Json.write(fmOld));
+            List<Map<String, Object>> noisy = XrayConfig.proxyOutbounds(h, "proxy", true, "26.3.27");
+            String nw = Json.write(Json.map(Json.map(noisy.get(0), "streamSettings"), "finalmask"));
+            check(nw.contains("\"noise\"") && nw.contains("salamander") && nw.contains("udpHop"), "шум UDP поверх Salamander, перебор портов: " + nw);
+            check(!Json.write(XrayConfig.proxyOutbounds(h, "proxy", true, "26.2.6")).contains("noise"), "старое ядро — без шума");
+            check("шум UDP".equals(Engine.wayKind(h.withWay("", true))) && "UDP noise".equals(Engine.wayKindEn("шум UDP")), "вид способа");
+            check(Json.write(Json.map(h.outbound, "streamSettings")).contains("udpHop"), "сам сервер не меняется");
+            // «16 КБ»
+            Fake fs = new Fake(tmpDir());
+            Engine es = engine(fs);
+            es.addServers(link("fast1.example.com", "Быстрый") + "\n" + link("empty1.example.com", "Пустой") + "\n"
+                    + link("slow1.example.com", "Медленный"));
+            waitIdle(es);
+            es.settings.put("stall_check", true);
+            es.testServersTask();
+            waitIdle(es);
+            Map<String, Object> st = es.state();
+            String sv = Json.write(st.get("servers"));
+            check(sv.contains("\"cut\":true"), "«пустой» сервер (пинг есть, данных нет) помечен: " + sv);
+            boolean emptyLast = true;
+            List<Server> rk = es.ranked();
+            for (int i = 0; i < rk.size() - 1; i++) {
+                if (rk.get(i).address.startsWith("empty")) emptyLast = false;
+            }
+            check(emptyLast, "помеченный — ниже в списке");
+            es.settings.put("stall_check", false);
+            check(es.stallCheck() == 0, "выключено — не проверяет");
+            es.shutdown();
         });
 
         test("Журнал ошибок в движке: сбои задач, секреты серверов, действия интерфейса", () -> {

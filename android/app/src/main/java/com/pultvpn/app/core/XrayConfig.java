@@ -33,6 +33,8 @@ public final class XrayConfig {
 
     /** С этой версии Xray дробление TLS настраивается в finalmask, а не во freedom. */
     static final int[] FINALMASK_MIN = {26, 10, 31};
+    /** Finalmask целиком (fm в ссылках, шум UDP, перебор портов Hysteria2) — как FM_MIN в xray.py. */
+    static final int[] FM_MIN = {26, 3, 27};
 
     /** Что ещё нужно для рабочей настройки, кроме сервера. */
     public static final class Options {
@@ -216,6 +218,22 @@ public final class XrayConfig {
         Map<String, Object> main = obs.get(0);
         Map<String, Object> ss = Json.child(main, "streamSettings");
         String net = Json.str(ss, "network");
+        if (net.equals("hysteria") && atLeast(version(coreVersion), FM_MIN)) {
+            // Hysteria2 (QUIC): шум UDP перед пакетами; своя маскировка сервера (Salamander) остаётся внутри
+            Map<String, Object> fm = Json.child(ss, "finalmask");
+            List<Object> udp = new ArrayList<Object>();
+            Object old = fm.get("udp");
+            if (old instanceof List) {
+                for (Object x : (List<?>) old) {
+                    if (!"noise".equals(Json.str(Json.map(x), "type"))) {
+                        udp.add(x);
+                    }
+                }
+            }
+            udp.add(Json.obj("type", "noise", "settings", Json.obj("noise", Json.arr(Json.obj("rand", "64-128", "delay", "5-10")))));
+            fm.put("udp", udp);
+            return obs;
+        }
         if (net.equals("kcp") || net.equals("mkcp") || net.equals("quic") || net.equals("hysteria")
                 || !Json.str(Json.map(ss, "sockopt"), "dialerProxy").isEmpty() || ss.containsKey("finalmask")
                 || main.containsKey("proxySettings")) {
@@ -271,9 +289,39 @@ public final class XrayConfig {
         return log;
     }
 
-    static List<Map<String, Object>> proxyOutbounds(Server server, String tag, boolean mask, String version) {
-        List<Map<String, Object>> obs = taggedOutbounds(server, tag);
+    public static List<Map<String, Object>> proxyOutbounds(Server server, String tag, boolean mask, String version) {
+        List<Map<String, Object>> obs = fmForCore(taggedOutbounds(server, tag), version);
         return mask ? maskOutbounds(obs, version) : obs;
+    }
+
+    /** Старое ядро (до 26.3.27): только Salamander, без шума, перебора портов и fm из ссылки (как fm_for_core). */
+    static List<Map<String, Object>> fmForCore(List<Map<String, Object>> obs, String coreVersion) {
+        int[] v = version(coreVersion);
+        if (v.length == 0 || atLeast(v, FM_MIN)) {
+            return obs;
+        }
+        for (Map<String, Object> ob : obs) {
+            Map<String, Object> ss = Json.map(ob, "streamSettings");
+            Map<String, Object> fm = Json.map(ss, "finalmask");
+            if (fm == null) {
+                continue;
+            }
+            List<Object> udp = new ArrayList<Object>();
+            Object old = fm.get("udp");
+            if (old instanceof List) {
+                for (Object x : (List<?>) old) {
+                    if ("salamander".equals(Json.str(Json.map(x), "type"))) {
+                        udp.add(x);
+                    }
+                }
+            }
+            if (udp.isEmpty()) {
+                ss.remove("finalmask");
+            } else {
+                ss.put("finalmask", Json.obj("udp", udp));
+            }
+        }
+        return obs;
     }
 
     /** Для проверки одного сервера (замер задержки через временный экземпляр ядра). */

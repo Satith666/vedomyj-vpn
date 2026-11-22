@@ -565,7 +565,7 @@ public final class Engine {
             "fp_auto", "engine_pick", "wl_priority"};
     /** Профессиональные настройки и их значения по умолчанию («Вернуть как было»). */
     static final String[] PRO_KEYS = {"fuses_enabled", "guard_rollback", "safe_start", "net_memory", "autopilot", "fp_auto",
-            "mask_auto", "data_watch", "whitelist_auto"};
+            "mask_auto", "data_watch", "whitelist_auto", "stall_check"};
     private final Object fuseLock = new Object();
     private Map<String, Boolean> ladderKinds;
     private volatile Map<String, Object> guard;
@@ -574,15 +574,22 @@ public final class Engine {
     private final long startedAt = System.currentTimeMillis();
 
     /** Вид способа для предохранителя: другой отпечаток TLS или маскировка; "" — обычный путь. */
-    static String wayKind(Server c) {
+    public static String wayKind(Server c) {
         if (c.fp != null && !c.fp.isEmpty()) {
             return "отпечаток " + c.fp;
         }
-        return c.mask ? "маскировка" : "";
+        if (!c.mask) {
+            return "";
+        }
+        // у Hysteria2 (QUIC) «маскировка» — это шум UDP перед пакетами
+        return "hysteria".equals(Json.str(Json.map(c.outbound, "streamSettings"), "network")) ? "шум UDP" : "маскировка";
     }
 
-    static String wayKindEn(String kind) {
-        return kind.startsWith("отпечаток ") ? "fingerprint " + kind.substring(10) : "маскировка".equals(kind) ? "masking" : kind;
+    public static String wayKindEn(String kind) {
+        if (kind.startsWith("отпечаток ")) {
+            return "fingerprint " + kind.substring(10);
+        }
+        return "маскировка".equals(kind) ? "masking" : "шум UDP".equals(kind) ? "UDP noise" : kind;
     }
 
     @SuppressWarnings("unchecked")
@@ -2549,6 +2556,7 @@ public final class Engine {
         fillPins(list, true); // сертификат сервера мог смениться — снимаем заново
         testList(list);
         lastTestAt = System.currentTimeMillis();
+        stallCheck();
         int ok = 0;
         for (Server s : list) {
             if (s.ok) {
@@ -2569,6 +2577,71 @@ public final class Engine {
         saveServers();
     }
 
+    // ---------- проверка «16 КБ» (как ladder.stall_check) ----------
+
+    static final int STALL_TOP = 10;
+
+    /** Лучшие серверы качают по 64 КБ (повтор перед пометкой): у кого связь обрывается — ниже в списке. */
+    public int stallCheck() {
+        if (!Json.bool(settings, "stall_check", true)) {
+            return 0;
+        }
+        List<Server> top = new ArrayList<Server>();
+        for (Server s : ranked()) {
+            if ("xray".equals(s.engine) && top.size() < STALL_TOP) {
+                top.add(s);
+            }
+        }
+        if (top.isEmpty()) {
+            return 0;
+        }
+        progress(Text.t("Проверка «16 КБ»", "“16 KB” check"));
+        java.util.Set<String> ok = stallProbe(top);
+        if (ok.isEmpty()) {
+            return 0; // не скачал никто — дело не в серверах
+        }
+        List<Server> bad = new ArrayList<Server>();
+        for (Server s : top) {
+            if (!ok.contains(s.key())) {
+                bad.add(s);
+            }
+        }
+        if (!bad.isEmpty()) {
+            java.util.Set<String> again = stallProbe(bad);
+            List<Server> still = new ArrayList<Server>();
+            for (Server s : bad) {
+                if (!again.contains(s.key())) {
+                    still.add(s);
+                }
+            }
+            bad = still;
+        }
+        synchronized (lock) {
+            for (Server s : top) {
+                s.cut = bad.contains(s);
+            }
+        }
+        if (!bad.isEmpty()) {
+            log("Проверка «16 КБ»: у " + bad.size() + " из " + top.size() + " лучших серверов данные обрываются на первых килобайтах — они ниже в списке.",
+                    "“16 KB” check: " + bad.size() + " of " + top.size() + " best servers cut data after the first kilobytes — they are lower in the list.");
+        }
+        saveServers();
+        changed();
+        return bad.size();
+    }
+
+    private java.util.Set<String> stallProbe(List<Server> list) {
+        List<Object[]> cands = new ArrayList<Object[]>();
+        for (Server s : list) {
+            cands.add(new Object[]{new String[]{"", ""}, s});
+        }
+        java.util.Set<String> out = new java.util.HashSet<String>();
+        for (Object[] w : probeWays(cands)) {
+            out.add(((Server) w[1]).key());
+        }
+        return out;
+    }
+
     public void testServersTask() {
         runTask(Text.t("Проверяю серверы", "Testing servers"), "test", new Runnable() {
             @Override
@@ -2579,7 +2652,7 @@ public final class Engine {
     }
 
     /** Лучшие по порядку: выбранный вручную, затем по задержке; при белых списках — сначала серверы для них. */
-    List<Server> ranked() {
+    public List<Server> ranked() {
         List<Server> good = new ArrayList<Server>();
         synchronized (lock) {
             for (Server s : servers) {
@@ -4302,7 +4375,9 @@ public final class Engine {
                 }
             }
             if (maskOn && !cur.mask) {
-                addWay(first, tried, new String[]{"маскировка", "masking"}, cur.withWay(cur.fp, true));
+                boolean udp = "hysteria".equals(Json.str(Json.map(cur.outbound, "streamSettings"), "network"));
+                addWay(first, tried, new String[]{udp ? "шум UDP" : "маскировка", udp ? "UDP noise" : "masking"},
+                        cur.withWay(cur.fp, true));
             }
         }
         if (tryWays(new String[]{"тот же сервер и способы маскировки", "the same server and masking ways"}, first)) {
@@ -5004,7 +5079,7 @@ public final class Engine {
 
     static final String[] BOOL_KEYS = {"ru_direct", "autopilot", "dns_encrypted", "block_ads", "mask_auto",
             "whitelist_auto", "ads_ask_sites", "sub_alerts", "encrypt_data", "app_lock", "net_profiles", "app_update", "block_quic", "cert_watch", "fp_auto",
-            "data_watch", "net_memory", "fuses_enabled", "guard_rollback", "safe_start"};
+            "data_watch", "net_memory", "fuses_enabled", "guard_rollback", "safe_start", "stall_check"};
     static final String[] RESTART_KEYS = {"mode", "ru_direct", "block_quic", "dns_encrypted", "block_ads", "proxy_list",
             "direct_list", "block_list", "excluded_apps"};
 
@@ -5797,7 +5872,7 @@ public final class Engine {
                     "mask_auto", "whitelist_auto", "proxy_list", "direct_list", "block_list", "user_agent",
                     "excluded_apps", "selected", "auto_update_hours", "hint_shown", "ads_ask_sites", "sub_alerts",
                     "encrypt_data", "app_lock", "net_profiles", "block_quic", "cert_watch", "fp_auto", "data_watch",
-                    "net_memory", "fuses_enabled", "guard_rollback", "safe_start"}) {
+                    "net_memory", "fuses_enabled", "guard_rollback", "safe_start", "stall_check"}) {
                 set.put(k, settings.get(k));
             }
             st.put("settings", set);
@@ -5842,7 +5917,7 @@ public final class Engine {
 
     private Map<String, Object> brief(Server s) {
         return Json.obj("key", s.key(), "name", s.name, "protocol", s.protocol, "ping", s.pingMs, "ok", s.ok,
-                "usable", s.usable(), "note", s.note, "mask", s.mask, "wl", s.isWl(), "manual", s.subId.isEmpty(),
+                "usable", s.usable(), "note", s.note, "mask", s.mask, "wl", s.isWl(), "cut", s.cut, "manual", s.subId.isEmpty(),
                 "tested", s.testedAt, "kind", Links.kindOf(s));
     }
 

@@ -335,6 +335,12 @@ def tagged_outbounds(server: Server, tag: str) -> list[dict]:
 
 
 FINALMASK_MIN = (26, 10, 31)  # с этой версии дробление TLS настраивается в finalmask, а не во freedom
+FM_MIN = (26, 3, 27)          # Finalmask целиком (fm в ссылках, шум UDP, перебор портов Hysteria2)
+# шум перед пакетами QUIC (Hysteria2): «маскировка» для UDP-серверов, как дробление TLS — для TCP
+NOISE_VARIANTS = {
+    1: [{"rand": "64-128", "delay": "5-10"}],
+    2: [{"rand": "512-1024", "delay": "10-20"}, {"rand": "64-128", "delay": "10-20"}],
+}
 
 
 def _ver(text: str) -> tuple[int, ...]:
@@ -356,6 +362,13 @@ def mask_outbounds(obs: list[dict], version: str, variant: int = 1) -> list[dict
     v = MASK_VARIANTS.get(int(variant) if variant else 1, MASK_VARIANTS[1])
     main = obs[0]
     ss = main.setdefault("streamSettings", {})
+    if ss.get("network") == "hysteria" and _ver(version) >= FM_MIN:
+        # Hysteria2 (QUIC): шум UDP перед пакетами; своя маскировка сервера (Salamander) остаётся внутри
+        fm = ss.setdefault("finalmask", {})
+        noise = NOISE_VARIANTS.get(int(variant) if variant else 1, NOISE_VARIANTS[1])
+        fm["udp"] = [x for x in fm.get("udp") or [] if x.get("type") != "noise"] + \
+            [{"type": "noise", "settings": {"noise": [dict(n) for n in noise]}}]
+        return obs
     if ss.get("network") in ("kcp", "mkcp", "quic", "hysteria") or (ss.get("sockopt") or {}).get("dialerProxy") \
             or ss.get("finalmask") or main.get("proxySettings"):
         return obs
@@ -370,9 +383,35 @@ def mask_outbounds(obs: list[dict], version: str, variant: int = 1) -> list[dict
                    "streamSettings": {"sockopt": {"TcpNoDelay": True}}}]
 
 
+def fm_for_core(obs: list[dict], version: str) -> list[dict]:
+    """Старое ядро (до 26.3.27) не знает Finalmask целиком: оставляем только Salamander (он есть с 26.2),
+    без шума, перебора портов и своей маскировки из ссылки — сервер работает на основном порту."""
+    if not version or _ver(version) >= FM_MIN:
+        return obs
+    for ob in obs:
+        ss = ob.get("streamSettings") or {}
+        fm = ss.get("finalmask")
+        if not fm:
+            continue
+        udp = [x for x in fm.get("udp") or [] if x.get("type") == "salamander"]
+        if udp:
+            ss["finalmask"] = {"udp": udp}
+        else:
+            ss.pop("finalmask", None)
+    return obs
+
+
+def needs_new_core(server: Server, version: str) -> bool:
+    """Ссылка просит то, чего старое ядро не умеет (fm, перебор портов): подсказать обновить ядро."""
+    if not version or _ver(version) >= FM_MIN:
+        return False
+    fm = (server.outbound.get("streamSettings") or {}).get("finalmask") or {}
+    return bool(fm.get("tcp") or fm.get("quicParams") or any(x.get("type") != "salamander" for x in fm.get("udp") or []))
+
+
 def proxy_outbounds(server: Server, tag: str, mask: bool | int = False, version: str = "", bind: str = "") -> list[dict]:
     """mask: False — без маскировки, True или 1 — первый вариант, 2 — второй."""
-    obs = tagged_outbounds(server, tag)
+    obs = fm_for_core(tagged_outbounds(server, tag), version)
     if mask:
         obs = mask_outbounds(obs, version, 1 if mask is True else int(mask))
     return [bind_outbound(o, bind) for o in obs]

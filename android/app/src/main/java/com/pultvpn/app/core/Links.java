@@ -368,7 +368,88 @@ public final class Links {
             throw new LinkError(Text.t("шифрование «" + security + "» не поддерживается",
                     "security \"" + security + "\" is not supported"));
         }
+        Map<String, Object> fm = parseFm(first(g(p, "fm"), g(p, "finalmask")));
+        if (!fm.isEmpty()) {
+            ss.put("finalmask", fm); // своя маскировка сервера (Finalmask, Xray 26.3.27+), как links.py
+        }
         return ss;
+    }
+
+    // ---------- Finalmask (fm в ссылках) и перебор портов Hysteria2 — как links.py ----------
+
+    static final List<String> FM_TCP = Arrays.asList("fragment", "header-custom", "sudoku");
+    static final List<String> FM_UDP = Arrays.asList("header-custom", "noise", "salamander", "sudoku", "mkcp-legacy", "realm", "udphop");
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> cleanFinalmask(Object v) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        if (!(v instanceof Map)) {
+            return out;
+        }
+        Map<String, Object> obj = (Map<String, Object>) v;
+        for (String key : new String[]{"tcp", "udp"}) {
+            List<String> allowed = key.equals("tcp") ? FM_TCP : FM_UDP;
+            List<Object> layers = new ArrayList<Object>();
+            Object list = obj.get(key);
+            if (list instanceof List) {
+                for (Object item : (List<Object>) list) {
+                    if (item instanceof Map && allowed.contains(Json.str((Map<String, Object>) item, "type"))
+                            && ((Map<String, Object>) item).get("type") instanceof String) {
+                        Map<String, Object> layer = Json.obj("type", ((Map<String, Object>) item).get("type"));
+                        Object st = ((Map<String, Object>) item).get("settings");
+                        if (st instanceof Map) {
+                            layer.put("settings", st);
+                        }
+                        layers.add(layer);
+                    }
+                }
+            }
+            if (!layers.isEmpty()) {
+                out.put(key, new ArrayList<Object>(layers.subList(0, Math.min(8, layers.size()))));
+            }
+        }
+        Object qp = obj.get("quicParams");
+        if (qp instanceof Map && !((Map<String, Object>) qp).isEmpty()) {
+            Map<String, Object> q = new LinkedHashMap<String, Object>();
+            for (Map.Entry<String, Object> e : ((Map<String, Object>) qp).entrySet()) {
+                Object x = e.getValue();
+                if (x instanceof String || x instanceof Number || x instanceof Boolean || x instanceof Map) {
+                    q.put(e.getKey(), x);
+                }
+            }
+            out.put("quicParams", q);
+        }
+        return out;
+    }
+
+    static Map<String, Object> parseFm(String value) {
+        if (value == null || value.isEmpty() || value.length() > 8192) {
+            return new LinkedHashMap<String, Object>();
+        }
+        try {
+            return cleanFinalmask(Json.parse(value));
+        } catch (RuntimeException e) {
+            return new LinkedHashMap<String, Object>();
+        }
+    }
+
+    static final java.util.regex.Pattern PORTS = java.util.regex.Pattern.compile("^\\d{1,5}(-\\d{1,5})?(,\\d{1,5}(-\\d{1,5})?)*$");
+
+    /** Порты для перебора («20000-50000», «443,8443,10000-20000») или "". */
+    static String portsSpec(String value) {
+        String v = value == null ? "" : value.replace(" ", "");
+        if (v.isEmpty() || !PORTS.matcher(v).matches()) {
+            return "";
+        }
+        for (String part : v.split(",")) {
+            String[] ab = part.split("-", 2);
+            int lo = Integer.parseInt(ab[0]);
+            int hi = ab.length > 1 ? Integer.parseInt(ab[1]) : lo;
+            if (lo < 1 || hi > 65535 || lo > hi) {
+                return "";
+            }
+        }
+        return v;
     }
 
     // ---------- протоколы ----------
@@ -689,19 +770,61 @@ public final class Links {
             auth = Text.unquote(netloc.substring(0, at));
             netloc = netloc.substring(at + 1);
         }
+        String hop = "";
+        java.util.regex.Matcher mh = java.util.regex.Pattern
+                .compile("^(.*):(\\d{1,5}(?:-\\d{1,5})?(?:,\\d{1,5}(?:-\\d{1,5})?)+|\\d{1,5}-\\d{1,5})$").matcher(netloc);
+        if (mh.matches() && !netloc.endsWith("]")) { // несколько портов прямо в адресе: первый — основной
+            hop = portsSpec(mh.group(2));
+            java.util.regex.Matcher first = java.util.regex.Pattern.compile("^\\d+").matcher(mh.group(2));
+            first.find();
+            netloc = mh.group(1) + ":" + first.group();
+        }
         Object[] hp = splitHostPort(netloc.matches(".*:\\d+") ? netloc : netloc + ":443");
         String host = (String) hp[0];
         int port = (Integer) hp[1];
         Map<String, String> p = parseQuery(u[1]);
+        String hopQ = portsSpec(first(g(p, "mport"), g(p, "ports")));
+        if (!hopQ.isEmpty()) {
+            hop = hopQ;
+        }
         Map<String, Object> ss = Json.obj("network", "hysteria", "hysteriaSettings", Json.obj("version", 2, "auth", auth),
                 "security", "tls", "tlsSettings", tlsParams(p, host, Json.arr("h3")));
         String obfs = g(p, "obfs").toLowerCase();
         if (!obfs.isEmpty() && !obfs.equals("salamander")) {
             throw new LinkError(Text.t("маскировка «" + obfs + "» не поддерживается", "masking \"" + obfs + "\" is not supported"));
         }
+        Map<String, Object> fm = parseFm(g(p, "fm"));
         if (!obfs.isEmpty()) {
-            ss.put("finalmask", Json.obj("udp", Json.arr(Json.obj("type", "salamander",
-                    "settings", Json.obj("password", g(p, "obfs-password"))))));
+            List<Object> udp = Json.arr(Json.obj("type", "salamander", "settings", Json.obj("password", g(p, "obfs-password"))));
+            Object old = fm.get("udp");
+            if (old instanceof List) {
+                for (Object x : (List<?>) old) {
+                    if (!"salamander".equals(Json.str(Json.map(x), "type"))) {
+                        udp.add(x);
+                    }
+                }
+            }
+            fm.put("udp", udp);
+        }
+        if (!hop.isEmpty()) {
+            int interval = 30;
+            try {
+                String iv = first(g(p, "mportHopInt"), g(p, "hop_interval"));
+                if (!iv.isEmpty()) {
+                    interval = Math.max(5, Math.min(Integer.parseInt(iv), 600));
+                }
+            } catch (NumberFormatException e) {
+                interval = 30;
+            }
+            Map<String, Object> qp = Json.map(fm, "quicParams");
+            if (qp == null) {
+                qp = new LinkedHashMap<String, Object>();
+                fm.put("quicParams", qp);
+            }
+            qp.put("udpHop", Json.obj("ports", hop, "interval", interval));
+        }
+        if (!fm.isEmpty()) {
+            ss.put("finalmask", fm);
         }
         Server s = new Server();
         s.name = name.isEmpty() ? "Hysteria2 " + host : name;

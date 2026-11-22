@@ -21,7 +21,7 @@ def lang() -> str:
     return _lang
 
 
-_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
+_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'проверка «16 КБ»': '“16 KB” check', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
 
 
 def _names(text: str) -> str:
@@ -40,6 +40,17 @@ RULES: list[tuple[str, str]] = [
      lambda m: f"Ladder: “{tr(m.group(1))}” is paused on this network (fuse) — skipping."),
     (r"^маскировка (\d+)$", r"masking \1"),
     (r"^маскировка$", "masking"),
+    (r"^шум UDP (\d+)$", r"UDP noise \1"),
+    (r"^шум UDP$", "UDP noise"),
+    (r"^Проверка «16 КБ»: у (\d+) из (\d+) лучших серверов данные обрываются на первых килобайтах — они ниже в списке\.$",
+     r"“16 KB” check: \1 of \2 best servers cut data after the first kilobytes — they are lower in the list."),
+    (r"^Проверка «16 КБ»: ", "“16 KB” check: "),
+    (r"^Сервер «(.+?)» просит новую маскировку \(fm или перебор портов\), а ядро Xray старое — пока без неё\. "
+     r"Обнови ядро на странице «Обновления»\.$",
+     r"Server “\1” asks for new masking (fm or port hopping), but the Xray core is old — running without it for now. "
+     r"Update the core on the “Updates” page."),
+    (r"шум UDP (\d)", r"UDP noise \1"),
+    (r"шум UDP", "UDP noise"),
     (r"^отпечаток (\S+)$", r"fingerprint \1"),
     (r"Предохранители сброшены: все способы снова пробуются\.", "Fuses reset: all methods are tried again."),
     (r"Предохранитель: (.+)", r"Fuse: \1"),

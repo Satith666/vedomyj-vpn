@@ -862,6 +862,7 @@ function serverRow(s) {
     s.code === "unstable" ? `<i class="tag warn">${t("tag_unstable")}</i>` : "",
     s.insecure ? `<i class="tag warn" title="${esc(t("tag_insecure_tip"))}">${t("tag_insecure")}</i>` : "",
     s.mask ? `<i class="tag" title="${esc(t("tag_mask_tip"))}">${t("tag_mask")}</i>` : "",
+    s.cut ? `<i class="tag warn" title="${esc(t("tag_cut_tip"))}">${t("tag_cut")}</i>` : "",
     s.fp ? `<i class="tag" title="${esc(t("tag_fp_tip"))}">${esc(s.fp)}</i>` : "",
     s.kind === "singbox" ? `<i class="tag" title="${esc(t("tag_bridge_tip"))}">${t("tag_bridge")}</i>` : "",
     s.wl ? `<i class="tag" title="${esc(t("tag_wl_tip"))}">${t("tag_wl")}</i>` : "",
@@ -1223,7 +1224,8 @@ const PRO_GROUPS = [
   { title: "pg_memory", items: [{ id: "net_memory", key: "net_memory", extra: () => netMemoryExtra() }] },
   { title: "pg_auto", items: [
     { id: "autopilot", key: "autopilot" }, { id: "fp_auto", key: "fp_auto" }, { id: "mask", key: "mask_auto" },
-    { id: "failover", key: "failover" }, { id: "data_watch", key: "data_watch" }, { id: "whitelist", key: "whitelist_auto" },
+    { id: "failover", key: "failover" }, { id: "data_watch", key: "data_watch" }, { id: "stall16", key: "stall_check" },
+    { id: "whitelist", key: "whitelist_auto" },
     { id: "auto_routes", key: "auto_routes" }, { id: "auto_stall", key: "auto_stall" }, { id: "multi", key: "multi_enabled" },
   ] },
 ];

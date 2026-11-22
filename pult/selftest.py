@@ -486,7 +486,8 @@ def make_engine(tmp: str):
     socks, http = netutil.find_free_ports(2, _ENGINE_PORT[0])
     _ENGINE_PORT[0] = http + 1 if http < 34800 else 34000
     e.settings.update(ping_host=f"127.0.0.1:{WEB}", socks_port=socks,
-                      http_port=http, system_proxy=False, autopilot=False)
+                      http_port=http, system_proxy=False, autopilot=False,
+                      stall_check=False)  # фоновая проверка «16 КБ» включается только в своём тесте
     e.events = events
     return e
 
@@ -5708,6 +5709,95 @@ def t_dns_mode():
     finally:
         dnsfilter.DnsFilter._forward = old_fwd
         up.close()
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case("Способы для Xray: ссылки fm, перебор портов Hysteria2, шум UDP, старое ядро, проверка «16 КБ»")
+def t_xray_methods():
+    from pult import ladder as lad
+    from urllib.parse import quote as _q
+    # перебор портов Hysteria2: в адресе и параметром mport
+    h = links.parse_link("hysteria2://pw@hy.example.com:443,20000-30000/?sni=a.com&obfs=salamander&obfs-password=x#H")
+    fm = h.outbound["streamSettings"]["finalmask"]
+    check(h.port == 443 and fm["quicParams"]["udpHop"] == {"ports": "443,20000-30000", "interval": 30}
+          and fm["udp"][0]["type"] == "salamander", f"перебор портов из адреса: {fm}")
+    h2 = links.parse_link("hy2://pw@hy.example.com:443/?sni=a.com&mport=20000-30000&mportHopInt=10#H")
+    check(h2.outbound["streamSettings"]["finalmask"]["quicParams"]["udpHop"] == {"ports": "20000-30000", "interval": 10},
+          "перебор портов из mport")
+    h3 = links.parse_link("hy2://pw@hy.example.com:20000-30000/?sni=a.com#H")
+    check(h3.port == 20000, "только диапазон: основной порт — первый")
+    check(links.ports_spec("1-70000") == "" and links.ports_spec("x") == "" and links.ports_spec("443, 8443") == "443,8443",
+          "порты проверяются")
+    # fm в ссылке: только известные слои
+    fmv = json.dumps({"tcp": [{"type": "fragment", "settings": {"packets": "tlshello", "lengths": ["10-20"]}}, {"type": "evil"}],
+                      "bad": 1})
+    v = links.parse_link("vless://11111111-2222-3333-4444-555555555555@v.example.com:443?type=tcp&security=reality&pbk=K"
+                         f"&sni=a.com&fm={_q(fmv)}#V")
+    check(v.outbound["streamSettings"]["finalmask"] == {"tcp": [{"type": "fragment", "settings": {"packets": "tlshello",
+                                                                                                  "lengths": ["10-20"]}}]},
+          f"fm: только известные слои: {v.outbound['streamSettings'].get('finalmask')}")
+    check(not links.parse_fm("{not json") and not links.parse_fm("x" * 9000), "испорченный или огромный fm — без него")
+    # старое ядро: без fm и перебора портов, Salamander остаётся
+    old = xray.proxy_outbounds(h, "proxy", False, "26.2.6")[0]["streamSettings"]["finalmask"]
+    new = xray.proxy_outbounds(h, "proxy", False, "26.3.27")[0]["streamSettings"]["finalmask"]
+    check(old == {"udp": [{"type": "salamander", "settings": {"password": "x"}}]} and "quicParams" in new,
+          f"старое ядро — только Salamander: {old}")
+    check("finalmask" not in xray.proxy_outbounds(v, "proxy", False, "26.2.6")[0]["streamSettings"]
+          and xray.needs_new_core(v, "26.2.6") and not xray.needs_new_core(v, "26.3.27"), "fm у старого ядра — подсказка")
+    check(h.outbound["streamSettings"]["finalmask"]["quicParams"], "сам сервер не меняется")
+    # шум UDP — «маскировка» для Hysteria2
+    n1 = xray.proxy_outbounds(h, "proxy", 1, "26.3.27")[0]["streamSettings"]["finalmask"]["udp"]
+    n2 = xray.proxy_outbounds(h, "proxy", 2, "26.3.27")[0]["streamSettings"]["finalmask"]["udp"]
+    check([x["type"] for x in n1] == ["salamander", "noise"] and len(n2[1]["settings"]["noise"]) == 2,
+          f"шум UDP поверх Salamander: {n1}")
+    check(all("packet" not in it for it in n1[1]["settings"]["noise"]), "в шуме не смешаны rand и packet")
+    check("noise" not in json.dumps(xray.proxy_outbounds(h, "proxy", 1, "26.2.6")), "старое ядро — без шума")
+    hm = lad.way_copy(h, mask=1)
+    check(lad.way_kind(hm) == "шум UDP" and lad.way_kind(lad.way_copy(v, mask=2)) == "маскировка 2", "вид способа для предохранителя")
+    # мост sing-box: перебор портов
+    hs = links.parse_link("hysteria2://pw@hy.example.com:443,20000-30000/?sni=a.com&insecure=1#H")
+    check(hs.engine == "singbox" and hs.sb_outbound["server_ports"] == ["20000:30000"] and hs.sb_outbound["hop_interval"] == "30s",
+          f"мост sing-box: {getattr(hs, 'sb_outbound', None)}")
+    # проверка «16 КБ»
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    old_probe = tester.probe_data
+    try:
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.settings["stall_check"] = True
+        e.startup()
+        e.add_subscription(f"http://127.0.0.1:{WEB}/sub")
+        wait_idle(e)
+        e.settings["stall_check"] = False  # фоновую проверку после test_all здесь не ждём — вызываем сами
+        e.test_all()
+        e.settings["stall_check"] = True
+        best0 = e.best()
+        calls = []
+
+        def fake_probe(paths, servers, stop_event=None, exe=None, mask=None):
+            calls.append([s.key for s in servers])
+            return [{"ok": s.key != best0.key, "bytes": 16000 if s.key == best0.key else 70000, "ms": 300, "error": ""}
+                    for s in servers]
+        tester.probe_data = fake_probe
+        n = e.stall_check()
+        check(n == 1 and best0.result.get("cut") and e.best().key != best0.key, f"обрывающийся сервер — ниже: {n}")
+        check(len(calls) == 2 and calls[1] == [best0.key], "перед пометкой — повтор только для него")
+        check(any(x["cut"] for x in e.state()["servers"]), "окно видит пометку")
+        tester.probe_data = lambda paths, servers, stop_event=None, exe=None, mask=None: [
+            {"ok": True, "bytes": 70000, "ms": 300, "error": ""} for _ in servers]
+        e.stall_check()
+        check(not best0.result.get("cut") and e.best().key == best0.key, "заработал — пометка снята")
+        tester.probe_data = lambda paths, servers, stop_event=None, exe=None, mask=None: [
+            {"ok": False, "bytes": 0, "ms": None, "error": "x"} for _ in servers]
+        check(e.stall_check() == 0 and not any((s.result or {}).get("cut") for s in e.servers),
+              "не скачал никто — дело не в серверах, никого не помечаем")
+        e.settings["stall_check"] = False
+        check(e.stall_check() == 0, "выключено в «Профессиональных» — не проверяет")
+    finally:
+        tester.probe_data = old_probe
         if e:
             e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

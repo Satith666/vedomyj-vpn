@@ -23,6 +23,7 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.parse
 import urllib.request
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -318,6 +319,8 @@ BRIDGE_LINKS = [
     "anytls://check-pass@203.0.113.31:443?sni=www.example.com#Check-AnyTLS",
     # самоподписанный сертификат без отпечатка: Xray так не умеет — через мост
     "hysteria2://check-pass@203.0.113.23:443?sni=www.example.com&insecure=1&obfs=salamander&obfs-password=x#Check-Hy2-self",
+    # и с перебором портов (sing-box: server_ports + hop_interval)
+    "hysteria2://check-pass@203.0.113.24:443,20000-30000/?sni=www.example.com&insecure=1#Check-Hy2-hop",
 ]
 HY2_LINKS = [
     ("Hysteria2", "hysteria2://check-pass@203.0.113.20:443?sni=www.example.com#Check-Hy2", "error"),
@@ -365,6 +368,44 @@ def check_engines(paths: xray.Paths, exe: str) -> None:
     ok, err = xray.check_config(paths, cfg, os.path.join(paths.data_dir, "field-check-config.json"), exe=exe)
     add("ok" if ok else "error", T("Ядро Xray: сервер TUIC через мост sing-box", "Xray core: TUIC server via the sing-box bridge"),
         "" if ok else err)
+
+
+def check_xray_methods(paths: xray.Paths, exe: str) -> None:
+    """1.20: принимает ли настоящее ядро перебор портов Hysteria2, шум UDP, маскировку из ссылки (fm)
+    и сборку для старого ядра (без них)."""
+    ver = xray.xray_version(paths, exe) or ""
+    ports = dict(zip(("socks", "http", "health", "api", "direct", "direct_http"),
+                     netutil.find_free_ports(6, start=23800)))
+    access = os.path.join(paths.data_dir, "field-check-access.log")
+    fm = urllib.parse.quote(json.dumps({"tcp": [{"type": "fragment", "settings": {"packets": "tlshello",
+                                                                                   "lengths": ["100-200"],
+                                                                                   "delays": ["10-20"]}}]}))
+    cases = [
+        (T("перебор портов Hysteria2", "Hysteria2 port hopping"),
+         "hysteria2://check-pass@203.0.113.40:443,20000-30000/?sni=www.example.com&obfs=salamander&obfs-password=x#Hop", 0),
+        (T("шум UDP для Hysteria2", "UDP noise for Hysteria2"),
+         "hysteria2://check-pass@203.0.113.41:443/?sni=www.example.com#Noise", 1),
+        (T("шум UDP 2 для Hysteria2", "UDP noise 2 for Hysteria2"),
+         "hysteria2://check-pass@203.0.113.41:443/?sni=www.example.com&mport=20000-21000#Noise2", 2),
+        (T("маскировка из ссылки (fm)", "masking from the link (fm)"),
+         f"vless://11111111-2222-3333-4444-555555555555@203.0.113.42:443?type=tcp&security=reality&pbk={PBK}"
+         f"&fp=chrome&sni=www.microsoft.com&sid=0123abcd&fm={fm}#Fm", 0),
+    ]
+    for title, link, mask in cases:
+        srv = links.parse_link(link)
+        cfg = xray.build_run_config(srv, base_settings(), ports, access, paths.geo_ready(), True, mask=bool(mask),
+                                    core_version=ver)
+        if mask == 2:
+            cfg["outbounds"] = [o for o in cfg["outbounds"] if o.get("tag") != "proxy"] + \
+                xray.proxy_outbounds(srv, "proxy", 2, ver)
+        ok, err = xray.check_config(paths, cfg, os.path.join(paths.data_dir, "field-check-config.json"), exe=exe)
+        add("ok" if ok else "error", T(f"Ядро Xray: {title}", f"Xray core: {title}"), "" if ok else err)
+    # то же для старого ядра (26.2): лишнее убирается, конфиг остаётся рабочим
+    srv = links.parse_link(cases[0][1])
+    cfg = xray.build_run_config(srv, base_settings(), ports, access, paths.geo_ready(), True, core_version="26.2.6")
+    fmo = (cfg["outbounds"][0].get("streamSettings") or {}).get("finalmask") or {}
+    add("ok" if "quicParams" not in fmo else "error",
+        T("Сборка для старого ядра: без перебора портов", "Build for an old core: without port hopping"))
 
 
 def check_certpin() -> None:
@@ -887,6 +928,7 @@ def main() -> None:
     section(T("Движки: Hysteria2, TUIC, AmneziaWG", "Engines: Hysteria2, TUIC, AmneziaWG"))
     if paths.xray_exists():
         guard(T("Движки в ядре Xray", "Engines in the Xray core"), lambda: check_engines(paths, paths.xray))
+        guard(T("Способы для Xray (1.20)", "Xray methods (1.20)"), lambda: check_xray_methods(paths, paths.xray))
     guard(T("Отпечаток сертификата", "Certificate pin"), check_certpin)
     if IS_WINDOWS:
         guard("AmneziaWG", lambda: check_awg(paths, live=CI))

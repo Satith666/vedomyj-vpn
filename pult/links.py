@@ -112,6 +112,11 @@ def _hy2_via_singbox(srv: "Server") -> None:
     for m in (ss.get("finalmask") or {}).get("udp") or []:
         if m.get("type") == "salamander":
             ob["obfs"] = {"type": "salamander", "password": (m.get("settings") or {}).get("password", "")}
+    hop = ((ss.get("finalmask") or {}).get("quicParams") or {}).get("udpHop") or {}
+    if hop.get("ports"):  # перебор портов у sing-box: «20000:50000»
+        ob["server_ports"] = [x.replace("-", ":") for x in str(hop["ports"]).split(",") if "-" in x] or \
+            [f"{x}:{x}" for x in str(hop["ports"]).split(",")]
+        ob["hop_interval"] = f"{int(hop.get('interval') or 30)}s"
     srv.engine = "singbox"
     srv.sb_outbound = ob
 
@@ -227,6 +232,58 @@ def _truthy(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
+# ---------- Finalmask (параметр fm в ссылках, Xray 26.3.27+) ----------
+
+FM_TCP = frozenset(("fragment", "header-custom", "sudoku"))
+FM_UDP = frozenset(("header-custom", "noise", "salamander", "sudoku", "mkcp-legacy", "realm", "udphop"))
+FM_MAX = 8192
+PORTS_RE = re.compile(r"^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$")
+
+
+def clean_finalmask(obj) -> dict:
+    """Маскировка из ссылки (fm=…): только известные виды слоёв и параметры QUIC; остальное отбрасывается.
+    Ядро само проверит значения — мы лишь не пускаем в конфиг лишние поля."""
+    if not isinstance(obj, dict):
+        return {}
+    out: dict = {}
+    for key, allowed in (("tcp", FM_TCP), ("udp", FM_UDP)):
+        layers = []
+        for item in obj.get(key) or []:
+            if isinstance(item, dict) and item.get("type") in allowed:
+                layer = {"type": item["type"]}
+                if isinstance(item.get("settings"), dict):
+                    layer["settings"] = item["settings"]
+                layers.append(layer)
+        if layers:
+            out[key] = layers[:8]
+    qp = obj.get("quicParams")
+    if isinstance(qp, dict) and qp:
+        out["quicParams"] = {k: v for k, v in qp.items() if isinstance(k, str) and isinstance(v, (str, int, float, bool, dict))}
+    return out
+
+
+def parse_fm(value: str) -> dict:
+    if not value or len(value) > FM_MAX:
+        return {}
+    try:
+        return clean_finalmask(json.loads(value))
+    except ValueError:
+        return {}
+
+
+def ports_spec(value: str) -> str:
+    """Порты для перебора («20000-50000», «443,8443,10000-20000») или '' — если что-то не так."""
+    v = (value or "").replace(" ", "")
+    if not v or not PORTS_RE.match(v):
+        return ""
+    for part in v.split(","):
+        a, _, b = part.partition("-")
+        lo, hi = int(a), int(b or a)
+        if not (1 <= lo <= hi <= 65535):
+            return ""
+    return v
+
+
 # ---------- транспорт и шифрование ----------
 
 def build_stream(p: dict, address: str, default_security: str = "none") -> dict:
@@ -324,6 +381,9 @@ def build_stream(p: dict, address: str, default_security: str = "none") -> dict:
     elif security != "none":
         raise LinkError(f"шифрование «{security}» не поддерживается")
 
+    fm = parse_fm(p.get("fm") or p.get("finalmask") or "")
+    if fm:
+        ss["finalmask"] = fm  # своя маскировка сервера (Finalmask): ядро 26.3.27+, у старого — без неё
     return ss
 
 
@@ -514,7 +574,8 @@ def _tls_params(p: dict, host: str, alpn_default: list | None = None) -> dict:
 
 def parse_hysteria2(link: str) -> Server:
     """hysteria2://пароль@адрес:порт/?sni=…&obfs=salamander&obfs-password=…&insecure=1#имя → Xray (protocol hysteria).
-    Нужен Xray 26.2+; маскировка Salamander — через finalmask. Перебор портов (mport) не поддерживается."""
+    Нужен Xray 26.2+; маскировка Salamander — через finalmask. Перебор портов: «адрес:443,20000-50000» или mport=…
+    (Xray 26.3.27+: finalmask.quicParams.udpHop; у старого ядра — только основной порт)."""
     parts = urlsplit(link)
     name = unquote(parts.fragment or "")
     netloc = parts.netloc
@@ -522,8 +583,15 @@ def parse_hysteria2(link: str) -> Server:
     if "@" in netloc:
         auth, netloc = netloc.rsplit("@", 1)
         auth = unquote(auth)
+    hop = ""
+    m = re.match(r"^(.*):(\d{1,5}(?:-\d{1,5})?(?:,\d{1,5}(?:-\d{1,5})?)+|\d{1,5}-\d{1,5})$", netloc)
+    if m and not netloc.endswith("]"):  # несколько портов прямо в адресе: первый — основной
+        hop = ports_spec(m.group(2))
+        main_port = re.match(r"\d+", m.group(2)).group(0)
+        netloc = f"{m.group(1)}:{main_port}"
     host, port = split_host_port(netloc if re.search(r":\d+$", netloc) else f"{netloc}:443")
     p = parse_query(parts.query)
+    hop = ports_spec(p.get("mport") or p.get("ports") or "") or hop
     if not host:
         raise LinkError("нет адреса сервера")
     ss: dict = {"network": "hysteria", "hysteriaSettings": {"version": 2, "auth": auth},
@@ -531,8 +599,18 @@ def parse_hysteria2(link: str) -> Server:
     obfs = (p.get("obfs") or "").lower()
     if obfs and obfs != "salamander":
         raise LinkError(f"маскировка «{obfs}» не поддерживается")
+    fm = parse_fm(p.get("fm") or "")
     if obfs:
-        ss["finalmask"] = {"udp": [{"type": "salamander", "settings": {"password": p.get("obfs-password", "")}}]}
+        fm["udp"] = [{"type": "salamander", "settings": {"password": p.get("obfs-password", "")}}] + \
+            [x for x in fm.get("udp") or [] if x["type"] != "salamander"]
+    if hop:
+        try:
+            interval = max(5, min(int(p.get("mportHopInt") or p.get("hop_interval") or 30), 600))
+        except ValueError:
+            interval = 30
+        fm.setdefault("quicParams", {})["udpHop"] = {"ports": hop, "interval": interval}
+    if fm:
+        ss["finalmask"] = fm
     ob = {"tag": "proxy", "protocol": "hysteria", "settings": {"version": 2, "address": host, "port": port},
           "streamSettings": ss}
     return Server(name=name or f"Hysteria2 {host}", protocol="hysteria2", address=host, port=port, outbound=ob,
