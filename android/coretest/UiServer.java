@@ -160,6 +160,9 @@ public class UiServer {
             ex.sendResponseHeaders(204, -1);
             ex.close();
         });
+        // как на телефоне: вызовы из окна и запросы самого движка (подписка, проверки) идут параллельно — иначе
+        // запрос движка к этому же серверу ждал бы конца вызова, который ждёт движок
+        http.setExecutor(java.util.concurrent.Executors.newCachedThreadPool());
         http.start();
         System.out.println("ready " + port);
     }
