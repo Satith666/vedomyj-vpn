@@ -21,7 +21,7 @@ def lang() -> str:
     return _lang
 
 
-_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'проверка «16 КБ»': '“16 KB” check', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
+_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'проверка «16 КБ»': '“16 KB” check', 'запасной WARP': 'backup WARP', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
 
 
 def _names(text: str) -> str:
@@ -31,6 +31,47 @@ def _names(text: str) -> str:
 
 # (регулярное выражение по-русски, замена по-английски)
 RULES: list[tuple[str, str]] = [
+
+    # WARP во встроенном ядре (warpauto.py, 1.21)
+    (r"^WARP во встроенном ядре: данные идут \(обманки «(.*?)», вариант (\d+)\)\.$",
+     r"WARP in the built-in core: data flows (decoys “\1”, variant \2)."),
+    (r"^WARP во встроенном ядре: данные не пошли ни с одним из (\d+) наборов обманок\.$",
+     r"WARP in the built-in core: no data with any of \1 decoy sets."),
+    (r"^Запасной WARP: серверы не работают \((.+)\) — включил бесплатный WARP\.$",
+     lambda m: f"Backup WARP: servers don't work ({tr(m.group(1))}) — turned on the free WARP."),
+    (r"^Серверы не работают — временно включил бесплатный WARP\. Вернусь на сервер, как только он оживёт\.$",
+     "Servers don't work — temporarily turned on the free WARP. I'll return to a server as soon as it comes back."),
+    (r"Серверы не работают — пока через WARP", "Servers don't work — using WARP for now"),
+    (r"^серверы не работают — временно через WARP$", "servers don't work — temporarily via WARP"),
+    (r"^Программа сама проверяет серверы и вернётся на первый оживший\. Выключить запасной WARP можно в «Профессиональных»\.$",
+     "The app rechecks the servers itself and returns to the first one that comes back. The backup WARP can be turned off in Pro."),
+    (r"^Серверы не работают — создаю бесплатный WARP$", "Servers don't work — creating a free WARP"),
+    (r"^Запасной WARP: не получилось создать \((.*)\)\.$", lambda m: f"Backup WARP: could not create ({tr(m.group(1))})."),
+    (r"^Запасной WARP: идут данные — проверю серверы позже, чтобы не оборвать загрузку\.$",
+     "Backup WARP: data is flowing — will check the servers later so as not to break a download."),
+    (r"^Запасной WARP: серверы всё ещё не отвечают — остаюсь на WARP\.$", "Backup WARP: servers still don't answer — staying on WARP."),
+    (r"^Запасной WARP: серверы отвечают на проверку, но данные через них не идут — остаюсь на WARP\.$",
+     "Backup WARP: servers answer the check but pass no data — staying on WARP."),
+    (r"^Запасной WARP: (.+)$", lambda m: f"Backup WARP: {tr(m.group(1))}"),
+    (r"^Проверяю, ожили ли серверы$", "Checking whether servers are back"),
+    (r"^Сервер «(.+)» снова работает — ушёл с запасного WARP\.$", r"Server “\1” works again — left the backup WARP."),
+    (r"^Сервер снова работает — вернулся на «(.+)»\.$", r"A server works again — back on “\1”."),
+    (r"^Бесплатного WARP ещё нет\.$", "There is no free WARP yet."),
+    (r"^Бесплатного WARP ещё нет — создай его кнопкой «Создать бесплатный WARP»\.$",
+     "There is no free WARP yet — create it with “Create a free WARP”."),
+    (r"^бесплатный WARP от Cloudflare во встроенном ядре$", "free Cloudflare WARP in the built-in core"),
+    (r"^бесплатный WARP$", "free WARP"),
+    (r"^Сначала создай бесплатный WARP\.$", "Create a free WARP first."),
+    (r"через VPN и WARP", "via VPN and WARP"),
+    (r"^WARP удалён — пока через основной VPN\.$", "WARP was removed — using the main VPN for now."),
+    (r"^Сейчас и так всё идёт через WARP\.$", "Everything goes through WARP right now anyway."),
+    (r"^Включаю WARP после VPN$", "Turning on WARP after VPN"),
+    (r"^CPS: неверная длина$", "CPS: bad length"),
+    (r"^CPS: неверные байты$", "CPS: bad bytes"),
+    (r"^CPS: лишний текст между тегами$", "CPS: extra text between tags"),
+    (r"^CPS: лишний текст после тегов$", "CPS: extra text after the tags"),
+    (r"^CPS: слишком длинный пакет$", "CPS: packet too long"),
+    (r"^в конфиге WARP нет ключей или адреса сервера$", "the WARP config has no keys or server address"),
 
     # защита (protect.py), сбор ошибок (collect.py), память сети (ladder.py)
     (r"Предохранитель: «(.+?)» в этой сети не помогает — пропускаю его (.+?)\.",

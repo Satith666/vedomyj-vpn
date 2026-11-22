@@ -395,7 +395,10 @@ def install_fakes():
         for ob in config["outbounds"]:
             st = ob.get("settings", {})
             lst = st.get("vnext") or st.get("servers") or [{}]
-            addr[ob.get("tag")] = lst[0].get("address", "") or st.get("address", "")  # Hysteria2: адрес прямо в settings
+            addr[ob.get("tag")] = lst[0].get("address", "") or (st.get("address", "") if isinstance(st.get("address"), str)
+                                                                 else "")  # Hysteria2: адрес прямо в settings
+            if ob.get("protocol") == "wireguard":  # WARP: адрес сервера Cloudflare — в peers
+                addr[ob.get("tag")] = (st.get("peers") or [{}])[0].get("endpoint", "").rsplit(":", 1)[0]
             if ob.get("protocol") == "socks" and lst[0].get("address") == "127.0.0.1":
                 addr[ob.get("tag")] = f"bridge:{lst[0].get('port')}"  # сервер за мостом sing-box
             ss = ob.get("streamSettings") or {}
@@ -487,7 +490,8 @@ def make_engine(tmp: str):
     _ENGINE_PORT[0] = http + 1 if http < 34800 else 34000
     e.settings.update(ping_host=f"127.0.0.1:{WEB}", socks_port=socks,
                       http_port=http, system_proxy=False, autopilot=False,
-                      stall_check=False)  # фоновая проверка «16 КБ» включается только в своём тесте
+                      stall_check=False,   # фоновая проверка «16 КБ» включается только в своём тесте
+                      warp_fallback=False)  # запасной WARP (регистрация у Cloudflare) — только в своём тесте
     e.events = events
     return e
 
@@ -4140,7 +4144,7 @@ def t_i18n_static():
                     bad.append(f"{os.path.basename(path)}:{node.lineno}: {text[:60]}")
     finally:
         i18n.set_lang("ru")
-    check(not bad, f"без перевода ({len(bad)}): " + " | ".join(bad[:10]))
+    check(not bad, f"без перевода ({len(bad)}): " + " | ".join(bad[:60]))
 
 
 # ---------- тесты: движки (Hysteria2, мост sing-box, AmneziaWG) ----------
@@ -5050,6 +5054,170 @@ def t_warp():
         e.disconnect_awg()
     finally:
         api.shutdown()
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case("WARP во встроенном ядре: шум вместо обманок, запасной путь «Авто», WARP после VPN, QR-код")
+def t_warp_xray():
+    from pult import qr, warp, warpauto
+    # запись CPS AmneziaWG → байты (случайное — предсказуемое)
+    seq = iter(range(10000))
+    b = warp.cps_bytes("<b 0x0102ff><r 2><rc 3><rd 2><t><c><n>", lambda n: next(seq) % n, now=0x01020304)
+    check(b.hex() == "0102ff" + "0001" + b"cde".hex() + b"56".hex() + "01020304" + "00000001" + "0708090a0b0c0d0e",
+          f"CPS → байты: {b.hex()}")
+    check(len(warp.cps_bytes("<r 4-6>")) in (4, 5, 6) and warp.cps_bytes("<b 0x>") == b"", "диапазон длины, пустой тег")
+    for bad in ("<b 0x01> мусор", "<r 99999>", "<b 0xZZ>", "текст<b 0x01>", "<r 5-2>"):
+        try:
+            warp.cps_bytes(bad)
+            check(False, f"плохая запись CPS принята: {bad}")
+        except ValueError:
+            pass
+    priv, _ = warp.keypair()
+    acct = {"private_key": priv, "peer": warp.PEER_KEY, "v4": "172.16.0.2", "v6": "2606:4700:110:8a36::1"}
+    conf = warp.build_conf(acct, warp.preset(0))
+    ob = warp.xray_outbound(conf, "proxy")
+    st = ob["settings"]
+    noise = ob["streamSettings"]["finalmask"]["udp"][0]
+    p0 = warp.current_params(conf)
+    check(ob["protocol"] == "wireguard" and st["secretKey"] == priv and st["address"] == ["172.16.0.2/32", "2606:4700:110:8a36::1/128"]
+          and st["peers"][0] == {"publicKey": warp.PEER_KEY, "endpoint": warp.PRESETS[0][0], "keepAlive": 25}
+          and st["mtu"] == 1280 and st["noKernelTun"] is True, f"outbound WireGuard: {st}")
+    items = noise["settings"]["noise"]
+    check(noise["type"] == "noise" and items[0]["type"] == "hex" and len(items[0]["packet"]) == warp.QUIC_SIZE * 2
+          and len(items) == 1 + p0["jc"] and all(x["rand"] == f"{p0['jmin']}-{p0['jmax']}" for x in items[1:])
+          and all("rand" not in x or "packet" not in x for x in items), f"шум: пакет-обманка I1, затем Jc мусорных: {items[1:]}")
+    _, sni = _quic_parse_sni("<b 0x" + items[0]["packet"] + ">")
+    check(sni == "yandex.ru", f"пакет-обманка — настоящее начало QUIC к yandex.ru: {sni}")
+    check("streamSettings" not in warp.xray_outbound(conf, "warp", noise=False), "без шума (через VPN) — без Finalmask")
+    old = xray.proxy_outbounds(links.Server(name="w", protocol="wireguard", outbound=ob), "proxy", False, "26.2.6")[0]
+    check("finalmask" not in (old.get("streamSettings") or {}), "старое ядро: без шума (иначе не запустится)")
+    # QR-код для телефона: длинный пакет-обманка QUIC заменяется коротким из инструкции Amnezia
+    sc = warp.share_conf(conf)
+    check(len(sc.encode()) < 1000 and f"PrivateKey = {priv}" in sc and warp.DNS_YANDEX_I1 in sc
+          and warp.current_params(sc)["endpoint"] == warp.PRESETS[0][0], "конфиг для QR: короткий, ключи те же")
+    short = warp.build_conf(acct, warp.preset(2))
+    check(warp.share_conf(short) == short, "короткий конфиг — без изменений")
+
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    old_probe, old_check_all = tester.probe_data, engmod.services.check_all
+    try:
+        e = make_engine(tmp)
+        e.settings.update(autopilot=True, warp_fallback=True)
+        e._monitor_tick = lambda tick: None
+        e.may_switch = lambda reason="": ""
+        e.startup()
+        e.xray_ver = "26.10.31"  # шум Finalmask — с 26.3.27
+        q = "?security=reality&pbk=K&sni=a.com&type=tcp"
+        e.add_servers("\n".join([
+            f"vless://61111111-1111-4111-8111-111111111111@deadone.example:443{q}#One",
+            f"vless://62222222-2222-4222-8222-222222222222@deadtwo.example:443{q}#Two",
+            links.awg_link(conf, warp.NAME)]))
+        wait_idle(e)
+        by = {x.name: x for x in e.servers}
+        check(e.own_warp() is by[warp.NAME] and e.state()["warp"]["own"], "свой WARP найден")
+        e._net_id = lambda cached_only=False: "net1"
+        probes = []
+
+        def fake_probe(paths, servers, stop_event=None, exe=None, mask=None):
+            out = []
+            for s in servers:
+                ep = (s.outbound.get("settings", {}).get("peers") or [{}])[0].get("endpoint", "")
+                probes.append(ep or s.name)
+                out.append({"ok": ep == warp.PRESETS[2][0], "bytes": 0, "ms": 1, "error": ""})
+            return out
+
+        tester.probe_data = fake_probe
+        e.connect(by["One"])
+        HEALTH_PORT["port"] = e.ports["health"]
+        DEAD.update({"deadone.example", "deadtwo.example"})
+        engmod.services.check_all = lambda paths, svcs=None, on_result=None, stop_event=None: {}
+        e.failover("сервер перестал отвечать")
+        check(e.connected and e.current.key == warpauto.WARP_KEY and e.is_warp_fallback(),
+              f"серверы не работают → запасной WARP: {e.current.name if e.current else None}")
+        wp = [x for x in probes if x.count(".") == 3 and ":" in x]
+        check(wp[-1] == warp.PRESETS[2][0] and len(wp) >= 2, f"обманки перебирались до рабочих: {wp}")
+        check(e.settings["warp_nets"]["net1"]["endpoint"] == warp.PRESETS[2][0], "рабочие обманки запомнены для сети")
+        names = [p["key"] for p in e.problems_list()]
+        check("warp_fallback" in names and "no_working" not in names, f"в окне — «пока через WARP»: {names}")
+        with open(e.paths.run_config, encoding="utf-8") as f:
+            cfg = json.load(f)
+        main = next(o for o in cfg["outbounds"] if o["tag"] == "proxy")
+        check(main["protocol"] == "wireguard" and main["streamSettings"]["finalmask"]["udp"][0]["type"] == "noise"
+              and main["settings"]["peers"][0]["endpoint"] == warp.PRESETS[2][0], "ядро: WireGuard с шумом")
+        check(cfg.get("dns", {}).get("tag") == "dns-internal", "адреса сайтов ищет встроенный DNS ядра, а не DNS провайдера")
+        check(e.settings.get("last_server_key") != warpauto.WARP_KEY, "запасной WARP не становится «последним сервером»")
+        check(e.state()["warp"]["fallback"] and e.state()["current"]["protocol"] == "WARP", "окно видит запасной WARP")
+        # раз в 5–30 минут: ожил сервер — программа сама уходит с WARP
+        e.may_apply = lambda: True
+        e._warp_revive_tick()
+        wait_idle(e)
+        check(e.is_warp_fallback(), "серверы всё ещё мёртвые — остаёмся на WARP")
+        DEAD.discard("deadtwo.example")
+        e._warp_revive_at = 0
+        e._warp_revive_tick()
+        wait_idle(e)
+        check(e.current.key == by["Two"].key and not e.warp_since and "warp_fallback" not in
+              [p["key"] for p in e.problems_list()], f"сервер ожил — вернулись: {e.current.name}")
+        # «WARP после VPN»: сервис и сайт → WARP поверх основного VPN
+        e.set_service_route("ChatGPT", "warp")
+        e.route_site("chatgpt-test.example", "warp")
+        plan = e._route_plan(e.current, e.proc.exe)
+        wr = [r for r in plan if r.get("tag") == "warp"]
+        check(len(wr) == 2 and all(r["warp"]["protocol"] == "wireguard" and r["block_udp"] == "443" for r in wr),
+              f"маршруты WARP: {[r.get('tag') for r in plan]}")
+        wob = wr[0]["warp"]
+        check(wob["streamSettings"] == {"sockopt": {"dialerProxy": "proxy"}}
+              and wob["settings"]["peers"][0]["endpoint"] == warp.PRESETS[2][0], "WARP идёт через VPN (без шума)")
+        e.reconnect()
+        wait_idle(e)
+        with open(e.paths.run_config, encoding="utf-8") as f:
+            cfg = json.load(f)
+        tags = [o["tag"] for o in cfg["outbounds"]]
+        check(tags.count("warp") == 1 and cfg.get("dns"), f"в ядре один WARP и встроенный DNS: {tags}")
+        rules = cfg["routing"]["rules"]
+        check(any(r.get("outboundTag") == "warp" and "domain:chatgpt-test.example" in (r.get("domain") or []) for r in rules)
+              and any(r.get("outboundTag") == "block" and r.get("network") == "udp" and r.get("port") == "443"
+                      and "domain:chatgpt-test.example" in (r.get("domain") or []) for r in rules), "правила: сайт → WARP, QUIC — TCP")
+        rs = e.routes_state()
+        check(json.dumps(rs, ensure_ascii=False).count('"warp"') >= 1, "окно видит выбор «через VPN и WARP»")
+        # на запасном WARP маршрут «WARP после VPN» — просто через основной (он и есть WARP)
+        check(e._route_target({"via": "warp"}, warpauto.WarpServer(name="W", protocol="wireguard"), "", None)[0] == "proxy",
+              "на запасном WARP — через основной")
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        ui.dispatch("warp_route", {"name": "Claude"})
+        wait_idle(e)
+        check((e.settings["routes"].get("svc:Claude") or {}).get("via") == "warp", "кнопка в окне: Claude → WARP после VPN")
+        # QR-код для другого устройства
+        items = {x["id"]: x for x in e.share_items()}
+        check("warp" in items and items["warp"]["kind"] == "warp", f"WARP в списке «Поделиться»: {list(items)}")
+        text = e.share_text("warp")
+        check(f"PrivateKey = {priv}" in text and warp.current_params(text)["endpoint"] == warp.PRESETS[2][0]
+              and len(text.encode()) < 1800, "QR: конфиг с обманками, которые работают в этой сети")
+        qr.make(text)
+        # своего WARP нет — маршрут не выбрать без создания; запасной путь выключен — честное «ничего не работает»
+        e.settings["routes"].pop("svc:ChatGPT")
+        e.settings["manual_links"] = [x for x in e.settings["manual_links"] if not x.startswith("awg://")]
+        e._rebuild_servers()
+        try:
+            e.set_service_route("ChatGPT", "warp")
+            check(False, "без своего WARP маршрут не ставится")
+        except RuntimeError:
+            pass
+        check(e._route_target({"via": "warp"}, e.current, "", None)[0] == "proxy", "WARP удалён — маршрут через VPN")
+        e.settings["warp_fallback"] = False
+        DEAD.add("deadtwo.example")
+        e.failover("сервер перестал отвечать")
+        check(not e.is_warp_fallback() and "no_working" in [p["key"] for p in e.problems_list()],
+              "запасной WARP выключен — без него")
+        text = "\n".join(e.logs) + json.dumps(e.journal.recent(100), ensure_ascii=False)
+        check(priv not in text and "PrivateKey" not in text, "ключ WARP не попадает в журналы")
+    finally:
+        tester.probe_data, engmod.services.check_all = old_probe, old_check_all
+        DEAD.clear()
         if e:
             e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

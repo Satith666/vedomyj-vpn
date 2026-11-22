@@ -25,6 +25,7 @@ public final class Server {
     public String engine = "xray";  // xray; awg — AmneziaWG (своё приложение); singbox — TUIC/AnyTLS (только компьютер)
     public String awgConf = "";     // конфиг AmneziaWG (берётся из ссылки awg://, отдельно не хранится)
     public boolean tlsUnverified;   // ссылка просит не проверять сертификат: вместо этого закрепляется его отпечаток
+    public String fixedKey = "";    // свой WARP во встроенном ядре: один ключ для любых наборов обманок
 
     // результаты проверки
     public long pingMs = -1;        // -1 — не проверяли или не отвечает
@@ -43,6 +44,9 @@ public final class Server {
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     public String key() {
+        if (!fixedKey.isEmpty()) {
+            return fixedKey;
+        }
         // без ссылки (JSON-подписки): у разных записей бывает один и тот же outbound — различаем по имени и цепочке
         String raw = !link.isEmpty() ? link : extraOutbounds.isEmpty()
                 ? name + "|" + Json.canonical(outbound) : name + "|" + Json.canonical(outbound) + Json.write(extraOutbounds);

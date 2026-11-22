@@ -441,6 +441,8 @@ def route_outbounds(routes: list[dict] | None, version: str = "", bind: str = ""
             continue
         if r.get("server") is not None:
             out += proxy_outbounds(r["server"], tag, r.get("mask", False), version, bind)
+        elif r.get("warp"):
+            out.append(dict(copy.deepcopy(r["warp"]), tag=tag))  # WARP после VPN: соединение к Cloudflare — через proxy
         elif r.get("proxy"):
             out.append(custom_proxy_outbound(r["proxy"], tag, bind))
         else:
@@ -551,7 +553,8 @@ def build_run_config(server: Server, settings: dict, ports: dict, access_log: st
     rules = [{"type": "field", "inboundTag": ["health-in"], "outboundTag": "proxy"}]
     if ports.get("direct") or ports.get("direct_http"):
         rules.append({"type": "field", "inboundTag": ["direct-in", "direct-http-in"], "outboundTag": "direct"})
-    use_dns = bool(tun) or encrypted
+    # WARP (WireGuard) сам ищет адреса сайтов встроенным DNS ядра — без него спросил бы DNS провайдера
+    use_dns = bool(tun) or encrypted or server.protocol == "wireguard" or any(r.get("warp") for r in routes or [])
     if tun and tun.get("engine") == "xray":
         outbounds.append({"tag": "dns-out", "protocol": "dns"})
         rules.append({"type": "field", "inboundTag": ["tun-in"], "port": 53, "outboundTag": "dns-out"})

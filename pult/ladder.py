@@ -463,7 +463,7 @@ class LadderMixin:
         """После подключения: данные идут — запомнить сервер и способ для этой сети."""
         try:
             srv = self.current
-            if not srv or not self.connected:
+            if not srv or not self.connected or srv.key == "warp":  # запасной WARP — не путь этой сети
                 return
             if not self._data_ok()["ok"] or self.current is not srv or not self.settings.get("net_memory", True):
                 return

@@ -22,6 +22,11 @@ public final class Api {
                 return true;
             case "route_site":
                 return e.routeSite(Json.str(a, "host"), Json.str(a, "target", "auto"), Json.bool(a, "main", false));
+            case "warp_route": // «Через VPN и WARP», своего WARP ещё нет: создать (в фоне) и поставить маршрут
+                return Json.str(a, "name").isEmpty() ? e.warpRouteTask("site", Json.str(a, "host"))
+                        : e.warpRouteTask("svc", Json.str(a, "name"));
+            case "warp_share":
+                return e.warpShareText();
             case "add_proxy": {
                 Map<String, Object> px = e.addProxy(Json.str(a, "raw"), Json.str(a, "name"), Json.str(a, "kind", "auto"),
                         Json.bool(a, "chain", true));

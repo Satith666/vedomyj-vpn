@@ -37,7 +37,8 @@ SAFE_OFF = ("auto_routes", "multi_enabled", "fp_auto", "mask_auto", "net_profile
 
 # Профессиональные настройки: ключ → значение по умолчанию («Вернуть как было»).
 PRO_KEYS = ("fuses_enabled", "guard_rollback", "safe_start", "net_memory", "autopilot", "fp_auto", "mask_auto",
-            "failover", "data_watch", "whitelist_auto", "auto_routes", "auto_stall", "multi_enabled", "stall_check")
+            "failover", "data_watch", "whitelist_auto", "auto_routes", "auto_stall", "multi_enabled", "stall_check",
+            "warp_fallback")
 
 
 LABELS = {"mode": "режим маршрутизации", "tun_enabled": "режим TUN", "tun_engine": "движок TUN",
@@ -53,7 +54,7 @@ PRO_NAMES = {"fuses_enabled": "предохранители", "guard_rollback": 
              "mask_auto": "маскировка", "failover": "мгновенное переключение", "data_watch": "сторож данных",
              "whitelist_auto": "обход белых списков", "auto_routes": "автоподбор для сайтов",
              "auto_stall": "сайты, которые не догружаются", "multi_enabled": "мультисервер",
-             "stall_check": "проверка «16 КБ»"}
+             "stall_check": "проверка «16 КБ»", "warp_fallback": "запасной WARP"}
 
 
 def change_label(before: dict) -> str:

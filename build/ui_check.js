@@ -217,6 +217,16 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
     "Реклама: «Проверить блокировку», списки «Монстра», как установить «Монстра»", `${chk.length} ${monsterRows} ${chk[0] ? chk[0].slice(0, 50) : ""}`);
   await page.evaluate(() => go("home"));
 
+  // 5д. WARP во встроенном ядре: «Через VPN и WARP» в выборе маршрута, «Запасной WARP» в профессиональных
+  await page.evaluate(() => go("routes"));
+  await page.waitForTimeout(400);
+  const warpOpt = await page.$$eval('#siteRouteVia option[value="warp"]', (els) => els.length);
+  await page.evaluate(() => go("pro"));
+  await page.waitForTimeout(300);
+  const warpSw = await page.$('[data-pset="warp_fallback"]');
+  ok(warpOpt >= 1 && !!warpSw, "WARP: «Через VPN и WARP» в маршрутах, «Запасной WARP» в профессиональных", `${warpOpt} ${!!warpSw}`);
+  await page.evaluate(() => go("home"));
+
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
   const PAGES = ["home", "status", "more", "features", "zapret", "byedpi", "services", "routes", "traffic", "updates", "settings",

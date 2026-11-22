@@ -814,6 +814,14 @@ class UIServer:
             return e.awg_conf_text(srv)  # только в окно программы (127.0.0.1 с ключом) — для ручного переноса в AmneziaWG
         if action == "warp_create":
             return vpn_task("Создаю бесплатный WARP", e.warp_start)
+        if action == "warp_route":
+            # «Через VPN и WARP»: своего WARP нет — программа сначала создаёт его (это запрос в сеть — в фоне)
+            if a.get("name"):
+                return vpn_task("Включаю WARP после VPN", e.warp_route_set, "svc", str(a["name"]))
+            hosts = [str(h) for h in (a.get("hosts") or [a.get("host")]) if h][:200]
+            if not hosts:
+                raise ActionError("Вставь адрес сайта, например example.com.")
+            return vpn_task("Включаю WARP после VPN", e.warp_route_set, "site", hosts, bool(a.get("exact")))
         if action.startswith("family_"):
             return self._family(action, a, task)
         if action == "awg_download":

@@ -356,6 +356,8 @@
         <button class="row" data-act="awg-open">${icon("send")}<span class="main"><span class="title"><span>${esc(t("awg_open"))}</span></span></span></button>
         <button class="row" data-act="awg-copy">${icon("copy")}<span class="main"><span class="title"><span>${esc(t("awg_copy"))}</span></span>
           <span class="meta">${esc(t("awg_copy_note"))}</span></span></button>
+        ${awgCur.warp ? `<button class="row" data-act="warp-qr">${icon("qr")}<span class="main"><span class="title"><span>${esc(t("warp_qr"))}</span></span>
+          <span class="meta">${esc(t("warp_qr_note"))}</span></span></button>` : ""}
         ${awgCur.warp ? `<button class="row" data-act="warp-next">${icon("refresh")}<span class="main"><span class="title"><span>${esc(t("warp_next"))}</span></span>
           <span class="meta">${esc(t("warp_next_note"))}</span></span></button>` : ""}
       </div>`);
@@ -1015,7 +1017,7 @@
     ["pg_protect", [["fuses_enabled", "s_fuses"], ["guard_rollback", "s_guard"], ["safe_start", "s_safe"]]],
     ["pg_memory", [["net_memory", "s_netmem"]]],
     ["pg_auto", [["autopilot", "s_auto"], ["fp_auto", "s_fp"], ["mask_auto", "s_mask"], ["data_watch", "s_dwatch"],
-      ["stall_check", "s_stall16"], ["whitelist_auto", "s_wl"]]],
+      ["stall_check", "s_stall16"], ["warp_fallback", "s_warpfb"], ["whitelist_auto", "s_wl"]]],
   ];
   function leftText(sec) {
     const h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60);
@@ -1127,7 +1129,7 @@
   function routeOptions(value, withAuto) {
     const R = S.routes || {};
     const o = (v, label) => `<option value="${esc(v)}"${v === value ? " selected" : ""}>${esc(label)}</option>`;
-    let html = (withAuto ? o("auto", t("rt_auto")) : "") + o("proxy", t("rt_proxy")) + o("direct", t("rt_direct"))
+    let html = (withAuto ? o("auto", t("rt_auto")) : "") + o("proxy", t("rt_proxy")) + o("warp", t("rt_warp")) + o("direct", t("rt_direct"))
       + o("dpi", t("rt_dpi")) + o("block", t("rt_block"));
     const servers = (S.servers || []).filter((s) => s.usable);
     if (servers.length) html += `<optgroup label="${esc(t("rt_server_group"))}">${servers.map((s) => o("server:" + s.key, s.name)).join("")}</optgroup>`;
@@ -1609,6 +1611,11 @@
       poll();
     },
     "warp-own"() { closeSheet(); openAdd(""); },
+    "warp-qr"() {
+      let text;
+      try { text = call("warp_share"); } catch (e) { toast(e.message, "error"); return; }
+      showQr(t("warp_qr"), text, t("warp_qr_warn"));
+    },
     "warp-next"() {
       if (!awgCur) return;
       let r;
@@ -1866,6 +1873,10 @@
       const host = $("#siteHost").value.trim();
       const target = $("#siteTarget").value;
       if (target === "custom:new") { focusProxyForm(); return; }
+      if (target === "warp" && !((S.warp_auto || {}).own)) { // своего WARP нет: программа создаст его и поставит маршрут
+        if (act("warp_route", { host }) !== undefined) { $("#siteHost").value = ""; toast(t("warp_route_making"), "info"); poll(); }
+        return;
+      }
       if (act("route_site", { host, target, main: false }) !== undefined) { $("#siteHost").value = ""; toast(t("saved_ok"), "ok"); poll(); }
     },
     "px-chain-new"(el) { el.setAttribute("aria-checked", String(el.getAttribute("aria-checked") !== "true")); },
@@ -1991,6 +2002,7 @@
       const v = el.value;
       el.blur();
       if (v === "custom:new") { focusProxyForm(); return; }
+      if (v === "warp" && !((S.warp_auto || {}).own)) { act("warp_route", { name: el.dataset.name }); toast(t("warp_route_making"), "info"); poll(); return; }
       act("route_service", { name: el.dataset.name, target: v });
       poll();
     },
@@ -1998,6 +2010,7 @@
       const v = el.value;
       el.blur();
       if (v === "custom:new") { focusProxyForm(); return; }
+      if (v === "warp" && !((S.warp_auto || {}).own)) { act("warp_route", { host: el.dataset.site }); toast(t("warp_route_making"), "info"); poll(); return; }
       act("route_site", { host: el.dataset.site, target: v, main: false });
       poll();
     },

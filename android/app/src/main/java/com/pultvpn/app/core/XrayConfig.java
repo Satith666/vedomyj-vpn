@@ -267,8 +267,14 @@ public final class XrayConfig {
             }
             Object srv = r.get("server");
             Object px = r.get("proxy");
+            Object warp = r.get("warp");
             if (srv instanceof Server) {
                 out.addAll(proxyOutbounds((Server) srv, tag, Json.bool(r, "mask", false), version));
+            } else if (warp instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> wo = Json.copy((Map<String, Object>) warp);
+                wo.put("tag", tag); // WARP после VPN: соединение к Cloudflare — через proxy
+                out.add(wo);
             } else if (px instanceof Map) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> pm = (Map<String, Object>) px;

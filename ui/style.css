@@ -329,6 +329,7 @@ button.list-row:hover { background: var(--panel-2); }
 .route.proxy { background: var(--accent-soft); color: var(--accent); }
 .route.block { background: var(--bad-soft); color: var(--bad); }
 .route.custom { background: var(--good-soft); color: var(--good); }
+.route.warp { background: var(--accent-soft); color: var(--accent); }
 .chips { display: inline-flex; gap: 4px; padding: 3px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); }
 .chips button { border: 0; background: transparent; color: var(--muted); padding: 4px 12px; border-radius: 999px; font-size: 13px; }
 .chips button[aria-pressed="true"] { background: var(--panel-3); color: var(--text); font-weight: 600; }

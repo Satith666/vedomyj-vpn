@@ -483,3 +483,132 @@ def trace_ok(timeout: float = 4.0, url: str = TRACE_URL) -> bool:
     except (OSError, ssl.SSLError, ValueError):
         return False
     return bool(re.search(r"^warp=(on|plus)\s*$", body, re.M))
+
+
+# ---------- WARP во встроенном ядре Xray (без программы AmneziaWG) ----------
+# Ядро Xray умеет WireGuard само, а Finalmask (с 26.3.27) — «шум» перед первым пакетом: тот же приём, что
+# мусорные пакеты Jc и пакет-обманка I1 у AmneziaWG. Пакет I1 собирается здесь же из записи CPS
+# (случайные части — заново при каждом запуске ядра), мусорные пакеты — случайной длины Jmin…Jmax.
+
+_CPS_TAG = re.compile(r"<(b|r|rc|rd|t|c|n)(?:\s+([^>]*))?>")
+_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+CPS_MAX = 4096  # такой пакет-обманка уже не похож ни на что настоящее
+
+
+def _cps_count(arg: str, rnd) -> int:
+    a, _, b = (arg or "").strip().partition("-")
+    lo = int(a)
+    hi = int(b) if b else lo
+    if lo < 0 or hi < lo or hi > CPS_MAX:
+        raise ValueError("CPS: неверная длина")
+    return lo + rnd(hi - lo + 1) if hi > lo else lo
+
+
+def cps_bytes(expr: str, rnd=secrets.randbelow, now=None) -> bytes:
+    """Запись CPS AmneziaWG (<b 0x…>, <r N>, <rc N>, <rd N>, <t>, <c>, <n>) → байты одного пакета.
+    rnd(n) — случайное 0…n-1 (самопроверка подставляет предсказуемое)."""
+    out = bytearray()
+    pos = 0
+    text = (expr or "").strip()
+    for m in _CPS_TAG.finditer(text):
+        if text[pos:m.start()].strip():
+            raise ValueError("CPS: лишний текст между тегами")
+        pos = m.end()
+        kind, arg = m.group(1), (m.group(2) or "").strip()
+        if kind == "b":
+            h = arg[2:] if arg.lower().startswith("0x") else arg
+            out += bytes.fromhex(h)
+        elif kind == "r":
+            out += bytes(rnd(256) for _ in range(_cps_count(arg, rnd)))
+        elif kind == "rc":
+            out += "".join(_LETTERS[rnd(len(_LETTERS))] for _ in range(_cps_count(arg, rnd))).encode()
+        elif kind == "rd":
+            out += "".join(str(rnd(10)) for _ in range(_cps_count(arg, rnd))).encode()
+        elif kind == "t":
+            out += struct.pack(">I", int(now if now is not None else datetime.datetime.now().timestamp()) & 0xFFFFFFFF)
+        elif kind == "c":
+            out += struct.pack(">I", 1)
+        else:
+            out += bytes(rnd(256) for _ in range(8))
+        if len(out) > CPS_MAX:
+            raise ValueError("CPS: слишком длинный пакет")
+    if text[pos:].strip():
+        raise ValueError("CPS: лишний текст после тегов")
+    return bytes(out)
+
+
+def parse_conf(conf: str) -> dict:
+    """Нужное ядру Xray из конфига WARP: ключи, адреса, сервер и обманки."""
+    out: dict = {"address": [], "mtu": 1280}
+    sect = ""
+    for raw in (conf or "").splitlines():
+        line = raw.strip()
+        if line.startswith(("#", ";")):
+            continue
+        m = re.fullmatch(r"\[(\w+)\]", line)
+        if m:
+            sect = m.group(1).lower()
+            continue
+        if "=" not in line:
+            continue
+        k, v = (x.strip() for x in line.split("=", 1))
+        kl = k.lower()
+        if sect == "interface":
+            if kl == "privatekey":
+                out["private_key"] = v
+            elif kl == "address":
+                out["address"] = [a.strip() for a in v.split(",") if a.strip()]
+            elif kl == "mtu" and v.isdigit():
+                out["mtu"] = max(1200, min(1420, int(v)))
+            elif kl in ("jc", "jmin", "jmax") and v.isdigit():
+                out[kl] = int(v)
+            elif kl == "i1":
+                out["i1"] = v
+        elif sect == "peer":
+            if kl == "publickey":
+                out["peer"] = v
+            elif kl == "endpoint":
+                out["endpoint"] = v
+    if not out.get("private_key") or not out.get("peer") or not out.get("endpoint") or not out["address"]:
+        raise ValueError("в конфиге WARP нет ключей или адреса сервера")
+    return out
+
+
+NOISE_DELAY = "1-3"  # мс между пакетами шума: порядок сохраняется, а подключение почти не замедляется
+
+
+def noise_items(p: dict, rnd=secrets.randbelow) -> list[dict]:
+    """Шум перед подключением, как у AmneziaWG: сначала пакет-обманка I1, затем Jc мусорных пакетов."""
+    items: list[dict] = []
+    if p.get("i1"):
+        try:
+            items.append({"type": "hex", "packet": cps_bytes(p["i1"], rnd).hex(), "delay": NOISE_DELAY})
+        except ValueError:
+            pass
+    jc, lo, hi = int(p.get("jc") or 0), int(p.get("jmin") or 0), int(p.get("jmax") or 0)
+    if jc > 0 and 0 < lo <= hi <= 1280:
+        items += [{"rand": f"{lo}-{hi}" if hi > lo else str(lo), "delay": NOISE_DELAY} for _ in range(min(jc, 10))]
+    return items
+
+
+def xray_outbound(conf: str, tag: str = "proxy", noise: bool = True, rnd=secrets.randbelow) -> dict:
+    """Outbound WireGuard для ядра Xray (WARP) с шумом Finalmask вместо обманок AmneziaWG."""
+    p = parse_conf(conf)
+    ob: dict = {"tag": tag, "protocol": "wireguard",
+                "settings": {"secretKey": p["private_key"], "address": p["address"],
+                             "peers": [{"publicKey": p["peer"], "endpoint": p["endpoint"], "keepAlive": 25}],
+                             "mtu": p["mtu"], "noKernelTun": True}}
+    items = noise_items(p, rnd) if noise else []
+    if items:
+        ob["streamSettings"] = {"finalmask": {"udp": [{"type": "noise", "settings": {"noise": items}}]}}
+    return ob
+
+
+def share_conf(conf: str) -> str:
+    """Конфиг для другого устройства (QR-код): без строк, которые не нужны клиенту AmneziaWG на телефоне,
+    а пакет-обманка — короткий из инструкции Amnezia, если свой слишком длинный для QR-кода."""
+    lines = [x for x in (conf or "").strip().splitlines() if not x.lstrip().startswith("#")]
+    text = "\n".join(lines) + "\n"
+    if len(text.encode()) > 1800:
+        text = re.sub(r"(?im)^\s*I1\s*=.*$", f"I1 = {DNS_YANDEX_I1}", text)
+    return text

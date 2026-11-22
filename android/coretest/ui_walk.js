@@ -242,6 +242,9 @@ const out = process.argv[3];
   const tt = await page.$eval('select[data-name="TikTok"]', (el) => el.value);
   if (tt !== "custom:" + pid) throw new Error("TikTok route not kept: " + tt);
   if (!(await page.textContent("#rtSites")).includes("music.example.org")) throw new Error("site route missing");
+  // «Через VPN и WARP» есть в выборе у сервиса и у сайта
+  const warpOpts = await page.$$eval('select[data-name="TikTok"] option[value="warp"], #siteTarget option[value="warp"]', (els) => els.length);
+  if (warpOpts !== 2) throw new Error("no 'via VPN and WARP' option: " + warpOpts);
   await shot("19-routes", true);
   await page.click("#back");
   await page.waitForTimeout(1200);

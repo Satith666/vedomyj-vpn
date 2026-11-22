@@ -492,10 +492,10 @@ def check_warp(paths: xray.Paths, live: bool) -> None:
         else:
             add("info", T("WARP: напрямую регистрация не прошла — программа зарегистрирует WARP через включённый VPN",
                           "WARP: direct registration failed — the app will register WARP through a connected VPN"), last[:200])
-        return
+        return None
     add("ok", T("WARP: регистрация у Cloudflare прошла", "WARP: registered with Cloudflare"))
     if not live or not amneziawg.find_client():
-        return
+        return acct
     runner = amneziawg.Runner(paths.data_dir)
     helper = admin_helper.Helper("ci", {}, 0, paths.data_dir)
     passed = 0
@@ -530,6 +530,98 @@ def check_warp(paths: xray.Paths, live: bool) -> None:
             runner.wipe()
     add("ok" if passed else "error", T(f"WARP: работают {passed} из {len(warp.PRESETS)} наборов обманок",
                                        f"WARP: {passed} of {len(warp.PRESETS)} decoy sets work"))
+    return acct
+
+
+def _trace_via(port: int, timeout: float = 10.0) -> str:
+    """Ответ Cloudflare через вход HTTP ядра: on/plus — запрос пришёл через WARP, off — мимо него."""
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}", "https": f"http://127.0.0.1:{port}"}),
+        urllib.request.HTTPSHandler(context=netutil.ssl_context()))
+    try:
+        with opener.open(urllib.request.Request(warp.TRACE_URL, headers={"User-Agent": "curl/8"}), timeout=timeout) as r:
+            body = r.read(4096).decode("utf-8", "replace")
+    except OSError as exc:
+        return f"нет ответа: {str(exc)[:80]}"
+    import re as _re
+    m = _re.search(r"^warp=(\S+)", body, _re.M)
+    return m.group(1) if m else "нет warp="
+
+
+def _run_trace(paths: xray.Paths, cfg: dict, port: int, name: str) -> str:
+    proc = xray.XrayProcess(paths)
+    path = os.path.join(paths.data_dir, f"field-check-{name}.json")
+    try:
+        proc.start(cfg, path, wait_for=[port])
+    except Exception as exc:
+        return f"ядро не запустилось: {str(exc)[:160]}"
+    try:
+        got = ""
+        for _ in range(3):
+            got = _trace_via(port)
+            if got in ("on", "plus"):
+                break
+            time.sleep(2)
+        return got
+    finally:
+        proc.stop()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def check_warp_xray(paths: xray.Paths, acct: dict | None) -> None:
+    """1.21: WARP во встроенном ядре по-настоящему — каждый набор обманок шумом Finalmask (без AmneziaWG)
+    и «WARP после VPN»: WARP через другой выход (dialerProxy). Обратная проверка: цепочка в никуда — данных нет,
+    значит ядро действительно ведёт WARP через цепочку, а не мимо неё."""
+    if not acct:
+        return
+    passed = 0
+    for i in range(len(warp.PRESETS)):
+        p = warp.preset(i)
+        conf = warp.build_conf(acct, p)
+        port = netutil.find_free_ports(1, start=23900 + i * 3)[0]
+        cfg = {"log": {"loglevel": "warning"},
+               "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": port, "protocol": "http", "settings": {}}],
+               "outbounds": [warp.xray_outbound(conf, "proxy"), {"tag": "direct", "protocol": "freedom"}],
+               "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "proxy"}]}}
+        ok, err = xray.check_config(paths, cfg, os.path.join(paths.data_dir, "field-check-warpx.json"))
+        if not ok:
+            add("error", T(f"WARP в ядре ({p['label']}): ядро не приняло настройки", f"WARP in the core ({p['label']}): core rejected the settings"), err)
+            continue
+        got = _run_trace(paths, cfg, port, "warpx")
+        passed += got in ("on", "plus")
+        add("ok" if got in ("on", "plus") else "warn",
+            T(f"WARP в ядре {p['label']} ({p['endpoint']}): ", f"WARP in the core {p['label']} ({p['endpoint']}): ") + got)
+    add("ok" if passed else "error", T(f"WARP во встроенном ядре: работают {passed} из {len(warp.PRESETS)} наборов обманок",
+                                       f"WARP in the built-in core: {passed} of {len(warp.PRESETS)} decoy sets work"))
+    # «WARP после VPN»: «VPN» — вход SOCKS этого же ядра (с UDP), WARP идёт к Cloudflare через него
+    conf = warp.build_conf(acct, warp.preset(0))
+    for how in ("dialerProxy", "proxySettings"):
+        res = {}
+        for good in (True, False):
+            ports = netutil.find_free_ports(3, start=24000)
+            ob = warp.xray_outbound(conf, "warp", noise=False)
+            if how == "dialerProxy":
+                ob["streamSettings"] = {"sockopt": {"dialerProxy": "proxy"}}
+            else:
+                ob["proxySettings"] = {"tag": "proxy"}
+            cfg = {"log": {"loglevel": "warning"},
+                   "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": ports[0], "protocol": "http", "settings": {}},
+                                {"tag": "srv-in", "listen": "127.0.0.1", "port": ports[1], "protocol": "socks",
+                                 "settings": {"udp": True, "ip": "127.0.0.1"}}],
+                   "outbounds": [ob, {"tag": "proxy", "protocol": "socks", "settings": {"servers": [
+                       {"address": "127.0.0.1", "port": ports[1] if good else ports[2]}]}},
+                                 {"tag": "direct", "protocol": "freedom"}],
+                   "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "warp"},
+                                         {"type": "field", "inboundTag": ["srv-in"], "outboundTag": "direct"}]}}
+            res[good] = _run_trace(paths, cfg, ports[0], "warpchain")
+        works = res[True] in ("on", "plus") and res[False] not in ("on", "plus")
+        add("ok" if works else ("error" if how == "dialerProxy" else "info"),
+            T(f"WARP после VPN ({how}): ", f"WARP after VPN ({how}): ")
+            + (T("идёт через цепочку", "goes through the chain") if works else
+               T(f"через цепочку: {res[True]}, цепочка в никуда: {res[False]}", f"via chain: {res[True]}, chain to nowhere: {res[False]}")))
 
 
 def download_cores(paths: xray.Paths) -> None:
@@ -932,7 +1024,8 @@ def main() -> None:
     guard(T("Отпечаток сертификата", "Certificate pin"), check_certpin)
     if IS_WINDOWS:
         guard("AmneziaWG", lambda: check_awg(paths, live=CI))
-    guard("WARP", lambda: check_warp(paths, live=CI and IS_WINDOWS))
+    guard("WARP", lambda: check_warp_xray(paths, check_warp(paths, live=CI and IS_WINDOWS)) if paths.xray_exists()
+          else check_warp(paths, live=CI and IS_WINDOWS))
 
     section(T("Windows", "Windows"))
     guard("DPAPI", check_dpapi)

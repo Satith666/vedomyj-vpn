@@ -565,7 +565,7 @@ public final class Engine {
             "fp_auto", "engine_pick", "wl_priority"};
     /** Профессиональные настройки и их значения по умолчанию («Вернуть как было»). */
     static final String[] PRO_KEYS = {"fuses_enabled", "guard_rollback", "safe_start", "net_memory", "autopilot", "fp_auto",
-            "mask_auto", "data_watch", "whitelist_auto", "stall_check"};
+            "mask_auto", "data_watch", "whitelist_auto", "stall_check", "warp_fallback"};
     private final Object fuseLock = new Object();
     private Map<String, Boolean> ladderKinds;
     private volatile Map<String, Object> guard;
@@ -3147,6 +3147,11 @@ public final class Engine {
             ladderSuccess(now, Text.t("другой сервер", "another server"));
             return;
         }
+        // последний шаг: свой бесплатный WARP во встроенном ядре, пока серверы не оживут
+        checkStop();
+        if (warpFallback()) {
+            return;
+        }
         nothingWorks();
         synchronized (lock) {
             if (current != null) {
@@ -3374,7 +3379,7 @@ public final class Engine {
     }
 
     public void rememberWay(Server s) {
-        if (s == null || !Json.bool(settings, "net_memory", true)) {
+        if (s == null || !Json.bool(settings, "net_memory", true) || !s.fixedKey.isEmpty()) { // запасной WARP — не путь сети
             return;
         }
         String id = netId();
@@ -4063,6 +4068,302 @@ public final class Engine {
             }
         }
         return null;
+    }
+
+    // ---------- WARP во встроенном ядре: запасной путь «Авто», «WARP после VPN», QR-код (как pult/warpauto.py) ----------
+
+    public static final String WARP_KEY = "warp";
+    static final long[] WARP_REVIVE_MS = {300_000L, 600_000L, 1_200_000L, 1_800_000L};
+    static final long WARP_FORCE_BACK_MS = 1_800_000L;
+    static final int WARP_VARIANTS_MAX = 8;
+    static final int WARP_NETS_MAX = 30;
+    private volatile long warpSince;
+    private volatile long warpReviveAt;
+    private int warpReviveN;
+
+    /** Самопроверка: своя проверка «идут ли данные» через WARP вместо временного ядра. */
+    public interface WarpProbe {
+        boolean ok(Server s);
+    }
+
+    public static WarpProbe WARP_PROBE = null;
+
+    /** Свой WARP как сервер для ядра Xray. params — набор обманок, null — из конфига. */
+    public Server warpXray(Map<String, Object> params, Server src, String tag, boolean noise) {
+        if (src == null) {
+            src = ownWarp();
+        }
+        if (src == null) {
+            throw new UserError(Text.t("Бесплатного WARP ещё нет.", "There is no free WARP yet."));
+        }
+        String conf = params != null ? Warp.variant(src.awgConf, params) : src.awgConf;
+        Map<String, Object> ob = Warp.xrayOutbound(conf, tag, noise, Warp.SECURE);
+        String ep = Json.str(Json.map(Json.list(Json.map(ob, "settings"), "peers").get(0)), "endpoint");
+        int colon = ep.lastIndexOf(':');
+        Server s = new Server();
+        s.name = "WARP";
+        s.protocol = "wireguard";
+        s.address = colon > 0 ? ep.substring(0, colon).replace("[", "").replace("]", "") : ep;
+        try {
+            s.port = colon > 0 ? Integer.parseInt(ep.substring(colon + 1)) : 0;
+        } catch (NumberFormatException e) {
+            s.port = 0;
+        }
+        s.outbound = ob;
+        s.subId = "warp";
+        s.fixedKey = WARP_KEY;
+        s.note = Text.t("бесплатный WARP от Cloudflare во встроенном ядре", "free Cloudflare WARP in the built-in core");
+        return s;
+    }
+
+    private Map<String, Object> warpSaved() {
+        if (!Json.bool(settings, "net_memory", true)) {
+            return null;
+        }
+        return Json.map(Json.map(settings, "warp_nets"), netIdCached());
+    }
+
+    /** Наборы обманок по порядку: рабочий в этой сети, из конфига, затем остальные. */
+    List<Map<String, Object>> warpVariants() {
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        Map<String, Object> saved = warpSaved();
+        if (saved != null) {
+            out.add(saved);
+        }
+        out.add(null);
+        for (int i = 0; i < Warp.PRESETS.length && out.size() < WARP_VARIANTS_MAX; i++) {
+            out.add(Warp.preset(i));
+        }
+        return out.size() > WARP_VARIANTS_MAX ? out.subList(0, WARP_VARIANTS_MAX) : out;
+    }
+
+    /** Перебрать наборы обманок временным ядром: первый, через который идут данные. Рабочий запоминается для сети. */
+    Server warpPick() {
+        List<Map<String, Object>> vars = warpVariants();
+        int i = 0;
+        Server own = ownWarp();
+        for (Map<String, Object> params : vars) {
+            i++;
+            checkStop();
+            progress(Text.t("WARP: пробую обманки, вариант ", "WARP: trying decoys, variant ") + i + Text.t(" из ", " of ") + vars.size());
+            Server s = warpXray(params, own, "proxy", true);
+            boolean ok;
+            if (WARP_PROBE != null) {
+                ok = WARP_PROBE.ok(s);
+            } else {
+                List<Object[]> c = new ArrayList<Object[]>();
+                c.add(new Object[]{new String[]{"", ""}, s});
+                ok = !probeWays(c).isEmpty();
+            }
+            if (ok) {
+                Map<String, Object> p = params != null ? params : Warp.currentParams(own.awgConf);
+                String net = Json.bool(settings, "net_memory", true) ? netIdCached() : "";
+                if (!net.isEmpty() && p != null) {
+                    synchronized (lock) {
+                        Map<String, Object> nets = new LinkedHashMap<String, Object>();
+                        Map<String, Object> old = Json.map(settings, "warp_nets");
+                        if (old != null) {
+                            nets.putAll(old);
+                        }
+                        Map<String, Object> keep = new LinkedHashMap<String, Object>();
+                        for (String k : new String[]{"endpoint", "jc", "jmin", "jmax", "i1", "label"}) {
+                            if (p.containsKey(k)) {
+                                keep.put(k, p.get(k));
+                            }
+                        }
+                        nets.remove(net);
+                        nets.put(net, keep);
+                        while (nets.size() > WARP_NETS_MAX) {
+                            nets.remove(nets.keySet().iterator().next());
+                        }
+                        settings.put("warp_nets", nets);
+                    }
+                    saveSettings();
+                }
+                log("WARP во встроенном ядре: данные идут (вариант " + i + ").", "WARP in the built-in core: data flows (variant " + i + ").");
+                return s;
+            }
+        }
+        log("WARP во встроенном ядре: данные не пошли ни с одним из " + vars.size() + " наборов обманок.",
+                "WARP in the built-in core: no data with any of " + vars.size() + " decoy sets.");
+        return null;
+    }
+
+    public boolean isWarpFallback() {
+        Server cur = current;
+        return warpSince > 0 && isOn() && cur != null && WARP_KEY.equals(cur.key());
+    }
+
+    /** Из failover: серверы не помогли — включить свой WARP. true — данные пошли. */
+    boolean warpFallback() {
+        if (!Json.bool(settings, "warp_fallback", true) || "awg".equals(Json.str(settings, "engine_pick"))) {
+            return false;
+        }
+        if (isWarpFallback()) {
+            return false; // WARP уже был запасным и тоже перестал — честное «ничего не работает»
+        }
+        ladderStep = Text.t("бесплатный WARP", "free WARP");
+        if (ownWarp() == null) {
+            progress(Text.t("Серверы не работают — создаю бесплатный WARP", "Servers don't work — creating a free WARP"));
+            try {
+                createWarp();
+            } catch (Cancelled c) {
+                throw c;
+            } catch (RuntimeException e) {
+                log("Запасной WARP: не получилось создать (" + e.getMessage() + ").", "Backup WARP: could not create (" + e.getMessage() + ").");
+                return false;
+            }
+        }
+        Server s;
+        try {
+            s = warpPick();
+        } catch (Cancelled c) {
+            throw c;
+        } catch (RuntimeException e) {
+            log("Запасной WARP: " + e.getMessage(), "Backup WARP: " + e.getMessage());
+            return false;
+        }
+        if (s == null || !startWith(s)) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        warpSince = now;
+        warpReviveN = 0;
+        warpReviveAt = now + WARP_REVIVE_MS[0];
+        ladderLast = Json.obj("at", now, "ok", true, "text", Text.t("серверы не работают — временно через WARP",
+                "servers don't work — temporarily via WARP"));
+        ladderFails = 0;
+        ladderNext = 0;
+        ladderStep = "";
+        whatWorks = null;
+        resolve("connect");
+        problem("warp_fallback", Text.t("Серверы не работают — пока через WARP", "Servers don't work — using WARP for now"),
+                Text.t("Программа сама проверяет серверы и вернётся на первый оживший. Выключить запасной WARP можно в «Профессиональных».",
+                        "The app rechecks the servers itself and returns to the first one that comes back. The backup WARP can be turned off in Pro."));
+        log("Запасной WARP: серверы не работают — включил бесплатный WARP.", "Backup WARP: servers don't work — turned on the free WARP.");
+        say(Text.t("Серверы не работают — временно включил бесплатный WARP. Вернусь на сервер, как только он оживёт.",
+                "Servers don't work — temporarily turned on the free WARP. I'll return to a server as soon as it comes back."), "info");
+        changed();
+        return true;
+    }
+
+    private void warpLeft() {
+        if (warpSince > 0) {
+            warpSince = 0;
+            resolve("warp_fallback");
+        }
+    }
+
+    /** Из монитора: пора ли проверить, ожили ли серверы. */
+    private void warpReviveTick() {
+        if (warpSince == 0) {
+            return;
+        }
+        if (!isWarpFallback()) {
+            warpLeft();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now < warpReviveAt || connBusy()) {
+            return;
+        }
+        warpReviveN++;
+        warpReviveAt = now + WARP_REVIVE_MS[Math.min(warpReviveN, WARP_REVIVE_MS.length - 1)];
+        runTask(Text.t("Проверяю, ожили ли серверы", "Checking whether servers are back"), "connect", new Runnable() {
+            @Override
+            public void run() {
+                warpRevive();
+            }
+        });
+    }
+
+    /** Проверить серверы сейчас (самопроверка; в программе — монитор раз в 5–30 минут). */
+    public boolean warpReviveNow() {
+        return runTask(Text.t("Проверяю, ожили ли серверы", "Checking whether servers are back"), "connect", new Runnable() {
+            @Override
+            public void run() {
+                warpRevive();
+            }
+        });
+    }
+
+    void warpRevive() {
+        if (!isWarpFallback()) {
+            return;
+        }
+        Server warp = current;
+        if (dataFlowing() && System.currentTimeMillis() - warpSince < WARP_FORCE_BACK_MS) {
+            log("Запасной WARP: идут данные — проверю серверы позже, чтобы не оборвать загрузку.",
+                    "Backup WARP: data is flowing — will check the servers later so as not to break a download.");
+            return;
+        }
+        testServers(true);
+        List<Server> ok = ranked();
+        if (ok.isEmpty()) {
+            log("Запасной WARP: серверы всё ещё не отвечают — остаюсь на WARP.", "Backup WARP: servers still don't answer — staying on WARP.");
+            return;
+        }
+        for (int i = 0; i < Math.min(3, ok.size()); i++) {
+            Server s = ok.get(i);
+            if (startWith(s)) {
+                warpLeft();
+                log("Сервер «" + s.name + "» снова работает — ушёл с запасного WARP.", "Server \"" + s.name + "\" works again — left the backup WARP.");
+                say(Text.t("Сервер снова работает — вернулся на «", "A server works again — back on \"") + s.name + Text.t("».", "\"."), "ok");
+                changed();
+                return;
+            }
+        }
+        log("Запасной WARP: серверы отвечают на проверку, но данные через них не идут — остаюсь на WARP.",
+                "Backup WARP: servers answer the check but pass no data — staying on WARP.");
+        if (warp != null && !startWith(warp)) {
+            warpSince = 0; // и WARP не поднялся — дальше как обычно: сторож заметит и начнёт поиск
+        }
+    }
+
+    /** Выход «warp» для своих маршрутов: WARP поверх основного VPN (без шума — провайдер видит только VPN). */
+    Map<String, Object> warpRouteOutbound() {
+        Server own = ownWarp();
+        if (own == null) {
+            return null;
+        }
+        Map<String, Object> ob = warpXray(warpSaved(), own, "warp", false).outbound;
+        ob.remove("streamSettings");
+        ob.put("streamSettings", Json.obj("sockopt", Json.obj("dialerProxy", "proxy")));
+        return ob;
+    }
+
+    /** QR-код для другого устройства: конфиг с обманками, которые работают в этой сети. */
+    public String warpShareText() {
+        Server own = ownWarp();
+        if (own == null) {
+            throw new UserError(Text.t("Бесплатного WARP ещё нет — создай его кнопкой «Создать бесплатный WARP».",
+                    "There is no free WARP yet — create it with “Create a free WARP”."));
+        }
+        Map<String, Object> saved = warpSaved();
+        return Warp.shareConf(saved != null ? Warp.variant(own.awgConf, saved) : own.awgConf);
+    }
+
+    /** «Через VPN и WARP» для сервиса или сайта: своего WARP нет — сначала создать (через VPN, если он включён). */
+    public boolean warpRouteTask(final String kind, final String value) {
+        return runTask(Text.t("Включаю WARP после VPN", "Turning on WARP after VPN"), "update", new Runnable() {
+            @Override
+            public void run() {
+                if (ownWarp() == null) {
+                    createWarp();
+                }
+                if ("svc".equals(kind)) {
+                    setServiceRoute(value, "warp");
+                } else {
+                    routeSite(value, "warp", false);
+                }
+            }
+        });
+    }
+
+    public Map<String, Object> warpState() {
+        long left = warpSince > 0 ? Math.max(0, (warpReviveAt - System.currentTimeMillis()) / 1000) : 0;
+        return Json.obj("own", ownWarp() != null, "fallback", isWarpFallback(), "next_check", left,
+                "enabled", Json.bool(settings, "warp_fallback", true));
     }
 
     /** Кнопка «Создать бесплатный WARP»: регистрация (через VPN, если он включён, иначе напрямую) — в фоне. */
@@ -4769,6 +5070,7 @@ public final class Engine {
         long now = System.currentTimeMillis();
         guardTick();
         collectTick();
+        warpReviveTick();
         if (tick == SAFE_OK_MS / TICK_MS) {
             safeStartOk();
         }
@@ -5079,7 +5381,7 @@ public final class Engine {
 
     static final String[] BOOL_KEYS = {"ru_direct", "autopilot", "dns_encrypted", "block_ads", "mask_auto",
             "whitelist_auto", "ads_ask_sites", "sub_alerts", "encrypt_data", "app_lock", "net_profiles", "app_update", "block_quic", "cert_watch", "fp_auto",
-            "data_watch", "net_memory", "fuses_enabled", "guard_rollback", "safe_start", "stall_check"};
+            "data_watch", "net_memory", "fuses_enabled", "guard_rollback", "safe_start", "stall_check", "warp_fallback"};
     static final String[] RESTART_KEYS = {"mode", "ru_direct", "block_quic", "dns_encrypted", "block_ads", "proxy_list",
             "direct_list", "block_list", "excluded_apps"};
 
@@ -5902,6 +6204,7 @@ public final class Engine {
             st.put("family", familyState());
             Server ownWarp = ownWarp();
             st.put("warp", ownWarp == null ? "" : ownWarp.key());
+            st.put("warp_auto", warpState());
             st.put("app_update", Json.obj("configured", Update.configured(), "state", appUpdate,
                     "auto", Json.bool(settings, "app_update", true)));
             st.put("ads", adsState());
@@ -6632,6 +6935,12 @@ public final class Engine {
             }
             return Json.obj("via", "custom", "proxy", target.substring(7));
         }
+        if ("warp".equals(target)) {
+            if (ownWarp() == null) {
+                throw new UserError(Text.t("Сначала создай бесплатный WARP.", "Create a free WARP first."));
+            }
+            return Json.obj("via", "warp");
+        }
         throw new UserError(Text.t("Неизвестное действие.", "Unknown action."));
     }
 
@@ -6657,6 +6966,9 @@ public final class Engine {
         }
         if ("proxy".equals(target)) {
             return Text.t("всегда через VPN", "always via VPN");
+        }
+        if ("warp".equals(target)) {
+            return Text.t("через VPN и WARP", "via VPN and WARP");
         }
         if ("direct".equals(target)) {
             return Text.t("всегда напрямую", "always direct");
@@ -6830,6 +7142,15 @@ public final class Engine {
             return proxyById(Json.str(spec, "proxy")) != null ? new String[]{"custom", ""}
                     : new String[]{"proxy", Text.t("Прокси удалён — пока через основной VPN.", "The proxy was removed — using the main VPN for now.")};
         }
+        if ("warp".equals(via)) {
+            if (ownWarp() == null) {
+                return new String[]{"proxy", Text.t("WARP удалён — пока через основной VPN.", "WARP was removed — using the main VPN for now.")};
+            }
+            if (main != null && WARP_KEY.equals(main.key())) {
+                return new String[]{"proxy", Text.t("Сейчас и так всё идёт через WARP.", "Everything goes through WARP right now anyway.")};
+            }
+            return new String[]{"warp", ""};
+        }
         return new String[]{"", ""};
     }
 
@@ -6858,6 +7179,7 @@ public final class Engine {
         List<Map<String, Object>> plan = new ArrayList<Map<String, Object>>();
         Map<String, String> pins = new LinkedHashMap<String, String>();
         Map<String, String> customs = new LinkedHashMap<String, String>();
+        Map<String, Object> warpOb = null;
         for (String key : keys) {
             Map<String, Object> spec = Json.map(routes().get(key));
             if (spec == null) {
@@ -6888,6 +7210,16 @@ public final class Engine {
                 entry.put("tag", customs.get(id));
                 entry.put("proxy", px);
                 entry.put("block_udp", "http".equals(Json.str(px, "type")) ? "" : "443"); // HTTP-прокси UDP не умеет
+            } else if ("warp".equals(kind)) {
+                if (warpOb == null) {
+                    warpOb = warpRouteOutbound();
+                }
+                if (warpOb == null) {
+                    continue;
+                }
+                entry.put("tag", "warp");
+                entry.put("warp", warpOb);
+                entry.put("block_udp", "443"); // QUIC поверх WARP поверх VPN — медленно, пусть TCP
             } else if ("dpi".equals(kind)) {
                 entry.put("tag", Dpi.OUTBOUND);
             } else if (!kind.isEmpty()) {

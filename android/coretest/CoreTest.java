@@ -234,6 +234,10 @@ public class CoreTest {
                 Map<String, Object> ob = Json.map(o);
                 if ("proxy".equals(Json.str(ob, "tag"))) {
                     Map<String, Object> st = Json.map(ob, "settings");
+                    if ("wireguard".equals(Json.str(ob, "protocol"))) { // WARP: адрес Cloudflare — в peers
+                        String ep = Json.str(Json.map(Json.list(st, "peers").get(0)), "endpoint");
+                        return ep.substring(0, Math.max(0, ep.lastIndexOf(':')));
+                    }
                     List<Object> v = Json.list(st, "vnext");
                     if (v == null) v = Json.list(st, "servers");
                     if (v == null) return Json.str(st, "address"); // Hysteria2: адрес прямо в settings
@@ -338,8 +342,13 @@ public class CoreTest {
                 what = "dpi:" + id;
             } else {
                 Map<String, Object> st = Json.map(out, "settings");
-                List<Object> list = st.containsKey("servers") ? Json.list(st, "servers") : Json.list(st, "vnext");
+                List<Object> list = st.containsKey("servers") ? Json.list(st, "servers")
+                        : st.containsKey("peers") ? Json.list(st, "peers") : Json.list(st, "vnext");
                 String host = Json.str(Json.map(list.get(0)), "address");
+                if (st.containsKey("peers")) {
+                    String ep = Json.str(Json.map(list.get(0)), "endpoint");
+                    host = ep.substring(0, Math.max(0, ep.lastIndexOf(':')));
+                }
                 String proto = Json.str(out, "protocol");
                 // свои прокси — по списку «мёртвых»; серверы VPN — как при проверке, а «пустые» не пропускают данные
                 works = "socks".equals(proto) || "http".equals(proto) ? !deadProxies.contains(host)
@@ -467,6 +476,7 @@ public class CoreTest {
         Engine e = new Engine(f);
         e.settings.put("geo_updated", System.currentTimeMillis());
         e.settings.put("stall_check", false); // «16 КБ» — только в своём тесте
+        e.settings.put("warp_fallback", false); // запасной WARP (регистрация у Cloudflare) — только в своём тесте
         return e;
     }
 
@@ -2560,6 +2570,104 @@ public class CoreTest {
                 ew.shutdown();
             } finally {
                 Engine.WARP_BASES = null;
+            }
+        });
+
+        test("WARP во встроенном ядре: шум вместо обманок, запасной путь «Авто», WARP после VPN, QR-код", () -> {
+            final int[] cnt = {0};
+            Warp.Rnd rnd = n -> cnt[0]++ % n;
+            byte[] cb = Warp.cpsBytes("<b 0x0102ff><r 2><rc 3><rd 2><t><c><n>", rnd, 0x01020304L);
+            check(Warp.toHex(cb, 0, cb.length).equals("0102ff" + "0001" + "636465" + "3536" + "01020304" + "00000001" + "0708090a0b0c0d0e"),
+                    "CPS → байты: " + Warp.toHex(cb, 0, cb.length));
+            for (String bad : new String[]{"<b 0x01> мусор", "<r 99999>", "<b 0xZZ>", "текст<b 0x01>", "<r 5-2>"}) {
+                boolean threw = false;
+                try {
+                    Warp.cpsBytes(bad, Warp.SECURE, 0);
+                } catch (IllegalArgumentException ex) {
+                    threw = true;
+                }
+                check(threw, "плохая запись CPS не принята: " + bad);
+            }
+            String priv = Warp.keypair(null)[0];
+            Map<String, Object> acct = Json.obj("private_key", priv, "peer", Warp.PEER_KEY, "v4", "172.16.0.2", "v6", "2606:4700:110:8a36::1");
+            String conf = Warp.buildConf(acct, Warp.preset(0));
+            Map<String, Object> ob = Warp.xrayOutbound(conf, "proxy", true, Warp.SECURE);
+            List<Object> noise = Json.list(Json.map(Json.map(Json.list(Json.map(Json.map(ob, "streamSettings"), "finalmask"), "udp").get(0)), "settings"), "noise");
+            check("wireguard".equals(Json.str(ob, "protocol")) && Json.str(Json.map(noise.get(0)), "packet").length() == Warp.QUIC_SIZE * 2
+                    && noise.size() >= 5 && Json.str(Json.map(noise.get(1)), "rand").matches("\\d+-\\d+"),
+                    "outbound WireGuard с шумом: пакет-обманка и мусорные пакеты");
+            check(!Warp.xrayOutbound(conf, "warp", false, Warp.SECURE).containsKey("streamSettings"), "без шума — без Finalmask");
+            String sc = Warp.shareConf(conf);
+            check(sc.length() < 1000 && sc.contains("PrivateKey = " + priv) && sc.contains(Warp.DNS_YANDEX_I1), "конфиг для QR — короткий");
+
+            Fake fw = new Fake(tmpDir());
+            Engine ew = engine(fw);
+            ew.settings.put("warp_fallback", true);
+            ew.settings.put("autopilot", true);
+            ew.addServers(link("deadone1.example.com", "Раз") + "\n" + link("deadtwo1.example.com", "Два") + "\n" + Links.awgLink(conf, Warp.NAME));
+            waitIdle(ew);
+            check(ew.ownWarp() != null && Json.bool(Json.map(ew.state(), "warp_auto"), "own", false), "свой WARP найден");
+            final List<String> probes = Collections.synchronizedList(new ArrayList<String>());
+            Engine.WARP_PROBE = s -> {
+                String ep = Json.str(Json.map(Json.list(Json.map(s.outbound, "settings"), "peers").get(0)), "endpoint");
+                probes.add(ep);
+                return ep.equals(Warp.PRESETS[2][0]);
+            };
+            try {
+                ew.connect();
+                waitIdle(ew);
+                check(ew.isOn(), "подключено");
+                fw.dead.addAll(Arrays.asList("deadone1.example.com", "deadtwo1.example.com"));
+                ew.settings.put("selected", "");
+                ew.ladderRetry();
+                waitIdle(ew);
+                check(ew.isOn() && ew.isWarpFallback() && "WARP".equals(currentName(ew)), "серверы не работают → запасной WARP: " + currentName(ew));
+                check(probes.size() >= 2 && probes.get(probes.size() - 1).equals(Warp.PRESETS[2][0]), "обманки перебирались: " + probes);
+                check(fw.lastConfig.contains("\"wireguard\"") && fw.lastConfig.contains("\"noise\""), "ядро: WireGuard с шумом");
+                check(Json.write(ew.state().get("problems")).contains("пока через WARP"), "в окне — «пока через WARP»");
+                check(Json.bool(Json.map(ew.state(), "warp_auto"), "fallback", false), "окно видит запасной WARP");
+                // сервер ожил — программа сама уходит с WARP
+                ew.warpReviveNow();
+                waitIdle(ew);
+                check(ew.isWarpFallback(), "серверы всё ещё мёртвые — остаёмся на WARP");
+                fw.dead.remove("deadtwo1.example.com");
+                ew.warpReviveNow();
+                waitIdle(ew);
+                check(ew.isOn() && "Два".equals(currentName(ew)) && !ew.isWarpFallback()
+                        && !Json.write(ew.state().get("problems")).contains("пока через WARP"), "сервер ожил — вернулись: " + currentName(ew));
+                // «WARP после VPN»
+                ew.setServiceRoute("ChatGPT", "warp");
+                ew.routeSite("chatgpt-test.example", "warp", false);
+                waitIdle(ew);
+                Map<String, Object> cfg = Json.parseObject(fw.lastConfig);
+                Map<String, Object> wob = null;
+                for (Object o : Json.list(cfg, "outbounds")) if ("warp".equals(Json.str(Json.map(o), "tag"))) wob = Json.map(o);
+                check(wob != null && "wireguard".equals(Json.str(wob, "protocol"))
+                        && "proxy".equals(Json.str(Json.map(Json.map(wob, "streamSettings"), "sockopt"), "dialerProxy")), "WARP идёт через VPN");
+                check(Json.write(Json.map(cfg, "routing")).contains("\"outboundTag\":\"warp\""), "правило: сайт → WARP");
+                // QR-код для другого устройства
+                String text = (String) Api.call(ew, "warp_share", Json.obj());
+                check(text.contains("PrivateKey = " + priv) && Json.str(Warp.currentParams(text), "endpoint").equals(Warp.PRESETS[2][0])
+                        && text.length() < 1800, "QR: с обманками, которые работают в этой сети");
+                // своего WARP нет — маршрут не ставится; запасной выключен — честное «ничего не работает»
+                ew.removeServer(ew.ownWarp().key());
+                boolean threw = false;
+                try {
+                    ew.setServiceRoute("ChatGPT", "warp");
+                } catch (Engine.UserError ex) {
+                    threw = true;
+                }
+                check(threw, "без своего WARP маршрут не ставится");
+                ew.settings.put("warp_fallback", false);
+                fw.dead.add("deadtwo1.example.com");
+                ew.ladderRetry();
+                waitIdle(ew);
+                check(!ew.isWarpFallback(), "запасной WARP выключен — без него");
+                String logs = String.join("\n", ew.logLines());
+                check(!logs.contains(priv) && !logs.contains("PrivateKey"), "ключ WARP не попадает в журнал");
+                ew.shutdown();
+            } finally {
+                Engine.WARP_PROBE = null;
             }
         });
 

@@ -137,6 +137,23 @@ public class Dump {
             Map<String, Object> cp = Warp.currentParams(v);
             out.println(cp.get("endpoint") + "|" + cp.get("jc") + "|" + cp.get("jmin") + "|" + cp.get("jmax") + "|" + cp.get("i1"));
             out.println(Json.canonical(Json.arr(Warp.isWarp(conf), Warp.isWarp(conf.replace(Warp.PEER_KEY, "x")))));
+            // WARP во встроенном ядре: запись CPS → байты, outbound WireGuard с шумом, конфиг для QR
+            final int[] c = {0};
+            Warp.Rnd rnd = new Warp.Rnd() {
+                @Override
+                public int next(int n) {
+                    return c[0]++ % n;
+                }
+            };
+            byte[] cb = Warp.cpsBytes("<b 0x0102ff><r 2><rc 3><rd 2><r 4-9><t><c><n>", rnd, 0x01020304L);
+            out.println(Warp.toHex(cb, 0, cb.length));
+            out.println(Json.canonical(Warp.xrayOutbound(v, "proxy", true, rnd)));
+            out.println(Json.canonical(Warp.xrayOutbound(conf, "warp", false, rnd)));
+            Map<String, Object> p3 = Json.obj("endpoint", "162.159.195.5:4500", "jc", 4, "jmin", 30, "jmax", 30, "i1", Warp.quicI1("vk.com", d1, k1));
+            String big = Warp.buildConf(acct, p3);
+            out.print(Warp.shareConf(big));
+            out.print(Warp.shareConf("# комментарий\n" + conf));
+            out.println(Json.canonical(Warp.xrayOutbound(big, "proxy", true, rnd)));
         }
         if (mode.equals("familyseal")) {
             byte[] sec = new byte[32], iv = new byte[16];

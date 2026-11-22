@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, adscheck, amneziawg, dnsmode, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, notworking, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, adscheck, amneziawg, dnsmode, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, notworking, warpauto, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -32,7 +32,7 @@ class Cancelled(RuntimeError):
 
 class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin, family.FamilyMixin,
              protect.ProtectMixin, collect.CollectMixin, notworking.NotWorkingMixin, adscheck.AdsCheckMixin,
-             dnsmode.DnsModeMixin):
+             dnsmode.DnsModeMixin, warpauto.WarpAutoMixin):
     """События для интерфейса (notify(event, **data)) приходят из рабочих потоков:
     log, busy, servers, server, status, live, connections, services, service, summary, error, settings."""
 
@@ -123,6 +123,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._collect_init()        # «Сбор ошибок» (collect.py)
         self._nw_init()             # «Не работает» (notworking.py)
         self._dns_init()            # реклама «через DNS» во всех программах и для всего дома (dnsmode.py)
+        self._warpauto_init()       # WARP во встроенном ядре: запасной путь и «WARP после VPN» (warpauto.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
         # обход замедлений: zapret и ByeDPI
@@ -1174,7 +1175,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             self._health_at = self._mono()  # только что подключились и проверили — следующая проверка через 20 с
             self._silent_since = 0.0
             self._way_saved = ""
-            s["last_server_key"] = server.key
+            if server.key != warpauto.WARP_KEY:
+                s["last_server_key"] = server.key
             self.save()
         mode = routing.MODES.get(s.get("mode"), "")
         geo_note = "" if self.geo_in_use else " (без списков runetfreedom — работает встроенный список)"
@@ -2445,6 +2447,10 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             if not self._proxy_by_id(target[7:]):
                 raise RuntimeError("Прокси не найден.")
             return {"via": "custom", "proxy": target[7:]}
+        if target == "warp":
+            if not self.own_warp():
+                raise RuntimeError("Сначала создай бесплатный WARP.")
+            return {"via": "warp"}
         raise RuntimeError("Неизвестное действие.")
 
     @staticmethod
@@ -2461,7 +2467,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             p = self._proxy_by_id(target[7:])
             return f"через прокси «{self._proxy_title(p) if p else '?'}»"
         return {"proxy": "всегда через VPN", "direct": "всегда напрямую", "block": "блокируется",
-                "dpi": "напрямую с обходом замедления", "auto": "как по умолчанию"}.get(target, target)
+                "dpi": "напрямую с обходом замедления", "auto": "как по умолчанию",
+                "warp": "через VPN и WARP"}.get(target, target)
 
     def _drop_route(self, key: str) -> bool:
         routes = self.settings.setdefault("routes", {})
@@ -2590,6 +2597,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         if via == "custom":
             return ("custom", "") if self._proxy_by_id(spec.get("proxy", "")) else \
                 ("proxy", "Прокси удалён — пока через основной VPN.")
+        if via == "warp":
+            if not self.own_warp():
+                return "proxy", "WARP удалён — пока через основной VPN."
+            if main is not None and main.key == warpauto.WARP_KEY:
+                return "proxy", "Сейчас и так всё идёт через WARP."
+            return "warp", ""
         return "", ""
 
     def _route_plan(self, main: Server, exe: str) -> list[dict]:
@@ -2599,6 +2612,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         routes = self.settings.get("routes") or {}
         dpi_route = self._dpi_route()
         plan, pins, customs = [], {}, {}
+        warp_ob = None
 
         def order(k: str):
             if not k.startswith("site:"):
@@ -2629,6 +2643,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             if kind == "server":
                 srv = self.find(spec["server"])
                 entry.update(tag=pins.setdefault(srv.key, f"pin{len(pins)}"), server=srv, mask=self._use_mask(srv))
+            elif kind == "warp":
+                ob = warp_ob if warp_ob is not None else self.warp_route_outbound()
+                warp_ob = ob
+                if not ob:
+                    continue
+                entry.update(tag="warp", warp=ob, block_udp="443")  # QUIC поверх WARP поверх VPN — медленно, пусть TCP
             elif kind == "custom":
                 p = self._proxy_by_id(spec["proxy"])
                 entry.update(tag=customs.setdefault(p["id"], f"custom{len(customs)}"), proxy=p,
@@ -4265,6 +4285,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             for f in h.get("friends") or []:
                 items.append({"id": "friend:" + f["id"], "kind": "friend", "name": f.get("name", ""),
                               "server": h.get("name", "")})
+        if self.own_warp():
+            items.append({"id": "warp", "kind": "warp", "name": "WARP"})
         lan = netutil.lan_ip() if self.settings.get("allow_lan") else ""
         items.append({"id": "tg_lan", "kind": "telegram", "name": "Telegram", "ready": bool(lan)})
         return items
@@ -4283,6 +4305,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             friend = self._vps_friend(item_id[7:])
             if friend and friend.get("links"):
                 return friend["links"][0]
+        elif item_id == "warp":
+            return self.warp_share_text()
         elif item_id == "wifi":
             ssid, password = self._hotspot_credentials()
             return hotspot.wifi_qr_text(ssid, password)
@@ -4433,6 +4457,10 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
                     self.log(f"Автопилот: переключился на {best.name}.")
                     self._ladder_success(best, "другой сервер")
                     return
+        # последний шаг: свой бесплатный WARP во встроенном ядре (warpauto.py), пока серверы не оживут
+        self.check_stop()
+        if self._warp_fallback(reason):
+            return
         self._nothing_works(reason)
 
     def _switch_to(self, srv: Server) -> bool:
@@ -4464,8 +4492,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     def _hot_swap(self, srv: Server) -> bool:
         """Замена сервера на лету через API ядра — без перезапуска, соединения напрямую не рвутся.
         Если не получилось, вызывающий просто переподключится обычным способом."""
-        if not self._hotswap_ok or not self.current or not srv.supported:
-            return False
+        if not self._hotswap_ok or not self.current or not srv.supported \
+                or "wireguard" in (srv.protocol, self.current.protocol):
+            return False  # WARP: нужен встроенный DNS ядра — только полный перезапуск с новыми настройками
         if self.paths.exe_for(srv) != self.proc.exe or not self.proc.alive():
             return False  # нужно другое ядро — только перезапуск
         if "singbox" in (srv.engine, self.current.engine) or srv.engine == "awg":
@@ -4594,6 +4623,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         if tick == protect.SAFE_OK_AFTER:
             self.safe_start_ok()
         self._ads_watch()
+        self._warp_revive_tick()
         self._vpn_timer()
         if self._net_due(tick):
             self._net_watch()
@@ -5339,7 +5369,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
 
     PROTO_LABELS = {"shadowsocks": "SS", "socks": "SOCKS5", "vless": "VLESS", "vmess": "VMess", "trojan": "Trojan",
                     "hy2": "Hysteria2", "hysteria2": "Hysteria2", "mtproto": "MTProto", "happ": "Happ",
-                    "tuic": "TUIC", "anytls": "AnyTLS", "amneziawg": "AmneziaWG"}
+                    "tuic": "TUIC", "anytls": "AnyTLS", "amneziawg": "AmneziaWG", "wireguard": "WARP"}
 
     def _busy_kind(self) -> str:
         """Что именно сейчас выполняется — чтобы интерфейс показал «Остановить» на нужной кнопке."""
@@ -5506,6 +5536,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             "whitelist_mode": self.whitelist_mode,
             "wl": self.wl_state(),
             "nw": self.nw_state(),
+            "warp": self.warp_state(),
             "hotspot": self.hotspot_state(),
             "awg": self.awg_state(),
             "engine": self.engine_state(),

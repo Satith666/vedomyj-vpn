@@ -596,4 +596,206 @@ public final class Warp {
         Map<String, Object> m = (Map<String, Object>) o;
         return m;
     }
+
+    // ---------- WARP во встроенном ядре Xray (как warp.xray_outbound в pult/warp.py) ----------
+
+    /** Случайное 0…n-1 (самопроверка подставляет предсказуемое). */
+    public interface Rnd {
+        int next(int n);
+    }
+
+    public static final Rnd SECURE = new Rnd() {
+        @Override
+        public int next(int n) {
+            return RND.nextInt(n);
+        }
+    };
+
+    private static final Pattern CPS_TAG = Pattern.compile("<(b|r|rc|rd|t|c|n)(?:\\s+([^>]*))?>");
+    private static final String LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    public static final int CPS_MAX = 4096;
+
+    private static int cpsCount(String arg, Rnd rnd) {
+        String a = arg == null ? "" : arg.trim();
+        int dash = a.indexOf('-');
+        int lo, hi;
+        try {
+            lo = Integer.parseInt(dash < 0 ? a : a.substring(0, dash).trim());
+            hi = dash < 0 ? lo : Integer.parseInt(a.substring(dash + 1).trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("CPS: неверная длина");
+        }
+        if (lo < 0 || hi < lo || hi > CPS_MAX) {
+            throw new IllegalArgumentException("CPS: неверная длина");
+        }
+        return hi > lo ? lo + rnd.next(hi - lo + 1) : lo;
+    }
+
+    /** Запись CPS AmneziaWG (<b 0x…>, <r N>, <rc N>, <rd N>, <t>, <c>, <n>) → байты одного пакета. */
+    public static byte[] cpsBytes(String expr, Rnd rnd, long now) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        String text = expr == null ? "" : expr.trim();
+        Matcher m = CPS_TAG.matcher(text);
+        int pos = 0;
+        while (m.find()) {
+            if (!text.substring(pos, m.start()).trim().isEmpty()) {
+                throw new IllegalArgumentException("CPS: лишний текст между тегами");
+            }
+            pos = m.end();
+            String kind = m.group(1), arg = m.group(2) == null ? "" : m.group(2).trim();
+            if ("b".equals(kind)) {
+                String h = arg.toLowerCase(Locale.ROOT).startsWith("0x") ? arg.substring(2) : arg;
+                if (h.length() % 2 != 0 || !h.matches("[0-9a-fA-F]*")) {
+                    throw new IllegalArgumentException("CPS: неверные байты");
+                }
+                byte[] b = hex(h);
+                out.write(b, 0, b.length);
+            } else if ("r".equals(kind)) {
+                int n = cpsCount(arg, rnd);
+                for (int i = 0; i < n; i++) {
+                    out.write(rnd.next(256));
+                }
+            } else if ("rc".equals(kind)) {
+                int n = cpsCount(arg, rnd);
+                for (int i = 0; i < n; i++) {
+                    out.write(LETTERS.charAt(rnd.next(LETTERS.length())));
+                }
+            } else if ("rd".equals(kind)) {
+                int n = cpsCount(arg, rnd);
+                for (int i = 0; i < n; i++) {
+                    out.write('0' + rnd.next(10));
+                }
+            } else if ("t".equals(kind)) {
+                long t = now & 0xFFFFFFFFL;
+                out.write((int) (t >> 24) & 0xFF);
+                out.write((int) (t >> 16) & 0xFF);
+                out.write((int) (t >> 8) & 0xFF);
+                out.write((int) t & 0xFF);
+            } else if ("c".equals(kind)) {
+                out.write(0);
+                out.write(0);
+                out.write(0);
+                out.write(1);
+            } else {
+                for (int i = 0; i < 8; i++) {
+                    out.write(rnd.next(256));
+                }
+            }
+            if (out.size() > CPS_MAX) {
+                throw new IllegalArgumentException("CPS: слишком длинный пакет");
+            }
+        }
+        if (!text.substring(pos).trim().isEmpty()) {
+            throw new IllegalArgumentException("CPS: лишний текст после тегов");
+        }
+        return out.toByteArray();
+    }
+
+    /** Нужное ядру Xray из конфига WARP: ключи, адреса, сервер и обманки. */
+    public static Map<String, Object> parseConf(String conf) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        List<Object> addr = new ArrayList<Object>();
+        out.put("address", addr);
+        out.put("mtu", 1280L);
+        String sect = "";
+        for (String raw : (conf == null ? "" : conf).split("\r?\n")) {
+            String line = raw.trim();
+            if (line.startsWith("#") || line.startsWith(";")) {
+                continue;
+            }
+            Matcher sm = SECTION.matcher(line);
+            if (sm.matches()) {
+                sect = sm.group(1).toLowerCase(Locale.ROOT);
+                continue;
+            }
+            int eq = line.indexOf('=');
+            if (eq < 0) {
+                continue;
+            }
+            String k = line.substring(0, eq).trim().toLowerCase(Locale.ROOT), v = line.substring(eq + 1).trim();
+            if ("interface".equals(sect)) {
+                if ("privatekey".equals(k)) {
+                    out.put("private_key", v);
+                } else if ("address".equals(k)) {
+                    addr.clear();
+                    for (String a : v.split(",")) {
+                        if (!a.trim().isEmpty()) {
+                            addr.add(a.trim());
+                        }
+                    }
+                } else if ("mtu".equals(k) && v.matches("\\d{1,5}")) {
+                    out.put("mtu", (long) Math.max(1200, Math.min(1420, Integer.parseInt(v))));
+                } else if (("jc".equals(k) || "jmin".equals(k) || "jmax".equals(k)) && v.matches("\\d{1,5}")) {
+                    out.put(k, (long) Integer.parseInt(v));
+                } else if ("i1".equals(k)) {
+                    out.put("i1", v);
+                }
+            } else if ("peer".equals(sect)) {
+                if ("publickey".equals(k)) {
+                    out.put("peer", v);
+                } else if ("endpoint".equals(k)) {
+                    out.put("endpoint", v);
+                }
+            }
+        }
+        if (Json.str(out, "private_key").isEmpty() || Json.str(out, "peer").isEmpty() || Json.str(out, "endpoint").isEmpty()
+                || addr.isEmpty()) {
+            throw new IllegalArgumentException(Text.t("в конфиге WARP нет ключей или адреса сервера",
+                    "the WARP config has no keys or server address"));
+        }
+        return out;
+    }
+
+    static final String NOISE_DELAY = "1-3";
+
+    /** Шум перед подключением, как у AmneziaWG: сначала пакет-обманка I1, затем Jc мусорных пакетов. */
+    public static List<Object> noiseItems(Map<String, Object> p, Rnd rnd) {
+        List<Object> items = new ArrayList<Object>();
+        String i1 = Json.str(p, "i1");
+        if (!i1.isEmpty()) {
+            try {
+                byte[] b = cpsBytes(i1, rnd, System.currentTimeMillis() / 1000);
+                items.add(Json.obj("type", "hex", "packet", toHex(b, 0, b.length), "delay", NOISE_DELAY));
+            } catch (IllegalArgumentException ignored) {
+                // неверная запись — без пакета-обманки, только мусорные пакеты
+            }
+        }
+        long jc = Json.num(p, "jc", 0), lo = Json.num(p, "jmin", 0), hi = Json.num(p, "jmax", 0);
+        if (jc > 0 && lo > 0 && lo <= hi && hi <= 1280) {
+            for (int i = 0; i < Math.min(jc, 10); i++) {
+                items.add(Json.obj("rand", hi > lo ? lo + "-" + hi : String.valueOf(lo), "delay", NOISE_DELAY));
+            }
+        }
+        return items;
+    }
+
+    /** Outbound WireGuard для ядра Xray (WARP) с шумом Finalmask вместо обманок AmneziaWG. */
+    public static Map<String, Object> xrayOutbound(String conf, String tag, boolean noise, Rnd rnd) {
+        Map<String, Object> p = parseConf(conf);
+        Map<String, Object> peer = Json.obj("publicKey", Json.str(p, "peer"), "endpoint", Json.str(p, "endpoint"), "keepAlive", 25L);
+        Map<String, Object> ob = Json.obj("tag", tag, "protocol", "wireguard", "settings", Json.obj(
+                "secretKey", Json.str(p, "private_key"), "address", p.get("address"), "peers", Json.arr(peer),
+                "mtu", Json.num(p, "mtu", 1280), "noKernelTun", true));
+        List<Object> items = noise ? noiseItems(p, rnd) : new ArrayList<Object>();
+        if (!items.isEmpty()) {
+            ob.put("streamSettings", Json.obj("finalmask", Json.obj("udp", Json.arr(
+                    Json.obj("type", "noise", "settings", Json.obj("noise", items))))));
+        }
+        return ob;
+    }
+
+    /** Конфиг для другого устройства (QR-код): длинный пакет-обманка заменяется коротким из инструкции Amnezia. */
+    public static String shareConf(String conf) {
+        StringBuilder sb = new StringBuilder();
+        for (String line : (conf == null ? "" : conf.trim()).split("\r?\n", -1)) {
+            if (!line.trim().startsWith("#")) {
+                sb.append(line).append('\n');
+            }
+        }
+        String text = sb.toString();
+        if (text.getBytes(StandardCharsets.UTF_8).length > 1800) {
+            text = Pattern.compile("(?im)^\\s*I1\\s*=.*$").matcher(text).replaceAll(Matcher.quoteReplacement("I1 = " + DNS_YANDEX_I1));
+        }
+        return text;
+    }
 }

@@ -99,6 +99,19 @@ elif mode == "warp":
     cp = warp.current_params(v)
     print("|".join(str(cp[k]) for k in ("endpoint", "jc", "jmin", "jmax", "i1")))
     print(canon([warp.is_warp(conf), warp.is_warp(conf.replace(warp.PEER_KEY, "x"))]))
+    cnt = [0]
+
+    def rnd(n):
+        cnt[0] += 1
+        return (cnt[0] - 1) % n
+    print(warp.cps_bytes("<b 0x0102ff><r 2><rc 3><rd 2><r 4-9><t><c><n>", rnd, now=0x01020304).hex())
+    print(canon(warp.xray_outbound(v, "proxy", True, rnd)))
+    print(canon(warp.xray_outbound(conf, "warp", False, rnd)))
+    p3 = {"endpoint": "162.159.195.5:4500", "jc": 4, "jmin": 30, "jmax": 30, "i1": warp.quic_i1("vk.com", bytes(range(8)), bytes(range(100, 132)))}
+    big = warp.build_conf(acct, p3)
+    sys.stdout.write(warp.share_conf(big))
+    sys.stdout.write(warp.share_conf("# комментарий\n" + conf))
+    print(canon(warp.xray_outbound(big, "proxy", True, rnd)))
 elif mode == "familyseal":
     from pult import family
     sec = bytes(range(32))

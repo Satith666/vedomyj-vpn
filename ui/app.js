@@ -1225,10 +1225,16 @@ const PRO_GROUPS = [
   { title: "pg_auto", items: [
     { id: "autopilot", key: "autopilot" }, { id: "fp_auto", key: "fp_auto" }, { id: "mask", key: "mask_auto" },
     { id: "failover", key: "failover" }, { id: "data_watch", key: "data_watch" }, { id: "stall16", key: "stall_check" },
-    { id: "whitelist", key: "whitelist_auto" },
+    { id: "warp_fb", key: "warp_fallback", extra: () => warpFbExtra() }, { id: "whitelist", key: "whitelist_auto" },
     { id: "auto_routes", key: "auto_routes" }, { id: "auto_stall", key: "auto_stall" }, { id: "multi", key: "multi_enabled" },
   ] },
 ];
+
+function warpFbExtra() {
+  const w = S.warp || {};
+  if (w.fallback) return `<div class="net-now"><span class="hint">${esc(t("warp_fb_now", { m: Math.max(1, Math.ceil((w.next_check || 0) / 60)) }))}</span></div>`;
+  return w.core_ok === false ? `<div class="net-now"><span class="hint">${esc(t("warp_fb_old_core"))}</span></div>` : "";
+}
 
 function fusesExtra() {
   const f = (S.pro && S.pro.fuses) || [];
@@ -1645,7 +1651,7 @@ let shareQr = null;
 
 const shareLabel = it => it.kind === "sub" ? t("qr_sub", { name: it.name })
   : it.kind === "server" ? t("qr_server", { name: it.name })
-  : it.kind === "friend" ? t("qr_friend", { name: it.name }) : t("qr_tg");
+  : it.kind === "friend" ? t("qr_friend", { name: it.name }) : it.kind === "warp" ? t("qr_warp") : t("qr_tg");
 const shareHint = kind => t(`qr_${kind}_hint`);
 const shareWarn = kind => kind === "telegram" ? "" : t(`qr_${kind}_warn`);
 
@@ -1798,7 +1804,7 @@ async function loadQr(id) {
 function renderQrBox() {
   const box = $("#qrBox");
   if (!box || !shareItems) return;
-  const kindIcon = { sub: "vpn", server: "globe", telegram: "monitor", friend: "key" };
+  const kindIcon = { sub: "vpn", server: "globe", telegram: "monitor", friend: "key", warp: "shield" };
   const cur = shareItems.find(i => i.id === shareSel);
   const list = shareItems.map(it => {
     const off = it.kind === "telegram" && !it.ready;
@@ -1869,7 +1875,7 @@ async function importFile(file) {
 
 /* ---------- сервисы ---------- */
 
-const ROUTE_KEYS = { proxy: "r_proxy", byedpi: "r_byedpi", direct: "r_direct", block: "r_block", lists: "r_lists" };
+const ROUTE_KEYS = { proxy: "r_proxy", byedpi: "r_byedpi", direct: "r_direct", block: "r_block", lists: "r_lists", warp: "r_warp" };
 function multiFor(name) {
   const m = S.multi && S.multi.enabled && S.multi.map.find(x => x.service === name);
   return m ? ` <i class="tag" title="${esc(t("multi_via_tip"))}">${esc(t("multi_via", { name: m.server }))}</i>` : "";
@@ -1902,7 +1908,7 @@ function routeOptions(value, autoText) {
   let px = proxies.map(p => opt(`custom:${p.id}`, t("route_px_item", { name: p.name || p.label }))).join("");
   if (value.startsWith("custom:") && !proxies.some(p => `custom:${p.id}` === value)) px = opt(value, t("route_gone_proxy")) + px;
   px += `<option value="custom:new">${esc(t("route_add_proxy"))}</option>`;
-  return `${autoText != null ? opt("auto", autoText) : ""}${opt("proxy", t("route_vpn"))}
+  return `${autoText != null ? opt("auto", autoText) : ""}${opt("proxy", t("route_vpn"))}${opt("warp", t("route_warp"))}
     ${opt("direct", t("route_direct"))}${opt("dpi", t("route_dpi"))}${opt("block", t("route_block"))}
     ${srv ? `<optgroup label="${esc(t("route_group_server"))}">${srv}</optgroup>` : ""}
     <optgroup label="${esc(t("route_group_proxy"))}">${px}</optgroup>`;
@@ -2223,6 +2229,11 @@ function renderRoutes(full) {
     const target = $("#siteRouteVia").value;
     if (!host) return toast(t("site_need"), "error", 3000);
     if (target === "custom:new") return focusProxyForm();
+    if (target === "warp" && !(S.warp && S.warp.own)) {  // своего WARP ещё нет: программа создаст его и поставит маршрут
+      const w = await act("warp_route", { hosts: [host], exact: true });
+      if (w.ok) { $("#siteRouteHost").value = ""; toast(t("warp_route_making"), "ok", 4000); }
+      return;
+    }
     const r = await act("route_site", { host, target, exact: true });
     if (r.ok) { $("#siteRouteHost").value = ""; toast(t("site_added", { host: r.result.join(", ") }), "ok", 3000); scheduleRefresh(50); }
   });
@@ -3885,6 +3896,11 @@ document.addEventListener("change", e => {
     if (target === "custom:new") { sel.value = sel.dataset.cur || "auto"; return focusProxyForm(); }
     sel.dataset.cur = target;
     if (sel.dataset.site && siteResult && siteResult.site === sel.dataset.site) siteResult.route = target;
+    if (target === "warp" && !(S.warp && S.warp.own) && !sel.dataset.app) {
+      toast(t("warp_route_making"), "ok", 4000);
+      return (sel.dataset.svc ? act("warp_route", { name: sel.dataset.svc })
+        : act("warp_route", { hosts: [sel.dataset.site], exact: true })).then(() => scheduleRefresh(50));
+    }
     const req = sel.dataset.svc ? act("service_route", { name: sel.dataset.svc, target })
       : sel.dataset.app ? act("app_route", { name: sel.dataset.app, target })
       : act("route_site", { host: sel.dataset.site, target, exact: true });
