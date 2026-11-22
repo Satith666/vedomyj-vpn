@@ -69,6 +69,44 @@ const out = process.argv[3];
   await page.evaluate(() => window.pultBack());
   await page.waitForTimeout(300);
   if ((await page.getAttribute('[data-act="method"][data-v="auto"]', "aria-checked")) !== "true") throw new Error("awg without config changed the mode");
+  // стрелки у плиток «Способ»: движок, AmneziaWG и ускорение, ускорение без VPN
+  await page.click('[data-act="m-dd"][data-v="server"]');
+  await page.waitForTimeout(300);
+  if (!(await page.$('#sheet [data-act="engine-set"][data-v="hy2"]'))) throw new Error("server arrow: no engine sheet");
+  await page.evaluate(() => window.pultBack());
+  await page.click('[data-act="m-dd"][data-v="awg"]');
+  await page.waitForTimeout(300);
+  const awgList = await page.$eval("#sheet", (e) => e.textContent.replace(/\s+/g, " "));
+  if (!awgList.includes("WARP") || !(await page.$('#sheet [data-nav="dpi"]'))) throw new Error("awg arrow: " + awgList);
+  await shot("05e-awg-list");
+  await page.evaluate(() => window.pultBack());
+  await page.waitForTimeout(200);
+  // «Не работает» и «Белые списки» — ряд под «Способом»
+  const cells = await page.$$eval(".nw-row .nw-cell", (els) => els.map((e) => Math.round(e.getBoundingClientRect().width)));
+  if (cells.length !== 2 || Math.abs(cells[0] - cells[1]) > 1) throw new Error("nw row: " + cells);
+  await page.click('[data-act="wl-flip"]');
+  await page.waitForTimeout(1300);
+  await waitIdle();
+  if ((await page.getAttribute('[data-act="wl-flip"]', "aria-checked")) !== "true") throw new Error("whitelists box did not turn on");
+  await page.click('[data-act="wl-flip"]');
+  await page.waitForTimeout(1300);
+  await waitIdle();
+  if ((await page.getAttribute('[data-act="wl-flip"]', "aria-checked")) !== "false") throw new Error("whitelists box did not turn off");
+  await page.click('[data-act="nw-open"]');
+  await page.waitForTimeout(300);
+  await page.click('#sheet [data-act="nw-sel"][data-v="YouTube"]');
+  await page.click('#sheet [data-act="nw-go"]');
+  for (let i = 0; i < 60 && !(await page.$("#nwRes .nw-res:not(.busy)")); i++) await page.waitForTimeout(500);
+  const nwTxt = await page.$eval("#nwRes", (e) => e.textContent.replace(/\s+/g, " "));
+  if (!nwTxt.includes("YouTube")) throw new Error("not working: " + nwTxt);
+  await shot("05f-not-working");
+  await page.click('#sheet [data-act="nw-tab"][data-v="app"]');
+  await page.waitForTimeout(500);
+  if (!(await page.$("#nwQ"))) throw new Error("not working: no app search");
+  await page.click('#sheet [data-act="nw-tab"][data-v="site"]');
+  if (!(await page.$("#nwSite"))) throw new Error("not working: no site field");
+  await page.evaluate(() => window.pultBack());
+  await page.waitForTimeout(300);
   // «Семья»: кнопка на главном → приглашение → посылка для устройства
   await page.click("#familyBtn");
   await page.waitForTimeout(400);
@@ -421,10 +459,24 @@ const out = process.argv[3];
     await page.evaluate(audit);
     for (const v of ["home", "status", "share", "transfer", "vps", "family", "settings", "apps", "rules", "routes", "ads", "dpi", "check", "errors", "log", "pro"]) {
       if (v !== "home") await page.evaluate((x) => window.pultGo(x), v);
+      await page.evaluate(() => window.scrollTo(0, 0)); // шапка закреплена: при прокрутке она «налезает» на экран
       await page.waitForTimeout(400);
       for (const [kind, d] of await page.evaluate("__audit()")) tight.push(`${w}/${v}: ${kind} ${d}`);
       if (v !== "home") { await page.evaluate(() => window.pultBack()); await page.waitForTimeout(250); }
     }
+    // листы «Не работает» (все вкладки) и «AmneziaWG ▾»
+    await page.click('[data-act="nw-open"]');
+    for (const tab of ["service", "app", "site"]) {
+      await page.click(`#sheet [data-act="nw-tab"][data-v="${tab}"]`);
+      await page.waitForTimeout(400);
+      for (const [kind, d] of await page.evaluate("__audit()")) tight.push(`${w}/nw-${tab}: ${kind} ${d}`);
+    }
+    await page.evaluate(() => window.pultBack());
+    await page.click('[data-act="m-dd"][data-v="awg"]');
+    await page.waitForTimeout(300);
+    for (const [kind, d] of await page.evaluate("__audit()")) tight.push(`${w}/awg-list: ${kind} ${d}`);
+    await page.evaluate(() => window.pultBack());
+    await page.waitForTimeout(250);
   }
   await page.setViewportSize({ width: 390, height: 844 });
   if (tight.length) throw new Error("tight layout:\n" + tight.join("\n"));

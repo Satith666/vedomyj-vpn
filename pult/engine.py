@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, notworking, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -31,7 +31,7 @@ class Cancelled(RuntimeError):
 
 
 class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin, family.FamilyMixin,
-             protect.ProtectMixin, collect.CollectMixin):
+             protect.ProtectMixin, collect.CollectMixin, notworking.NotWorkingMixin):
     """События для интерфейса (notify(event, **data)) приходят из рабочих потоков:
     log, busy, servers, server, status, live, connections, services, service, summary, error, settings."""
 
@@ -118,6 +118,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._dispatcher_init()     # диспетчер: можно ли автоматике трогать VPN (dispatcher.py)
         self._protect_init()        # предохранители, автооткат, безопасный запуск (protect.py)
         self._collect_init()        # «Сбор ошибок» (collect.py)
+        self._nw_init()             # «Не работает» (notworking.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
         # обход замедлений: zapret и ByeDPI
@@ -974,7 +975,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     def backup_server(self) -> Server | None:
         """Сервер, на который Автопереход перейдёт первым."""
         cur = self.current.key if (self.current and self.connected) else ""
-        for srv in tester.ranked(self.pool(), key=self._rank_key()):
+        for srv in self.ranked_pool():
             if srv.key != cur:
                 return srv
         return None
@@ -987,8 +988,15 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         return {"name": clean, "cc": cc, "ping": (srv.result or {}).get("ping_ms")}
 
     def best(self, for_games: bool = False) -> Server | None:
-        lst = tester.ranked(self.pool(), key=tester.game_score if for_games else self._rank_key())
+        lst = tester.ranked(self.pool(), key=tester.game_score) if for_games else self.ranked_pool()
         return lst[0] if lst else None
+
+    def ranked_pool(self, pool: list[Server] | None = None) -> list[Server]:
+        """Рабочие серверы выбранного движка по оценке; при «Белых списках» — сначала серверы для них."""
+        lst = tester.ranked(self.pool() if pool is None else pool, key=self._rank_key())
+        if self.wl_first():
+            lst.sort(key=lambda x: not self.is_wl_server(x))  # сортировка устойчивая: внутри групп — по оценке
+        return lst
 
     ENGINE_PICKS = ("auto", "xray", "hy2", "singbox", "awg")
 
@@ -4268,6 +4276,43 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         """Сервер для белых списков: так назван в подписке или уже работал, когда они были включены."""
         return bool(self.WL_NAME.search(srv.name or "") or (srv.result or {}).get("whitelist"))
 
+    def _wl_net(self) -> str:
+        return self._net_id(cached_only=True) or "any"
+
+    def wl_first(self) -> bool:
+        """Отдавать приоритет серверам для белых списков: галочка «Белые списки» или списки замечены сами
+        (если человек не снял галочку в этой сети)."""
+        if self.settings.get("wl_priority"):
+            return True
+        if not self.whitelist_mode:
+            return False
+        return (self.settings.get("wl_muted") or "") != self._wl_net()
+
+    def wl_state(self) -> dict:
+        n = sum(1 for s in self.servers if s.supported and not s.stub and self.is_wl_server(s))
+        return {"on": self.wl_first(), "manual": bool(self.settings.get("wl_priority")), "auto": self.whitelist_mode,
+                "muted": self.whitelist_mode and not self.wl_first(), "servers": n}
+
+    def wl_set(self, on: bool) -> Server | None:
+        """Галочка «Белые списки». Возвращает сервер, на который стоит перейти (или None)."""
+        s = self.settings
+        if on:
+            s["wl_priority"], s["wl_muted"] = True, ""
+            self.log("Белые списки: сначала серверы для их обхода.")
+        else:
+            s["wl_priority"] = False
+            s["wl_muted"] = self._wl_net() if self.whitelist_mode else ""
+            self.log("Белые списки: обычный выбор серверов."
+                     + (" Пока не сменится сеть, сама галочка не включится." if self.whitelist_mode else ""))
+        self.save()
+        self.notify("settings")
+        if not self.connected or self.method() != "auto" or not self.current:
+            return None
+        best = self.best()
+        if best and best.key != self.current.key and (on or not self.is_wl_server(best)):
+            return best
+        return None
+
     def _check_whitelist(self) -> bool:
         if not self.settings.get("whitelist_auto", True):
             return False
@@ -4314,14 +4359,14 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self.log(f"Автопилот: {reason}. Ищу рабочий способ.")
         self._lane.why = reason  # причина попадёт в журнал подключения у каждого переключения
         current_key = self.current.key if self.current else ""
-        wl = self._check_whitelist()
+        self._check_whitelist()
+        wl = self.wl_first()  # белые списки замечены сами или включена галочка «Белые списки»
         if self.current:
             self.current.result = dict(self.current.result or {}, ok=False, status="перестал отвечать",
                                        error=reason, tested_at=time.time())
             self._on_result(self.current)
         if wl:  # шаг 9: при белых списках обычные серверы всё равно недоступны — сразу подходящие
-            backups = [s for s in tester.ranked(self.pool(), key=self._rank_key())
-                       if s.key != current_key and self.is_wl_server(s)]
+            backups = [s for s in self.ranked_pool() if s.key != current_key and self.is_wl_server(s)]
             backups += [s for s in self.servers if self.is_wl_server(s) and s.supported and s.key != current_key
                         and s not in backups]
             for srv in backups[:4]:
@@ -4428,7 +4473,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             return
         try:
             current_key = self.current.key if self.current else ""
-            backups = [s for s in tester.ranked(self.pool(), key=self._rank_key()) if s.key != current_key][:3]
+            backups = [s for s in self.ranked_pool() if s.key != current_key][:3]
             if backups:
                 tester.test_servers(self.paths, backups, self.settings["ping_host"], self.settings["ping_path"],
                                     self._on_result, self.stop_event, lambda *_: None)
@@ -5430,6 +5475,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             "collect": self.collect_state(),
             "multi": self.multi_state(),
             "whitelist_mode": self.whitelist_mode,
+            "wl": self.wl_state(),
+            "nw": self.nw_state(),
             "hotspot": self.hotspot_state(),
             "awg": self.awg_state(),
             "engine": self.engine_state(),

@@ -48,7 +48,7 @@ window.__audit = function () {
   };
   if (document.documentElement.scrollWidth > W + 1) out.push(["page-overflow", `ширина ${document.documentElement.scrollWidth} > ${W}`]);
   // 1) кнопки, поля, чипы, карточки: текст у края
-  const modal = document.querySelector(".modal:not([hidden])");
+  const modal = document.querySelector(".modal:not([hidden]), .sheet:not([hidden])");
   const scope = modal && modal.getBoundingClientRect().width > 0 ? modal : document;
   const boxes = scope.querySelectorAll("button, .btn, input, select, textarea, .chip, .card, .modal, section, .row, .m-opt, .tg-row, .problem, .hint, .toast, .badge, .pill, label");
   for (const el of boxes) {

@@ -54,6 +54,25 @@ public final class Services {
             "discordapp.com", "discordapp.net", "discord.media", "discordcdn.com", "discord.dev", "discord.new", "discord.gift",
             "discordstatus.com", "dis.gd"));
 
+    /** Адрес для проверки «качается ли» (как первая ссылка сервиса в services.py). */
+    public static String checkHost(Service s) {
+        switch (s.name) {
+            case "Telegram": return "web.telegram.org";
+            case "WhatsApp": return "web.whatsapp.com";
+            case "Discord": return "discord.com";
+            case "YouTube": return "www.youtube.com";
+            case "X (Twitter)": return "x.com";
+            case "ChatGPT": return "api.openai.com";
+            case "Claude": return "api.anthropic.com";
+            case "Spotify": return "open.spotify.com";
+            case "Steam": return "store.steampowered.com";
+            case "Сбербанк": return "online.sberbank.ru";
+            case "Яндекс": return "ya.ru";
+            case "VK": return "vk.com";
+            default: return "www." + s.domains.get(0);
+        }
+    }
+
     public static Service find(String name) {
         for (Service s : ALL) {
             if (s.name.equals(name)) {

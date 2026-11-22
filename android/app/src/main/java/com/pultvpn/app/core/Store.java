@@ -45,6 +45,8 @@ public final class Store {
                 "engine_pick", "auto",   // «Движок»: auto, xray, hy2; awg — AmneziaWG в своём приложении
                 // защита (как protect.py): предохранители способов, автооткат изменений, безопасный запуск
                 "fuses_enabled", true, "fuses", new LinkedHashMap<String, Object>(), "guard_rollback", true, "safe_start", true,
+                // галочка «Белые списки» на главном; wl_muted — сняли в этой сети, когда списки заметились сами
+                "wl_priority", false, "wl_muted", "",
                 // сбор ошибок (как collect.py)
                 "collect_until", 0L, "collect_started", 0L, "collect_report", "",
                 "last_awg_key", "",

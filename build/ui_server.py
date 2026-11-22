@@ -41,11 +41,18 @@ def main() -> None:
     while e.is_busy():
         time.sleep(0.2)
     e.test_all()
-    e.run_task("Подключение", e.connect, e.best(), lane="conn", user=True)
-    for _ in range(100):
-        if e.connected and not e.conn_busy():
+    for attempt in range(3):
+        # порты выбираем прямо перед подключением: на машине проверки порт могли занять, пока шла проверка серверов
+        e.settings.update(socks_port=netutil.find_free_ports(1, 35000 + attempt * 300)[0],
+                          http_port=netutil.find_free_ports(1, 35100 + attempt * 300)[0])
+        e.run_task("Подключение", e.connect, e.best(), lane="conn", user=True)
+        for _ in range(100):
+            if e.connected and not e.conn_busy():
+                break
+            time.sleep(0.1)
+        if e.connected:
             break
-        time.sleep(0.1)
+        print("не подключилось: " + " | ".join(p.get("title", "") for p in e.problems_list()), file=sys.stderr, flush=True)
     print(json.dumps({"port": port, "connected": e.connected}), flush=True)
     try:
         time.sleep(float(os.environ.get("UI_SERVER_SECONDS", "300")))

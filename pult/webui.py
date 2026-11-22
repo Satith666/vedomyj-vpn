@@ -361,6 +361,22 @@ class UIServer:
                 if srv:
                     return vpn_task("Подключаюсь", e.connect, srv)
             return True
+        if action == "wl_set":
+            on = bool(a.get("on"))
+            before = {"wl_priority": bool(e.settings.get("wl_priority"))}
+            srv = e.wl_set(on)
+            if srv:
+                e.guard_change(before, protect.change_label(before))
+                return vpn_task("Подключаюсь", e.connect, srv)
+            return True
+        if action == "nw_targets":
+            return e.nw_targets()
+        if action == "nw_fix":
+            kind = str(a.get("kind", ""))
+            title = {"service": "Проверяю сервис", "app": "Проверяю программу", "site": "Проверяю сайт"}.get(kind, "Проверяю")
+            return task(title, e.nw_fix, kind, str(a.get("value", ""))[:300], str(a.get("target", "")))
+        if action == "nw_undo":
+            return task("Возвращаю маршруты как было", e.nw_undo)
         if action == "connect_for":
             return vpn_task("Подключаюсь", e.connect_for, int(a.get("minutes", 60) or 60))
         if action == "disconnect":

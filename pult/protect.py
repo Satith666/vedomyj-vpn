@@ -30,7 +30,7 @@ SAFE_CRASHES = 2                  # столько неудачных запус
 # Изменение этих настроек при работающем VPN — под присмотром автоотката.
 GUARDED_KEYS = ("mode", "tun_enabled", "tun_engine", "dns_encrypted", "block_quic", "mask_auto", "fp_auto",
                 "failover", "multi_enabled", "game_mode", "leak_protection", "kill_switch", "ru_direct",
-                "block_ads", "system_proxy", "engine_pick")
+                "block_ads", "system_proxy", "engine_pick", "wl_priority")
 
 # Безопасный запуск выключает на один запуск только необязательную автоматику (не VPN и не защиту).
 SAFE_OFF = ("auto_routes", "multi_enabled", "fp_auto", "mask_auto", "net_profiles", "app_update")
@@ -45,7 +45,7 @@ LABELS = {"mode": "режим маршрутизации", "tun_enabled": "ре�
           "fp_auto": "подбор отпечатка", "failover": "мгновенное переключение", "multi_enabled": "мультисервер",
           "game_mode": "режим для игр", "leak_protection": "защита от утечек", "kill_switch": "kill switch",
           "ru_direct": "российские сайты напрямую", "block_ads": "без рекламы", "system_proxy": "системный прокси",
-          "engine_pick": "способ подключения"}
+          "engine_pick": "способ подключения", "wl_priority": "белые списки"}
 
 
 PRO_NAMES = {"fuses_enabled": "предохранители", "guard_rollback": "автооткат", "safe_start": "безопасный запуск",

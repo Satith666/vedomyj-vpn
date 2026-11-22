@@ -4036,7 +4036,7 @@ def t_i18n():
     try:
         skip = ("Мой VPN", "Fast", "Slow", "Dead", "Hy2", "Дом", "Мой AWG", "Мой сервер", "Включите отправку HWID",
                 "Подписка истекла", "Госуслуги", "Обычный", "Резидент", "Мама — компьютер", "Мама — телефон", "Папа — телефон",
-                "Сын", "Новая", "Мамин")
+                "Сын", "Новая", "Мамин", "Яндекс", "Сбербанк", "Т-Банк")  # имена сервисов — как есть
         bad = []
         for msg in dict.fromkeys(MESSAGES):
             text = msg[9:] if len(msg) > 9 and msg[2] == ":" and msg[5] == ":" else msg
@@ -5307,6 +5307,141 @@ def t_protect():
         for x in (e, e2):
             if x:
                 x.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case("«Не работает» и «Белые списки»: проверка всеми путями, «работает полностью», «Отменить», приоритет белым спискам")
+def t_notworking():
+    from pult import notworking as nwmod
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    old_check, old_stall, old_probe = services.check_url, services.stall_test, services.whitelist_probe
+    try:
+        engmod.services.whitelist_probe = lambda port=None: "open"
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.settings["auto_routes"] = False
+        e.startup()
+        e.add_subscription(f"http://127.0.0.1:{WEB}/sub")
+        e.add_servers("vless://44444444-4444-4444-4444-444444444444@slow-wl.example:443?security=reality&pbk=K&sni=ya.ru"
+                      "&type=tcp#Whitelist%20LTE")
+        e.test_all()
+        wl = next(s for s in e.servers if s.endpoint.startswith("slow-wl"))
+        e.set_method("auto")
+        e.connect(e.best())
+        check(e.current.key != wl.key, "без галочки сервер для белых списков не первый")
+        # --- галочка «Белые списки» ---
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        ui.dispatch("wl_set", {"on": True})
+        wait_idle(e)
+        check(e.settings["wl_priority"] and e.best().key == wl.key and e.current.key == wl.key,
+              f"галочка — сначала серверы для белых списков: {e.current.name}")
+        st = e.state()["wl"]
+        check(st["on"] and st["manual"] and st["servers"] >= 1, f"окно видит галочку: {st}")
+        ui.dispatch("wl_set", {"on": False})
+        wait_idle(e)
+        check(not e.settings["wl_priority"] and e.current.key != wl.key, "галочку сняли — обычный лучший сервер")
+        # списки замечены сами: галочка включается сама; сняли вручную — в этой сети сама не включается
+        e.whitelist_mode = True
+        check(e.wl_first() and e.state()["wl"]["auto"], "белые списки замечены — приоритет включился сам")
+        e.wl_set(False)
+        check(not e.wl_first() and e.state()["wl"]["muted"], "сняли вручную — в этой сети не включается")
+        e.settings["wl_muted"] = "другая сеть"
+        check(e.wl_first(), "в другой сети снова включается сама")
+        e.whitelist_mode = False
+        e.settings["wl_muted"] = ""
+        wait_idle(e)
+        # --- «Не работает»: сервис ---
+        health, http, direct = e.ports["health"], e.ports["http"], e._direct_http()
+        where = lambda port: "direct" if port == direct else "vpn" if port == health else "cur" if port == http else "other"  # noqa: E731
+        plan = {}
+
+        def fake_check(url, port, region_sensitive, timeout=10.0):
+            host = urllib.parse.urlsplit(url).hostname or ""
+            st = plan.get((host, where(port)), plan.get((host, "*"), services.OK))
+            return {"state": st, "detail": "" if st == services.OK else "соединение сброшено", "ms": 50}
+
+        def fake_stall(host, proxy_port=None, **kw):
+            how = where(proxy_port)
+            if plan.get(("stall:" + host, how)) or plan.get(("stall:" + host, "*")):
+                return {"state": services.STALL_STALL, "bytes": 16000, "detail": "соединение замирает после 15 КБ", "ms": 4000}
+            return {"state": services.STALL_OK, "bytes": 70000, "detail": "68 КБ за 300 мс", "ms": 300}
+        services.check_url, services.stall_test = fake_check, fake_stall
+        routes_before = json.dumps(e.settings.get("routes"), sort_keys=True)
+        # YouTube как сейчас (напрямую по правилам) режется после 16 КБ, через VPN — работает
+        plan.update({("stall:www.youtube.com", "cur"): True, ("stall:www.youtube.com", "direct"): True})
+        r = ui.dispatch("nw_fix", {"kind": "service", "value": "youtube"})
+        wait_idle(e)
+        last = e.nw_state()["last"]
+        check(last and last["route"] == "proxy" and last["changed"] and last["can_undo"]
+              and "теперь через VPN" in last["verdict"], f"YouTube режется — теперь через VPN: {last}")
+        check(e.settings["routes"].get("svc:YouTube") or "youtube.com" in e.settings.get("proxy_list", ""),
+              "маршрут сервиса записан")
+        check(any("режется" in x or "замирает" in x for x in last["steps"]), f"видно, что было «не полностью»: {last['steps']}")
+        ui.dispatch("nw_undo", {})
+        wait_idle(e)
+        check(json.dumps(e.settings.get("routes"), sort_keys=True) == routes_before
+              and "youtube.com" not in e.settings.get("proxy_list", "") and not e.nw_state()["last"]["can_undo"],
+              "«Отменить» — маршруты как было")
+        # российский сервис: как сейчас нет — напрямую да
+        plan.clear()
+        plan.update({("ya.ru", "cur"): services.BLOCKED})
+        e.nw_fix("service", "Яндекс")
+        check(e.nw_last["route"] == "direct", f"российский сервис — напрямую: {e.nw_last['verdict']}")
+        # ни как сейчас, ни через VPN, ни напрямую — через другой сервер
+        plan.clear()
+        plan.update({("discord.com", "cur"): services.BLOCKED, ("discord.com", "vpn"): services.BLOCKED,
+                     ("discord.com", "direct"): services.BLOCKED})
+        e.nw_fix("service", "Discord")
+        check(e.nw_last["route"].startswith("server:") and "теперь через «" in e.nw_last["verdict"],
+              f"через другой сервер: {e.nw_last['verdict']}")
+        # нигде не работает — ничего не меняем и честно говорим
+        plan.clear()
+        plan.update({("api.openai.com", "*"): services.BLOCKED})
+        e.nw_fix("service", "ChatGPT")
+        check(not e.nw_last["changed"] and e.nw_last["route"] == "" and "не открывается ни" in e.nw_last["verdict"],
+              f"нигде не работает: {e.nw_last['verdict']}")
+        # работает полностью — ничего не меняем
+        plan.clear()
+        e.nw_fix("service", "Telegram")
+        check(not e.nw_last["changed"] and "качается полностью" in e.nw_last["verdict"], "всё работает — ничего не меняем")
+        try:
+            e.nw_fix("service", "Нет такого")
+            check(False, "неизвестный сервис — ошибка")
+        except RuntimeError:
+            pass
+        # --- программа: известная — подбор, неизвестная — выбор пути ---
+        e.nw_fix("app", "Discord")
+        check(e.settings["app_routes"].get("Discord"), f"Discord: путь подобран: {e.nw_last['verdict']}")
+        try:
+            e.nw_fix("app", "mygame.exe")
+            check(False, "неизвестную программу без выбора пути не трогаем")
+        except RuntimeError as exc:
+            check("через VPN или напрямую" in str(exc), str(exc))
+        e.nw_fix("app", "mygame.exe", "proxy")
+        check(e.settings["app_routes"]["mygame"]["via"] == "proxy", "неизвестная программа — выбранный путь")
+        t = e.nw_targets()
+        check(any(x["name"] == "YouTube" for x in t["services"]) and any(x["name"] == "Discord" for x in t["apps"]),
+              "списки для окна: сервисы и программы")
+        # --- сайт: проверка сайта и «работает полностью» ---
+        plan.clear()
+        plan.update({("nwsite.example", "cur"): services.BLOCKED})
+        e.nw_fix("site", "https://nwsite.example/watch")
+        check(e.nw_last["name"] == "nwsite.example" and e.nw_last["changed"], f"сайт: {e.nw_last['verdict']}")
+        # английский
+        i18n.set_lang("en")
+        try:
+            en = e.nw_state()["last"]["verdict"]
+            check(not i18n.CYRILLIC.search(en), f"по-английски: {en}")
+        finally:
+            i18n.set_lang("ru")
+        check(nwmod.service_host(nwmod.service_by_name("YouTube")) == "www.youtube.com", "YouTube проверяется по странице с плеером")
+    finally:
+        services.check_url, services.stall_test = old_check, old_stall
+        engmod.services.whitelist_probe = old_probe
+        if e:
+            e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
 
 

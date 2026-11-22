@@ -368,7 +368,7 @@ class LadderMixin:
                 return True
         cur_net = net_group(cur) if cur else ""
         current_key = cur.key if cur else ""
-        backups = [s for s in tester.ranked(self.pool(), key=self._rank_key()) if s.key != current_key]
+        backups = [s for s in self.ranked_pool() if s.key != current_key]
         # сначала другой транспорт (UDP — Hysteria2/TUIC — если отказал TCP, и наоборот), потом другая сеть
         cur_udp = transport_of(cur) if cur else ""
         backups.sort(key=lambda s: (bool(cur_udp) and transport_of(s) == cur_udp,

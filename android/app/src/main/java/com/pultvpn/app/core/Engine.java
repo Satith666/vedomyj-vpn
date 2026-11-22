@@ -562,7 +562,7 @@ public final class Engine {
     static final long SAFE_OK_MS = 90_000L;
     static final String[] SAFE_OFF = {"fp_auto", "mask_auto", "net_profiles", "app_update"};
     static final String[] GUARDED_KEYS = {"mode", "ru_direct", "block_quic", "dns_encrypted", "block_ads", "mask_auto",
-            "fp_auto", "engine_pick"};
+            "fp_auto", "engine_pick", "wl_priority"};
     /** Профессиональные настройки и их значения по умолчанию («Вернуть как было»). */
     static final String[] PRO_KEYS = {"fuses_enabled", "guard_rollback", "safe_start", "net_memory", "autopilot", "fp_auto",
             "mask_auto", "data_watch", "whitelist_auto"};
@@ -1137,6 +1137,371 @@ public final class Engine {
         }
         return Store.read(new File(rep));
     }
+
+    // ---------- «Белые списки» (галочка на главном) и «Не работает» (как notworking.py) ----------
+
+    /** Ключ сети без запросов в интернет (для галочки «Белые списки»). */
+    String netIdCached() {
+        String kind = "";
+        if (p instanceof NetInfo) {
+            try {
+                kind = Json.str(((NetInfo) p).netInfo(), "kind");
+            } catch (RuntimeException ignored) {
+                kind = "";
+            }
+        }
+        String isp = ispKey;
+        return isp.isEmpty() && kind.isEmpty() ? "any" : Text.sha1hex(kind + "|" + isp).substring(0, 12);
+    }
+
+    /** Сначала серверы для белых списков: галочка или списки замечены сами (если галочку не сняли в этой сети). */
+    public boolean wlFirst() {
+        if (Json.bool(settings, "wl_priority", false)) {
+            return true;
+        }
+        if (!whitelistMode) {
+            return false;
+        }
+        String muted = Json.str(settings, "wl_muted");
+        return muted.isEmpty() || !muted.equals(netIdCached());
+    }
+
+    public Map<String, Object> wlState() {
+        int n = 0;
+        synchronized (lock) {
+            for (Server s : servers) {
+                if (s.usable() && s.isWl()) {
+                    n++;
+                }
+            }
+        }
+        boolean on = wlFirst();
+        return Json.obj("on", on, "manual", Json.bool(settings, "wl_priority", false), "auto", whitelistMode,
+                "muted", whitelistMode && !on, "servers", (long) n);
+    }
+
+    public boolean wlSet(boolean on) {
+        Map<String, Object> before = Json.obj("wl_priority", Json.bool(settings, "wl_priority", false));
+        synchronized (lock) {
+            settings.put("wl_priority", on);
+            settings.put("wl_muted", !on && whitelistMode ? netIdCached() : "");
+        }
+        saveSettings();
+        if (on) {
+            log("Белые списки: сначала серверы для их обхода.", "Whitelists: whitelist bypass servers first.");
+        } else {
+            log("Белые списки: обычный выбор серверов." + (whitelistMode ? " Пока не сменится сеть, сама галочка не включится." : ""),
+                    "Whitelists: regular server choice." + (whitelistMode ? " Until the network changes, the box won't turn on by itself." : ""));
+        }
+        changed();
+        Server cur = current;
+        if (!isOn() || cur == null || !"auto".equals(method()) || !Json.str(settings, "selected").isEmpty()) {
+            return false;
+        }
+        List<Server> r = ranked();
+        final Server best = r.isEmpty() ? null : r.get(0);
+        if (best == null || best == cur || (!on && best.isWl())) {
+            return false;
+        }
+        guardChange(before, "белые списки", "whitelists");
+        return runTask(Text.t("Переключаю сервер", "Switching server"), "connect", new Runnable() {
+            @Override
+            public void run() {
+                if (best != current && !startWith(best)) {
+                    failover();
+                }
+            }
+        });
+    }
+
+    static final String[] NW_KEYS = {"routes", "proxy_list", "direct_list", "block_list", "excluded_apps"};
+    static final long NW_UNDO_MS = 24 * 3600_000L;
+    private volatile Map<String, Object> nwLast;
+    private volatile Map<String, Object> nwUndo;
+
+    /** Приложения, про которые известно, какой это сервис: тогда проверяется сам сервис. */
+    static final String[][] NW_APPS = {
+            {"com.google.android.youtube", "YouTube"}, {"com.discord", "Discord"}, {"org.telegram.messenger", "Telegram"},
+            {"org.telegram.messenger.web", "Telegram"}, {"com.whatsapp", "WhatsApp"}, {"com.instagram.android", "Instagram"},
+            {"com.zhiliaoapp.musically", "TikTok"}, {"com.ss.android.ugc.trill", "TikTok"}, {"com.facebook.katana", "Facebook"},
+            {"com.twitter.android", "X (Twitter)"}, {"com.openai.chatgpt", "ChatGPT"}, {"com.anthropic.claude", "Claude"},
+            {"tv.twitch.android.app", "Twitch"}, {"com.spotify.music", "Spotify"}, {"com.valvesoftware.android.steam.community", "Steam"},
+            {"ru.sberbankmobile", "Сбербанк"}, {"com.idamob.tinkoff.android", "Т-Банк"}, {"com.vkontakte.android", "VK"},
+            {"ru.ozon.app.android", "Ozon"}, {"com.wildberries.ru", "Wildberries"}, {"ru.yandex.searchplugin", "Яндекс"},
+            {"ru.rostel", "Госуслуги"}};
+
+    static String nwServiceOfApp(String pkg) {
+        for (String[] x : NW_APPS) {
+            if (x[0].equals(pkg)) {
+                return x[1];
+            }
+        }
+        return "";
+    }
+
+    public Map<String, Object> nwTargets() {
+        List<Object> svc = new ArrayList<Object>();
+        for (Services.Service x : Services.ALL) {
+            svc.add(Json.obj("name", x.name, "russian", x.russian));
+        }
+        Map<String, Object> known = new LinkedHashMap<String, Object>();
+        for (String[] x : NW_APPS) {
+            known.put(x[0], x[1]);
+        }
+        return Json.obj("services", svc, "known_apps", known);
+    }
+
+    public Map<String, Object> nwState() {
+        Map<String, Object> last = nwLast;
+        if (last == null) {
+            return Json.obj("last", null);
+        }
+        Map<String, Object> out = new LinkedHashMap<String, Object>(last);
+        Map<String, Object> u = nwUndo;
+        out.put("can_undo", u != null && System.currentTimeMillis() - Json.num(u, "at", 0) < NW_UNDO_MS);
+        return Json.obj("last", out);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> nwSnapshot() {
+        Map<String, Object> keys = new LinkedHashMap<String, Object>();
+        synchronized (lock) {
+            for (String k : NW_KEYS) {
+                Object v = settings.get(k);
+                keys.put(k, v == null ? null : Json.parse(Json.write(v)));
+            }
+        }
+        return keys;
+    }
+
+    private boolean nwSame(Map<String, Object> before) {
+        Map<String, Object> now = nwSnapshot();
+        return Json.write(now).equals(Json.write(before));
+    }
+
+    public boolean nwFix(final String kind, final String value, final String target) {
+        final String v = value == null ? "" : value.trim();
+        if (!"service".equals(kind) && !"app".equals(kind) && !"site".equals(kind)) {
+            throw new UserError(Text.t("Выбери, что не работает: сервис, приложение или сайт.",
+                    "Choose what doesn't work: a service, an app or a site."));
+        }
+        if (v.isEmpty()) {
+            throw new UserError("site".equals(kind) ? Text.t("Вставь адрес сайта, например example.com.", "Paste a site address, for example example.com.")
+                    : Text.t("Выбери из списка, что не работает.", "Choose from the list what doesn't work."));
+        }
+        final String svcName = "service".equals(kind) ? v : "app".equals(kind) ? nwServiceOfApp(v) : "";
+        if ("service".equals(kind) && Services.find(v) == null) {
+            throw new UserError(Text.t("Такого сервиса нет в списке.", "There is no such service in the list."));
+        }
+        if ("app".equals(kind) && svcName.isEmpty() && !"direct".equals(target) && !"proxy".equals(target)) {
+            throw new UserError(Text.t("Это приложение проверить не получится — выбери, как его пускать: через VPN или без VPN.",
+                    "This app can't be checked — choose how to route it: via VPN or without VPN."));
+        }
+        if ("app".equals(kind) && !v.matches("[A-Za-z0-9_.]{1,200}")) {
+            throw new UserError(Text.t("Не похоже на приложение.", "This doesn't look like an app."));
+        }
+        if ("site".equals(kind)) {
+            if (!isOn()) {
+                throw new UserError(Text.t("Сначала включи VPN: приложение сравнит, как сайт работает напрямую и через VPN.",
+                        "Turn the VPN on first: the app compares how the site works directly and through the VPN."));
+            }
+            if (!siteKey(v, false).contains(".")) {
+                throw new UserError(Text.t("Не похоже на адрес сайта. Пример: example.com.", "This doesn't look like a site address."));
+            }
+        }
+        return runTask(Text.t("Проверяю", "Checking"), "nw", new Runnable() {
+            @Override
+            public void run() {
+                Map<String, Object> before = nwSnapshot();
+                Map<String, Object> res;
+                if (!svcName.isEmpty()) {
+                    res = nwServiceFlow(Services.find(svcName));
+                } else if ("app".equals(kind)) {
+                    res = nwAppRoute(v, target);
+                } else {
+                    String host = siteKey(v, false).replaceFirst("^domain:", "");
+                    repairFlow(host);
+                    Map<String, Object> rep = lastRepair;
+                    List<Object> steps = new ArrayList<Object>();
+                    for (Object o : Json.list(rep, "hosts")) {
+                        Map<String, Object> h = Json.map(o);
+                        String d = Json.str(h, "detail");
+                        steps.add(Json.str(h, "host") + ": " + (d.isEmpty() ? Json.str(h, "state") : d));
+                    }
+                    res = Json.obj("name", Json.str(rep, "site"), "verdict", Json.str(rep, "verdict"), "steps", steps, "route", "");
+                }
+                boolean changedNow = !nwSame(before);
+                nwUndo = changedNow ? Json.obj("keys", before, "at", System.currentTimeMillis()) : null;
+                Map<String, Object> last = new LinkedHashMap<String, Object>(res);
+                last.put("kind", kind);
+                last.put("changed", changedNow);
+                last.put("at", System.currentTimeMillis());
+                nwLast = last;
+                log("«Не работает» — " + Json.str(res, "name") + ": " + Json.str(res, "verdict"),
+                        "“Not working” — " + Json.str(res, "name") + ": " + Json.str(res, "verdict"));
+                changed();
+            }
+        });
+    }
+
+    public boolean nwUndo() {
+        final Map<String, Object> u = nwUndo;
+        if (u == null || System.currentTimeMillis() - Json.num(u, "at", 0) > NW_UNDO_MS) {
+            nwUndo = null;
+            throw new UserError(Text.t("Отменять нечего.", "Nothing to undo."));
+        }
+        return runTask(Text.t("Возвращаю маршруты как было", "Putting routes back as they were"), "nw", new Runnable() {
+            @Override
+            public void run() {
+                Map<String, Object> keys = Json.map(u, "keys");
+                synchronized (lock) {
+                    for (Map.Entry<String, Object> e : keys.entrySet()) {
+                        if (e.getValue() == null) {
+                            settings.remove(e.getKey());
+                        } else {
+                            settings.put(e.getKey(), e.getValue());
+                        }
+                    }
+                }
+                nwUndo = null;
+                saveSettings();
+                Map<String, Object> last = nwLast;
+                String name = last == null ? "" : Json.str(last, "name");
+                if (last != null) {
+                    Map<String, Object> l2 = new LinkedHashMap<String, Object>(last);
+                    l2.put("changed", false);
+                    l2.put("undone", true);
+                    nwLast = l2;
+                }
+                log("«Не работает» — " + name + ": вернул маршруты как было.", "“Not working” — " + name + ": routes are back as they were.");
+                if (isOn()) {
+                    applyCore();
+                }
+                changed();
+            }
+        });
+    }
+
+    private static boolean nwFull(Map<String, Object> st) {
+        String s = Json.str(st, "state");
+        return "ok".equals(s) || "small".equals(s);
+    }
+
+    /** Проверить сервис одним путём: port 0 — напрямую, иначе вход HTTP (VPN как сейчас или временное ядро). */
+    private boolean nwTry(String host, int port, String ru, String en, List<Object> steps) {
+        checkStop();
+        Map<String, Object> st = STALL.test(host, port);
+        String state = Json.str(st, "state");
+        String d = Json.str(st, "detail");
+        if (nwFull(st)) {
+            steps.add(Text.t(ru + ": работает полностью", en + ": works fully"));
+            return true;
+        }
+        steps.add("stall".equals(state) ? Text.t(ru + ": открывается, но " + d, en + ": opens, but " + d)
+                : Text.t(ru + ": не открывается", en + ": doesn't open") + (d.isEmpty() ? "" : " (" + d + ")"));
+        return false;
+    }
+
+    /** Временное ядро через этот сервер → проверка. */
+    private boolean nwTryServer(Server x, String host, String ru, String en, List<Object> steps) {
+        int port = freePort();
+        java.io.Closeable core = null;
+        try {
+            core = p.startTestCore(Json.write(serverTestConfig(x, port)));
+            return nwTry(host, port, ru, en, steps);
+        } catch (Cancelled c) {
+            throw c;
+        } catch (Exception e) {
+            steps.add(Text.t(ru + ": не запустился", en + ": didn't start"));
+            return false;
+        } finally {
+            if (core != null) {
+                try {
+                    core.close();
+                } catch (Exception ignored) {
+                    // уже остановлено
+                }
+            }
+        }
+    }
+
+    Map<String, Object> nwServiceFlow(Services.Service svc) {
+        String host = Services.checkHost(svc);
+        List<Object> steps = new ArrayList<Object>();
+        progress(Text.t("Проверяю сервис " + svc.name, "Checking the service " + svc.name));
+        boolean on = isOn();
+        if (nwTry(host, on ? appPort : 0, "как сейчас", "as now", steps)) {
+            return Json.obj("name", svc.name, "verdict", Text.t(svc.name + " открывается и качается полностью. Если не работает только в приложении — "
+                    + "закрой его и открой снова.", svc.name + " opens and downloads fully. If it fails only in the app, close and reopen the app."),
+                    "steps", steps, "route", "");
+        }
+        Server cur = current;
+        String choice = "";
+        String ru = "", en = "";
+        if (svc.russian && nwTry(host, 0, "без VPN", "without VPN", steps)) {
+            choice = "direct";
+            ru = "без VPN";
+            en = "without VPN";
+        }
+        if (choice.isEmpty() && on && cur != null && !svc.russian && nwTryServer(cur, host, "через VPN", "via VPN", steps)) {
+            choice = "proxy";
+            ru = "через VPN";
+            en = "via VPN";
+        }
+        if (choice.isEmpty() && !svc.russian && nwTry(host, 0, "без VPN", "without VPN", steps)) {
+            choice = "direct";
+            ru = "без VPN";
+            en = "without VPN";
+        }
+        if (choice.isEmpty() && on) {
+            int n = 0;
+            for (Server x : ranked()) {
+                if (x == cur || n >= 3) {
+                    continue;
+                }
+                n++;
+                if (nwTryServer(x, host, "через «" + x.name + "»", "via “" + x.name + "”", steps)) {
+                    choice = "server:" + x.key();
+                    ru = "через «" + x.name + "»";
+                    en = "via “" + x.name + "”";
+                    break;
+                }
+            }
+        }
+        if (choice.isEmpty()) {
+            return Json.obj("name", svc.name, "verdict", Text.t(svc.name + " не открывается ни как сейчас, ни через VPN, ни без VPN"
+                    + (on ? ", ни через другие серверы" : "") + ". Похоже, сервис сейчас не работает или закрыт для этих стран."
+                    + (on ? "" : " Включи VPN — приложение проверит его и через VPN."),
+                    svc.name + " doesn't open as now, via VPN or without VPN" + (on ? ", nor via other servers" : "")
+                            + ". The service seems to be down or closed for these countries."
+                            + (on ? "" : " Turn the VPN on — the app will check it via the VPN too.")),
+                    "steps", steps, "route", "");
+        }
+        setServiceRoute(svc.name, choice);
+        boolean ok = nwTry(host, isOn() ? appPort : 0, "после изменения", "after the change", steps);
+        return Json.obj("name", svc.name, "verdict", Text.t(svc.name + ": теперь " + ru + "." + (ok ? " Проверил — работает."
+                        : " Но и так пока не работает — нажми «Отменить», если стало хуже."),
+                svc.name + ": now " + en + "." + (ok ? " Checked — it works." : " But it doesn't work this way either yet — press “Undo” if it got worse.")),
+                "steps", steps, "route", choice);
+    }
+
+    private Map<String, Object> nwAppRoute(String pkg, String target) {
+        List<Object> ex = new ArrayList<Object>();
+        List<Object> cur = Json.list(settings, "excluded_apps");
+        if (cur != null) {
+            ex.addAll(cur);
+        }
+        ex.remove(pkg);
+        if ("direct".equals(target)) {
+            ex.add(pkg);
+        }
+        setSettings(Json.obj("excluded_apps", ex));
+        return Json.obj("name", pkg, "verdict", "direct".equals(target)
+                        ? Text.t("Приложение теперь работает без VPN.", "The app now works without VPN.")
+                        : Text.t("Приложение теперь работает через VPN.", "The app now works via VPN."),
+                "steps", new ArrayList<Object>(), "route", target);
+    }
+
 
     // ---------- журнал, сообщения, проблемы ----------
 
@@ -2223,10 +2588,11 @@ public final class Engine {
                 }
             }
         }
+        final boolean wlFirst = wlFirst();
         Collections.sort(good, new Comparator<Server>() {
             @Override
             public int compare(Server a, Server b) {
-                if (whitelistMode && a.isWl() != b.isWl()) {
+                if (wlFirst && a.isWl() != b.isWl()) {
                     return a.isWl() ? -1 : 1;
                 }
                 return Double.compare(a.score(), b.score());
@@ -2675,7 +3041,8 @@ public final class Engine {
         noteAutoSwitch();
         progress(Text.t("Ищу рабочий способ", "Looking for a working way"));
         // белые списки (шаг 9): если они включены, обычные серверы всё равно недоступны — сразу подходящие
-        if (Json.bool(settings, "whitelist_auto", true) && checkWhitelist() && tryWhitelist()) {
+        boolean wlNow = Json.bool(settings, "whitelist_auto", true) && checkWhitelist();
+        if ((wlNow || wlFirst()) && tryWhitelist()) {
             Server cur;
             synchronized (lock) {
                 cur = current;
@@ -4655,6 +5022,7 @@ public final class Engine {
                 case "mask_auto": ru = "маскировка"; eng = "masking"; break;
                 case "fp_auto": ru = "подбор отпечатка"; eng = "fingerprint picking"; break;
                 case "engine_pick": ru = "способ подключения"; eng = "connection method"; break;
+                case "wl_priority": ru = "белые списки"; eng = "whitelists"; break;
                 default: ru = k; eng = k;
             }
             b.append(b.length() > 0 ? ", " : "").append(en ? eng : ru);
@@ -5378,6 +5746,8 @@ public final class Engine {
             st.put("conn", Json.obj("title", conn.title, "kind", conn.kind)); // подключение / смена сервера
             st.put("message", message);
             st.put("whitelist", whitelistMode);
+            st.put("wl", wlState());
+            st.put("nw", nwState());
             st.put("pro", proState());
             st.put("collect", collectState());
             st.put("geo", geoReady());

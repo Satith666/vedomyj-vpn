@@ -130,6 +130,14 @@ public final class Api {
                 e.familySetMode(Json.str(a, "pair"), Json.str(a, "mode", "ask"));
                 return true;
             // сбор ошибок, профессиональные настройки, предохранители
+            case "wl_set":
+                return e.wlSet(Json.bool(a, "on", false));
+            case "nw_targets":
+                return e.nwTargets();
+            case "nw_fix":
+                return e.nwFix(Json.str(a, "kind"), Json.str(a, "value"), Json.str(a, "target"));
+            case "nw_undo":
+                return e.nwUndo();
             case "collect_start":
                 return e.collectStart(Json.num(a, "hours", 24));
             case "collect_stop":

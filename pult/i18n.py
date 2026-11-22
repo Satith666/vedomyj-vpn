@@ -21,7 +21,7 @@ def lang() -> str:
     return _lang
 
 
-_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
+_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
 
 
 def _names(text: str) -> str:
@@ -1430,6 +1430,67 @@ RULES: list[tuple[str, str]] = [
     (r"^вкл$", "on"),
     (r"^выкл$", "off"),
     (r"Это не приглашение и не посылка «Семьи»\.", "This is not a Family invitation or package."),
+    # «Не работает» (notworking.py) и галочка «Белые списки»
+    (r"Выбери, что не работает: сервис, программу или сайт\.", "Choose what doesn't work: a service, a program or a site."),
+    (r"Выбери сервис из списка\.", "Choose a service from the list."),
+    (r"Выбери программу из списка\.", "Choose a program from the list."),
+    (r"^Список программ: ", "Program list: "),
+    (r"^«Не работает» — (.+?): вернул маршруты как было\.$", r"“Not working” — \1: routes are back as they were."),
+    (r"^«Не работает» — (.+?): ", r"“Not working” — \1: "),
+    (r"Отменять нечего\.", "Nothing to undo."),
+    (r"Такого сервиса нет в списке\.", "There is no such service in the list."),
+    (r"^Проверяю сервис$", "Checking the service"),
+    (r"^Проверяю программу$", "Checking the program"),
+    (r"^Проверяю$", "Checking"),
+    (r"^Возвращаю маршруты как было$", "Putting routes back as they were"),
+    (r"^Проверяю сервис (.+)$", r"Checking the service \1"),
+    (r"^как сейчас$", "as now"),
+    (r"^после изменения$", "after the change"),
+    (r"^с ускорением$", "with acceleration"),
+    (r"^через «(.+?)»$", r"via “\1”"),
+    (r"^не качается$", "doesn't download"),
+    (r"^напрямую: открывается", "direct: opens"),
+    (r"^, ни через другие серверы$", ", nor via other servers"),
+    (r"^(.+?) не открывается ни как сейчас, ни через VPN, ни напрямую$", r"\1 doesn't open as now, via VPN or directly"),
+    (r"^как сейчас: ", "as now: "),
+    (r"^через VPN: ", "via VPN: "),
+    (r"^напрямую: ", "direct: "),
+    (r"^через «(.+?)»: ", r"via “\1”: "),
+    (r"^после изменения: ", "after the change: "),
+    (r": не открывается$", ": doesn't open"),
+    (r": не открывается \(", ": doesn't open ("),
+    (r": открывается, но не качается$", ": opens but doesn't download"),
+    (r": открывается, но ", ": opens, but "),
+    (r": работает полностью$", ": works fully"),
+    (r"^(.+?) открывается и качается полностью\. Если не работает только в приложении — перезапусти его; "
+     r"если в браузере — обнови страницу с очисткой кэша \(Ctrl\+F5\)\.$",
+     r"\1 opens and downloads fully. If it fails only in the app, restart the app; in a browser, reload the page "
+     r"with cache clearing (Ctrl+F5)."),
+    (r"^(.+?) не открывается ни как сейчас, ни через VPN, ни напрямую, ни через другие серверы\. ",
+     r"\1 doesn't open as now, via VPN, directly or via other servers. "),
+    (r"^(.+?) не открывается ни как сейчас, ни через VPN, ни напрямую\. ", r"\1 doesn't open as now, via VPN or directly. "),
+    (r"Похоже, сервис сейчас не работает или закрыт для этих стран\.",
+     "The service seems to be down or closed for these countries."),
+    (r" Подключись к VPN — программа проверит его и через VPN\.", " Connect the VPN — the app will check it via the VPN too."),
+    (r"^(.+?): теперь через VPN\.", r"\1: now via VPN."),
+    (r"^(.+?): теперь напрямую\.", r"\1: now direct."),
+    (r"^(.+?): теперь с ускорением\.", r"\1: now with acceleration."),
+    (r"^(.+?): теперь через «(.+?)»\.", r"\1: now via “\2”."),
+    (r" Проверил — работает\.", " Checked — it works."),
+    (r" Но и так пока не работает — нажми «Отменить», если стало хуже\.",
+     " But it doesn't work this way either yet — press “Undo” if it got worse."),
+    (r"Эту программу проверить не получится — выбери, как её пускать: через VPN или напрямую\.",
+     "This program can't be checked — choose how to route it: via VPN or directly."),
+    (r"Неизвестный путь\.", "Unknown route."),
+    (r" Эта программа не слушается системного прокси — включи режим TUN, чтобы маршрут сработал\.",
+     " This program ignores the system proxy — turn on TUN mode for the route to work."),
+    (r" Если программа не слушается системного прокси, маршрут сработает только в режиме TUN\.",
+     " If the program ignores the system proxy, the route works only in TUN mode."),
+    (r" Чтобы проверить картинки и видео, открой сайт в браузере и нажми «Проверить» ещё раз\.",
+     " To check images and video, open the site in a browser and press “Check” again."),
+    (r"^Белые списки: сначала серверы для их обхода\.$", "Whitelists: whitelist bypass servers first."),
+    (r"^Белые списки: обычный выбор серверов\.", "Whitelists: regular server choice."),
+    (r" Пока не сменится сеть, сама галочка не включится\.", " Until the network changes, the box won't turn on by itself."),
 ]
 
 # Длинные фразы заменяем раньше коротких: иначе «Автонастройка» испортит предложение, где это слово — часть.

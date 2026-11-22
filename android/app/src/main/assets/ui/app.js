@@ -86,6 +86,7 @@
     $("#familyTxt").textContent = t("fam_btn");
     if (first) render(); else update();
     warpWatch();
+    nwWatch();
   }
 
   // «Создать бесплатный WARP»: регистрация идёт в фоне — когда готово, сразу показать, как передать его в AmneziaWG
@@ -234,10 +235,88 @@
       awg: E.awg ? t("m_awg_ready") : t("m_awg_warp"),
       off: t("m_off_sub"),
     };
+    const pick = (S.engine || {}).pick || "auto";
+    if (pick !== "auto" && pick !== "awg") subs.server += " · " + t("eng_" + pick);
     const empty = { awg: false, server: !(S.servers || []).some((x) => x.usable), auto: false, off: false };
+    const dd = { server: "m_dd_server", awg: "m_dd_awg", off: "m_dd_off" };
     return `<div class="card-head"><h2>${esc(t("method_title"))}</h2></div><div class="methods" role="radiogroup">${METHODS.map((id) =>
-      `<button class="m-opt${id === m ? " sel" : ""}${empty[id] && id !== m ? " m-empty" : ""}" role="radio" aria-checked="${id === m}" data-act="method" data-v="${id}">
-        <span class="m-dot" aria-hidden="true"></span><span class="m-text"><b>${esc(t("m_" + id))}</b><small>${esc(subs[id])}</small></span></button>`).join("")}</div>`;
+      `<div class="m-wrap seg-group${id === m ? " sel" : ""}${dd[id] ? " has-dd" : ""}"><button class="m-opt${id === m ? " sel" : ""}${empty[id] && id !== m ? " m-empty" : ""}" role="radio" aria-checked="${id === m}" data-act="method" data-v="${id}">
+        <span class="m-dot" aria-hidden="true"></span><span class="m-text"><b>${esc(t("m_" + id))}</b><small>${esc(subs[id])}</small></span></button>${dd[id]
+        ? `<button class="m-dd" data-act="m-dd" data-v="${id}" aria-label="${esc(t(dd[id]))}">${icon("chev", "down")}</button>` : ""}</div>`).join("")}</div>`;
+  }
+
+  // «Не работает» и «Белые списки» — ряд из двух одинаковых кнопок под «Способом»
+  function nwRowHtml() {
+    const w = S.wl || {};
+    const sub = !w.on ? t("wl_sub_off") : !w.servers ? t("wl_sub_noservers") : w.manual ? t("wl_sub_manual") : t("wl_sub_auto");
+    return `<div class="nw-row"><button class="nw-cell" data-act="nw-open">${icon("alert")}<span class="nw-text"><b>${esc(t("nw_btn"))}</b><small>${esc(t("nw_btn_sub"))}</small></span></button>
+      <button class="nw-cell wl-cell${w.on ? " on" : ""}" role="checkbox" aria-checked="${!!w.on}" data-act="wl-flip"><span class="wl-box" aria-hidden="true">${w.on ? icon("check") : ""}</span>
+        <span class="nw-text"><b>${esc(t("wl_name"))}</b><small>${esc(sub)}</small></span></button></div>`;
+  }
+
+  // AmneziaWG ▾: конфиги, бесплатный WARP, ускорение без VPN
+  function awgListSheet() {
+    const awgs = (S.servers || []).filter((x) => x.kind === "awg");
+    const rows = awgs.map((x) => `<button class="row" data-act="awg" data-key="${esc(x.key)}">${icon("server")}<span class="main"><span class="title"><span>${esc(x.name)}</span></span>
+        <span class="meta">${esc(x.note || t("awg_row"))}</span></span>${icon("chev", "chev")}</button>`).join("");
+    openSheet(`<h2>${esc(t("m_dd_awg"))}</h2><div class="menu">${rows}
+      <button class="row" data-act="warp-sheet">${icon("plus")}<span class="main"><span class="title"><span>${esc(t(awgs.length ? "dd_awg_more" : "dd_awg_new"))}</span></span></span></button>
+      <button class="row" data-nav="dpi">${icon("swap")}<span class="main"><span class="title"><span>${esc(t("dd_novpn_head"))}</span></span>
+        <span class="meta">${esc(t("dd_novpn_sub"))}</span></span>${icon("chev", "chev")}</button></div>`);
+  }
+
+  // «Не работает»: сервис из списка, приложение или сайт → проверка всеми путями → итог и «Отменить»
+  let nw = null;
+  let nwApps = null;
+  function nwOpen() {
+    nw = { tab: "service", sel: "", route: "proxy", q: "", waiting: false, done: false, targets: act("nw_targets", {}) || { services: [], known_apps: {} } };
+    openSheet(`<div id="nwBox" class="stack"></div>`, () => nwDraw(), () => { nw = null; });
+  }
+  function nwPickHtml() {
+    const T = nw.targets;
+    const opt = (v, label) => `<button class="nw-opt" role="radio" aria-checked="${nw.sel === v}" data-act="nw-sel" data-v="${esc(v)}">${esc(label)}</button>`;
+    if (nw.tab === "site") {
+      return `<label class="field">${esc(t("nw_site_label"))}<input id="nwSite" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="youtube.com" value="${esc(nw.q)}"></label>`;
+    }
+    if (nw.tab === "service") return `<div class="nw-opts" role="radiogroup">${T.services.map((x) => opt(x.name, x.name)).join("")}</div>`;
+    if (!nwApps) return `<p class="hint">${esc(t("apps_loading"))}</p>`;
+    const known = T.known_apps || {};
+    const q = nw.q.trim().toLowerCase();
+    const list = nwApps.filter((a) => !q || a.name.toLowerCase().includes(q) || a.pkg.includes(q))
+      .sort((a, b) => (known[b.pkg] ? 1 : 0) - (known[a.pkg] ? 1 : 0)).slice(0, 40);
+    const sel = nwApps.find((a) => a.pkg === nw.sel);
+    const route = sel && !known[sel.pkg] ? `<p class="hint">${esc(t("nw_app_route"))}</p><div class="seg" role="radiogroup">${[["proxy", t("nw_via_vpn")], ["direct", t("nw_direct")]].map(([v, l]) =>
+      `<button data-act="nw-route" data-v="${v}" aria-pressed="${nw.route === v}">${esc(l)}</button>`).join("")}</div>` : "";
+    return `<input type="search" id="nwQ" placeholder="${esc(t("search"))}" value="${esc(nw.q)}">
+      <div class="nw-opts" role="radiogroup">${list.map((a) => opt(a.pkg, a.name)).join("")}</div>${route}`;
+  }
+  function nwResHtml() {
+    const last = (S.nw || {}).last;
+    if (nw.waiting) return `<div class="nw-res busy">${esc(((S.task || {}).title || t("nw_running")) + "…")}</div>`;
+    if (!nw.done || !last) return "";
+    const steps = (last.steps || []).length ? `<details class="more"><summary>${esc(t("nw_steps"))}</summary><ul class="nw-steps">${last.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></details>` : "";
+    return `<div class="nw-res${last.changed ? " ok" : ""}"><p>${esc(last.undone ? t("nw_undone") : last.verdict)}</p>${steps}
+      ${last.can_undo ? `<button class="btn wide" data-act="nw-undo">${icon("refresh")}${esc(t("nw_undo"))}</button>` : ""}</div>`;
+  }
+  function nwDraw() {
+    const box = $("#nwBox");
+    if (!box || !nw) return;
+    box.innerHTML = `<h2>${esc(t("nw_title"))}</h2>
+      <div class="seg three" role="radiogroup">${["service", "app", "site"].map((k) => `<button data-act="nw-tab" data-v="${k}" aria-pressed="${nw.tab === k}">${esc(t("nw_tab_" + k))}</button>`).join("")}</div>
+      ${nwPickHtml()}<p class="hint">${esc(t("nw_hint"))}</p><div id="nwRes">${nwResHtml()}</div>
+      <button class="btn primary wide" data-act="nw-go" ${nw.waiting ? "disabled" : ""}>${icon("check")}${esc(t("nw_go"))}</button>`;
+    const q = $("#nwQ");
+    if (q) q.addEventListener("input", () => { nw.q = q.value; const pos = q.selectionStart; nwDraw(); const q2 = $("#nwQ"); if (q2) { q2.focus(); q2.setSelectionRange(pos, pos); } });
+    const site = $("#nwSite");
+    if (site) site.addEventListener("input", () => { nw.q = site.value; });
+  }
+  function nwWatch() {
+    if (!nw || !nw.waiting) return;
+    const kind = (S.task || {}).kind;
+    if (kind === "nw") { setHtml("#nwRes", nwResHtml()); return; }
+    nw.waiting = false;
+    nw.done = true;
+    nwDraw();
   }
 
   function togglesHtml() {
@@ -377,7 +456,7 @@
       return `<section class="hero" id="hero"></section><div id="route"></div><div class="speed-row" id="speed"></div><div class="busy-row" id="busy"></div>
         <div id="health"></div>
         <section class="card ww" id="ww" hidden></section>
-        <section class="card" id="method"></section><section class="card toggles" id="toggles"></section>
+        <section class="card" id="method"></section><div id="nwrow"></div><section class="card toggles" id="toggles"></section>
         <section class="card" id="servers"></section><section class="card" id="subs"></section>`;
     },
     update() {
@@ -390,6 +469,7 @@
       $("#ww").hidden = !ww;
       setHtml("#route", routeHtml());
       setHtml("#method", methodHtml());
+      setHtml("#nwrow", nwRowHtml());
       setHtml("#toggles", togglesHtml());
       setHtml("#servers", serversHtml());
       const subs = subsHtml();
@@ -1395,6 +1475,43 @@
       poll();
     },
     engine() { engineSheet(); },
+    "m-dd"(el) {
+      const v = el.dataset.v;
+      if (v === "server") engineSheet();
+      else if (v === "awg") awgListSheet();
+      else go("dpi");
+    },
+    "warp-sheet"() { closeSheet(); warpStartSheet(); },
+    "wl-flip"() {
+      const on = !(S.wl && S.wl.on);
+      if (act("wl_set", { on }) === undefined) return;
+      toast(t(on ? "wl_on_toast" : "wl_off_toast"), "ok");
+      poll();
+    },
+    "nw-open"() { nwOpen(); },
+    "nw-tab"(el) {
+      nw.tab = el.dataset.v; nw.sel = ""; nw.q = ""; nw.done = false;
+      if (nw.tab === "app" && !nwApps) setTimeout(() => { nwApps = act("apps") || []; nwDraw(); }, 30);
+      nwDraw();
+    },
+    "nw-sel"(el) { nw.sel = el.dataset.v; nw.done = false; nwDraw(); },
+    "nw-route"(el) { nw.route = el.dataset.v; nwDraw(); },
+    "nw-go"() {
+      const value = nw.tab === "site" ? (($("#nwSite") || {}).value || "").trim() : nw.sel;
+      if (!value) { toast(t(nw.tab === "site" ? "nw_need_site" : "nw_need_pick"), "error"); return; }
+      const known = (nw.targets.known_apps || {})[value];
+      const target = nw.tab === "app" && !known ? nw.route : "";
+      if (act("nw_fix", { kind: nw.tab, value, target }) === undefined) return;
+      nw.waiting = true; nw.done = false;
+      nwDraw();
+      poll();
+    },
+    "nw-undo"() {
+      if (act("nw_undo", {}) === undefined) return;
+      nw.waiting = true; nw.done = false;
+      nwDraw();
+      poll();
+    },
     "engine-set"(el) {
       const v = el.dataset.v;
       act("engine_pick", { pick: v });

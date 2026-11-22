@@ -226,6 +226,7 @@ function openModal(html, onMount, cls = "") {
 }
 
 function closeModal() {
+  nwModal = null;
   const ov = $("#overlay");
   ov.hidden = true;
   ov.innerHTML = "";
@@ -345,11 +346,11 @@ function openDropdown(anchor, groups, onPick) {
   pop.className = "popover dd-pop";
   const row = it => `<div class="dd-item ${it.sel ? "is-sel" : ""} ${it.off ? "is-off" : ""} ${it.sub ? "dd-sub" : ""}" role="option"
       aria-selected="${!!it.sel}" ${it.off ? 'aria-disabled="true"' : `data-pick="${it.id}" tabindex="0"`}>
-      <span class="dd-label">${esc(it.label)}${it.off ? " " + soonBadge() : ""}</span>
-      <button type="button" class="dd-more" data-info="${it.info}">${t("more")}</button></div>`;
+      <span class="dd-label">${esc(it.label)}${it.off && !it.quietOff ? " " + soonBadge() : ""}</span>
+      ${it.info ? `<button type="button" class="dd-more" data-info="${it.info}">${t("more")}</button>` : ""}</div>`;
   pop.innerHTML = `<div class="dd" role="listbox">${groups.map(g => g.head
-    ? `<div class="dd-sep"></div><div class="dd-head"><span class="dd-label">${esc(g.head)}${g.off ? " " + soonBadge() : ""}</span>
-        <button type="button" class="dd-more" data-info="${g.info}">${t("more")}</button></div>${g.items.map(row).join("")}`
+    ? `${g.first ? "" : '<div class="dd-sep"></div>'}<div class="dd-head"><span class="dd-label">${esc(g.head)}${g.off ? " " + soonBadge() : ""}</span>
+        ${g.info ? `<button type="button" class="dd-more" data-info="${g.info}">${t("more")}</button>` : ""}</div>${g.items.map(row).join("")}`
     : g.items.map(row).join("")).join("")}</div>`;
   pop.hidden = false;
   placePopover(pop, anchor, true);
@@ -576,6 +577,7 @@ function renderHero() {
           <div class="methods" role="radiogroup" aria-labelledby="methodTitle">${methodRows(method)}</div>
         </div>
         <div class="con-card con-toggles">${toggleRows()}</div>
+        ${nwRowHtml()}
         <button type="button" class="link-btn con-more" data-nav="more">${t("all_settings")}</button>
       </div>
     </div>${whatWorksHtml()}`;
@@ -614,14 +616,104 @@ function methodRows(method) {
     awg: S.awg && S.awg.count && !S.awg.client ? t("awg_need_client") : awgName,
     off: S.dpi && S.dpi.supported ? t("m_off_sub") : t("dpi_st_win"),
   };
+  const pick = (S.engine && S.engine.pick) || "auto";
+  if (pick !== "auto" && pick !== "awg") subs.server += ` · ${t(`i_eng_${pick}_name`)}`;
+  if (method === "off" && S.dpi && S.dpi.supported) subs.off = t(`i_dpi_${dpiCombo()}_name`);
   const empty = { awg: false, server: !S.servers.some(s => s.supported && s.kind !== "awg"), auto: false, off: false };
   return METHODS.map(id => {
     const sel = id === method;
-    return `<button type="button" class="m-opt ${sel ? "sel" : ""} ${empty[id] && !sel ? "m-empty" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}" title="${esc(subs[id])}">
+    const btn = `<button type="button" class="m-opt ${sel ? "sel" : ""} ${empty[id] && !sel ? "m-empty" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}" title="${esc(subs[id])}">
         <span class="m-dot" aria-hidden="true"></span>
         <span class="m-text"><b>${t(`m_${id}`)}</b><small>${esc(subs[id])}</small></span>
       </button>`;
+    const dd = M_DD[id] ? `<button type="button" class="m-dd" data-dd="m_${id}" aria-haspopup="listbox" aria-expanded="false"
+        aria-label="${esc(t(M_DD[id]))}" title="${esc(t(M_DD[id]))}">${icon("down")}</button>` : "";
+    return `<div class="m-wrap seg-group ${sel ? "sel" : ""} ${dd ? "has-dd" : ""}">${btn}${dd}</div>`;
   }).join("");
+}
+
+/* Стрелки у плиток «Способ»: движок у «VPN-сервер», конфиги и ускорение у «AmneziaWG», чем ускорять у «Без VPN». */
+const M_DD = { server: "m_dd_server", awg: "m_dd_awg", off: "m_dd_off" };
+
+function pickEngine(id) {
+  const pick = (S.engine && S.engine.pick) || "auto";
+  const counts = (S.engine || {}).counts || {};
+  if (id === pick) return;
+  S.engine = Object.assign({}, S.engine, { pick: id });
+  renderHero();
+  if (page === "more") renderPage(true);
+  act("engine_pick", { pick: id }).then(r => {
+    if (!r.ok) return;
+    if (id !== "auto" && !counts[id]) toast(t(id === "awg" ? "eng_awg_add" : "eng_add"), "info", 7000);
+    else if (id === "awg" && S.awg && !S.awg.client) toast(t("awg_need_client"), "info", 7000);
+    else if (id === "singbox" && S.engine && !S.engine.singbox) toast(t("eng_sb_download"), "info", 6000);
+  });
+}
+
+function pickDpiCombo(id, thenOff) {
+  const v = DPI_COMBOS[id];
+  if (!v || !S.dpi) return;
+  const same = id === dpiCombo();
+  S.dpi.zapret.enabled = v.zapret_enabled;
+  S.dpi.byedpi.role = v.byedpi_role;
+  if (thenOff) S.method = "off";
+  renderHero();
+  const set = same ? Promise.resolve({ ok: true }) : act("set_dpi", v);
+  set.then(r => {
+    if (r.ok && thenOff) return act("method", { method: "off" });
+  }).then(() => scheduleRefresh(50));
+}
+
+function methodDropdown(anchor, id) {
+  const pick = (S.engine && S.engine.pick) || "auto";
+  const counts = (S.engine || {}).counts || {};
+  const offDpi = !(S.dpi && S.dpi.supported);
+  const combo = S.dpi ? dpiCombo() : "off";
+  const engItem = e => ({ id: "eng:" + e, info: `eng_${e}`, sel: pick === e,
+    label: e === "auto" ? t("i_eng_auto_name") : `${t(`i_eng_${e}_name`)} (${counts[e] || 0})` });
+  const dpiItem = (c, label) => ({ id: "dpi:" + c, info: `dpi_${c}`, off: offDpi, quietOff: true, sel: S.method === "off" && combo === c,
+    label: label || t(`i_dpi_${c}_name`) });
+  const novpnHead = t("dd_novpn_head") + (offDpi ? ` (${t("dpi_st_win").toLowerCase()})` : "");
+  let groups;
+  if (id === "server") {
+    groups = [{ head: t("dd_engine_head"), first: true, items: ["auto", "xray", "hy2", "singbox"].map(engItem) },
+      { items: [{ id: "pick", label: t("dd_pick_server") }] }];
+  } else if (id === "awg") {
+    const cur = (S.awg && S.awg.active) || S.settings.last_awg_key || "";
+    const awgs = S.servers.filter(x => x.kind === "awg");
+    groups = [{ head: t("dd_awg_head"), first: true, items: awgs.length
+        ? awgs.map(x => ({ id: "awg:" + x.key, label: x.name, sel: S.method === "awg" && x.key === cur }))
+        : [{ id: "awg:new", label: t("dd_awg_new") }] },
+      { head: novpnHead, items: [dpiItem("z", "zapret"), dpiItem("b", "ByeDPI")] }];
+    if (awgs.length) groups[0].items.push({ id: "awg:new", label: t("dd_awg_more") });
+  } else {
+    groups = [{ head: novpnHead, first: true, items: ["zb", "bz", "z", "b"].map(c => dpiItem(c)) }];
+  }
+  openDropdown(anchor, groups, v => {
+    const [kind, arg] = v.split(/:(.*)/s);
+    if (kind === "eng") return pickEngine(arg);
+    if (kind === "pick") return ACTIONS.pick_server();
+    if (kind === "dpi") return pickDpiCombo(arg, true);
+    if (kind === "awg") {
+      if (arg === "new") return modalAwgStart();
+      S.method = "awg";
+      renderHero();
+      return act("connect", { key: arg }).then(() => scheduleRefresh(50));
+    }
+  });
+}
+
+/* «Не работает» и «Белые списки» — ряд из двух одинаковых кнопок под переключателями. */
+function nwRowHtml() {
+  const w = S.wl || {};
+  const sub = !w.on ? t("wl_sub_off") : !w.servers ? t("wl_sub_noservers") : w.manual ? t("wl_sub_manual") : t("wl_sub_auto");
+  return `<div class="nw-row">
+    <button type="button" class="nw-cell" data-act="nw_open">${icon("alert")}
+      <span class="nw-text"><b>${t("nw_btn")}</b><small>${esc(t("nw_btn_sub"))}</small></span></button>
+    <button type="button" class="nw-cell wl-cell ${w.on ? "on" : ""}" role="checkbox" aria-checked="${!!w.on}" data-act="wl_toggle">
+      <span class="wl-box" aria-hidden="true">${w.on ? icon("check") : ""}</span>
+      <span class="nw-text"><b>${t("wl_name")}</b><small>${esc(sub)}</small></span></button>
+  </div>`;
 }
 
 function toggleRows() {
@@ -633,7 +725,9 @@ function toggleRows() {
     : d.mode ? t("accel_running", { e: d.mode === "byedpi" ? "ByeDPI" : "zapret" }) + (S.connected && st.discord_via_vpn !== false ? t("accel_discord_vpn") : "")
     : t("dpi_st_setup");
   const row = (name, sub, control) => `<div class="tg-row"><span class="tg-text"><b>${esc(name)}</b><small>${esc(sub)}</small></span>${control}</div>`;
-  return row(t("accel_name"), accelSub, sw(accelOn, `data-act="accel" aria-label="${esc(t("accel_name"))}"`, !d.supported))
+  const accelCtl = `<span class="tg-ctl"><button type="button" class="tg-dd" data-dd="dpi" aria-haspopup="listbox" aria-expanded="false"
+      aria-label="${esc(t("accel_dd"))}" title="${esc(t("accel_dd"))}" ${d.supported ? "" : "disabled"}>${icon("down")}</button>${sw(accelOn, `data-act="accel" aria-label="${esc(t("accel_name"))}"`, !d.supported)}</span>`;
+  return row(t("accel_name"), accelSub, accelCtl)
     + row(t("i_ads_name"), adsSide(), sw(st.block_ads, `data-act="tile_ads" aria-label="${esc(t("i_ads_name"))}"`))
     + row(t("i_dns_name"), st.dns_encrypted ? t("dns_on_sub") : t("off"),
       sw(st.dns_encrypted, `data-act="tile_set" data-key="dns_encrypted" aria-label="${esc(t("i_dns_name"))}"`));
@@ -930,17 +1024,7 @@ function engineDropdown(anchor) {
   const pick = (S.engine && S.engine.pick) || "auto";
   const counts = (S.engine || {}).counts || {};
   openDropdown(anchor, [{ items: ENGINES.map(id => ({ id, info: `eng_${id}`, sel: pick === id,
-    label: id === "auto" ? t("i_eng_auto_name") : `${t(`i_eng_${id}_name`)} (${counts[id] || 0})` })) }], id => {
-    if (id === pick) return;
-    S.engine = Object.assign({}, S.engine, { pick: id });
-    renderHero();
-    act("engine_pick", { pick: id }).then(r => {
-      if (!r.ok) return;
-      if (id !== "auto" && !counts[id]) toast(t(id === "awg" ? "eng_awg_add" : "eng_add"), "info", 7000);
-      else if (id === "awg" && S.awg && !S.awg.client) toast(t("awg_need_client"), "info", 7000);
-      else if (id === "singbox" && S.engine && !S.engine.singbox) toast(t("eng_sb_download"), "info", 6000);
-    });
-  });
+    label: id === "auto" ? t("i_eng_auto_name") : `${t(`i_eng_${id}_name`)} (${counts[id] || 0})` })) }], pickEngine);
 }
 
 /* ---------- «Дополнительно» ---------- */
@@ -3012,6 +3096,88 @@ function warpBtn() {
 }
 
 /* AmneziaWG выбран, а конфигов нет: создать бесплатный WARP или вставить свой. */
+/* «Не работает»: что именно (сервис, программа, сайт) → проверка всеми путями → итог и «Отменить». */
+let nwModal = null;   // открыто окно «Не работает»: {tab, sel, site, route, targets, waiting}
+
+function modalNotWorking(tab = "service") {
+  nwModal = { tab, sel: "", site: "", route: "proxy", targets: null, waiting: false };
+  act("nw_targets", {}, { quiet: true }).then(r => {
+    if (!nwModal) return;
+    nwModal.targets = r.ok ? r.result : { services: [], apps: [], apps_supported: false };
+    drawNw();
+  });
+  openModal(`<div id="nwBox" class="stack"></div>`, () => drawNw(), "modal-wide nw-modal");
+}
+
+function nwPickHtml() {
+  const m = nwModal, T = m.targets;
+  if (m.tab === "site") {
+    return `<label class="field"><span>${t("nw_site_label")}</span>
+      <input class="input" id="nwSite" value="${esc(m.site)}" placeholder="youtube.com" autocomplete="off" spellcheck="false" inputmode="url"></label>`;
+  }
+  if (!T) return `<p class="hint">${t("loading")}</p>`;
+  const opt = (v, label, extra = "") => `<button type="button" class="nw-opt" role="radio" aria-checked="${m.sel === v}" data-nwsel="${esc(v)}">${esc(label)}${extra}</button>`;
+  if (m.tab === "service") {
+    return `<div class="nw-opts" role="radiogroup" aria-label="${esc(t("nw_tab_service"))}">${T.services.map(x => opt(x.name, x.name)).join("")}</div>`;
+  }
+  if (!T.apps_supported) return `<p class="hint">${t("nw_apps_win")}</p>`;
+  const list = T.apps.length ? `<div class="nw-opts" role="radiogroup" aria-label="${esc(t("nw_tab_app"))}">${T.apps.map(x => opt(x.name, x.title)).join("")}</div>`
+    : `<p class="hint">${t("nw_apps_none")}</p>`;
+  const a = T.apps.find(x => x.name === m.sel);
+  const route = a && !a.known ? `<div class="nw-route"><span class="hint">${t("nw_app_route")}</span>
+      <div class="seg" role="radiogroup" aria-label="${esc(t("nw_app_route"))}">${[["proxy", t("nw_via_vpn")], ["direct", t("nw_direct")]].map(([v, l]) =>
+        `<button type="button" role="radio" data-nwroute="${v}" aria-checked="${m.route === v}">${l}</button>`).join("")}</div></div>` : "";
+  return list + route;
+}
+
+function nwResultHtml() {
+  const m = nwModal;
+  const last = (S.nw || {}).last;
+  if (m.waiting) return `<div class="nw-res busy"><span class="dot busy"></span><span>${esc(S.busy ? S.busy + "…" : t("nw_running"))}</span></div>`;
+  if (!m.done || !last) return "";
+  const steps = (last.steps || []).length ? `<details class="nw-steps"><summary>${t("nw_steps")}</summary>
+      <ul>${last.steps.map(x => `<li>${esc(x)}</li>`).join("")}</ul></details>` : "";
+  return `<div class="nw-res ${last.changed ? "ok" : ""}"><p>${esc(last.undone ? t("nw_undone") : last.verdict)}</p>${steps}
+    ${last.can_undo ? `<div class="toolbar"><button type="button" class="btn btn-small" id="nwUndo">${icon("refresh")}${t("nw_undo")}</button></div>` : ""}</div>`;
+}
+
+function drawNw() {
+  const box = $("#nwBox");
+  if (!box || !nwModal) return;
+  const m = nwModal;
+  const site = $("#nwSite");
+  if (site) m.site = site.value;
+  box.innerHTML = `<h2>${t("nw_title")}</h2>
+    <div class="seg" role="radiogroup" aria-label="${esc(t("nw_title"))}">${["service", "app", "site"].map(k =>
+      `<button type="button" role="radio" data-nwtab="${k}" aria-checked="${m.tab === k}">${t(`nw_tab_${k}`)}</button>`).join("")}</div>
+    ${nwPickHtml()}
+    <p class="hint">${t("nw_hint")}</p>
+    <div id="nwRes">${nwResultHtml()}</div>
+    <div class="modal-error" id="mErr" hidden></div>
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-close>${t("close")}</button>
+      <button type="button" class="btn btn-primary" id="nwGo" ${m.waiting ? "disabled" : ""}>${icon("check")}${t("nw_go")}</button></div>`;
+  box.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => { nwModal = null; closeModal(); }));
+  box.querySelectorAll("[data-nwtab]").forEach(b => b.addEventListener("click", () => { m.tab = b.dataset.nwtab; m.sel = ""; m.done = false; drawNw(); }));
+  box.querySelectorAll("[data-nwsel]").forEach(b => b.addEventListener("click", () => { m.sel = b.dataset.nwsel; m.done = false; drawNw(); }));
+  box.querySelectorAll("[data-nwroute]").forEach(b => b.addEventListener("click", () => { m.route = b.dataset.nwroute; drawNw(); }));
+  const inp = $("#nwSite");
+  if (inp) inp.addEventListener("keydown", e => { if (e.key === "Enter") $("#nwGo").click(); });
+  const undo = $("#nwUndo");
+  if (undo) undo.addEventListener("click", () => act("nw_undo", {}).then(r => { if (r.ok) { m.waiting = true; drawNw(); } }));
+  $("#nwGo").addEventListener("click", () => {
+    const value = m.tab === "site" ? ($("#nwSite").value || "").trim() : m.sel;
+    if (!value) return showModalError(t(m.tab === "site" ? "nw_need_site" : "nw_need_pick"));
+    const a = m.tab === "app" && m.targets ? m.targets.apps.find(x => x.name === value) : null;
+    const target = a && !a.known ? m.route : "";
+    act("nw_fix", { kind: m.tab, value, target }, { quiet: true }).then(r => {
+      if (!r.ok) return showModalError(r.error);
+      m.waiting = true;
+      m.done = false;
+      drawNw();
+    });
+  });
+}
+
 function modalAwgStart() {
   openModal(`<h2>${t("awg_start_title")}</h2><p class="modal-text">${t("awg_start_text")}</p>
     <p class="hint">${t("warp_note")}</p>
@@ -3241,6 +3407,16 @@ const ACTIONS = {
     renderHero();
     act("method", { method: m }).then(() => scheduleRefresh(50));
   },
+  wl_toggle: () => {
+    const on = !(S.wl && S.wl.on);
+    S.wl = Object.assign({}, S.wl, { on, manual: on });
+    renderHero();
+    act("wl_set", { on }).then(r => {
+      if (r.ok) toast(t(on ? "wl_on_toast" : "wl_off_toast"), "ok", 4000);
+      scheduleRefresh(50);
+    });
+  },
+  nw_open: () => modalNotWorking(),
   accel: el => {
     const v = el.getAttribute("aria-checked") !== "true";
     el.setAttribute("aria-checked", String(v));
@@ -3547,6 +3723,7 @@ document.addEventListener("click", e => {
     if (!pop.hidden && pop._anchor === dd) return closeMenu();
     if (dd.dataset.dd === "dpi") return dpiDropdown(dd);
     if (dd.dataset.dd === "engine") return engineDropdown(dd);
+    if (dd.dataset.dd.startsWith("m_")) return methodDropdown(dd, dd.dataset.dd.slice(2));
     return dd.dataset.dd === "route" ? routeDropdown(dd) : connDropdown(dd);
   }
 
@@ -3686,6 +3863,10 @@ function connectEvents() {
         break;
       case "busy":
         if (S) { S.busy = d.active ? d.text : ""; renderBusy(); }
+        if (nwModal && nwModal.waiting) {
+          if (d.active) { const r = $("#nwRes"); if (r) r.innerHTML = nwResultHtml(); }
+          else setTimeout(() => { if (nwModal && nwModal.waiting) { nwModal.waiting = false; drawNw(); } }, 1500);
+        }
         if (!d.active && pendingAdd) {
           const p = pendingAdd;
           pendingAdd = null;
@@ -3748,15 +3929,21 @@ function connectEvents() {
       case "repair":
         repairResult = d.result;
         if (page === "services") renderSiteBox();
-        else toast(d.result.verdict, d.result.fixed ? "ok" : "info", 9000);
+        else if (!nwModal) toast(d.result.verdict, d.result.fixed ? "ok" : "info", 9000);
         break;
       case "site":
         siteResult = d.result;
         if (page === "services") renderSiteBox();
-        else toast(d.result.verdict, "ok", 8000);
+        else if (!nwModal) toast(d.result.verdict, "ok", 8000);
         break;
       case "summary":
-        toast(d.text, "ok", 10000);
+        if (!nwModal) toast(d.text, "ok", 10000);
+        break;
+      case "nw":
+        if (S) S.nw = { last: d.result };
+        if (nwModal && $("#nwBox")) { nwModal.waiting = false; nwModal.done = true; drawNw(); }
+        else toast(d.result.verdict, d.result.changed ? "ok" : "info", 9000);
+        scheduleRefresh(100);
         break;
       case "vpn_site": {
         const it = d.item || {};
@@ -3778,7 +3965,8 @@ function connectEvents() {
         toast(d.text, "info", 3500);
         break;
       case "error":
-        if (pendingAdd && pendingAdd.modal) pendingAdd.error = d.text;
+        if (nwModal && nwModal.waiting && $("#nwBox")) { nwModal.waiting = false; drawNw(); showModalError(d.text); }
+        else if (pendingAdd && pendingAdd.modal) pendingAdd.error = d.text;
         else toast(d.text, "error", 10000);
         break;
       default:

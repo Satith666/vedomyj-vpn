@@ -317,6 +317,7 @@ public class CoreTest {
         final Set<String> dpiWorks = Collections.synchronizedSet(new HashSet<String>()); // какие способы обхода «помогают»
         final Set<String> deadProxies = Collections.synchronizedSet(new HashSet<String>());
         final List<String> testCores = new CopyOnWriteArrayList<String>();
+        final Map<Integer, String> portWhat = new java.util.concurrent.ConcurrentHashMap<Integer, String>();
 
         /** Временное ядро: вход HTTP → «выход». Работает ли выход — решает имитация. */
         public java.io.Closeable startTestCore(String configJson) throws Exception {
@@ -346,6 +347,7 @@ public class CoreTest {
                 what = "proxy:" + host + ":" + Json.str(out, "protocol") + (Json.map(out, "streamSettings") != null ? ":chain" : "");
             }
             testCores.add(what);
+            portWhat.put(port, what);
             return new ConnectProxy(port, "", !works);
         }
 
@@ -1933,6 +1935,101 @@ public class CoreTest {
             es.saveSettings();
             check(Json.bool(Json.parseObject(Store.read(new File(pdir, "settings.json"))), "fp_auto", false), "в файле настройка прежняя");
             es.shutdown();
+        });
+
+        test("«Не работает» и «Белые списки»: проверка всеми путями, «работает полностью», «Отменить», приоритет белым спискам", () -> {
+            Fake fn = new Fake(tmpDir());
+            Engine en = engine(fn);
+            en.addServers(link("fast1.example.com", "Быстрый") + "\n" + link("slow1.example.com", "Медленный") + "\n"
+                    + link("wl1.example.com", "Белые списки WL"));
+            waitIdle(en);
+            en.connect();
+            waitIdle(en);
+            check("Быстрый".equals(currentName(en)), "без галочки — лучший обычный: " + currentName(en));
+            Api.call(en, "wl_set", Json.obj("on", true));
+            waitIdle(en);
+            check("Белые списки WL".equals(currentName(en)) && Json.bool(Json.map(en.state(), "wl"), "on", false),
+                    "галочка «Белые списки» — сначала сервер для них: " + currentName(en));
+            Api.call(en, "wl_set", Json.obj("on", false));
+            waitIdle(en);
+            check("Быстрый".equals(currentName(en)) && !Json.bool(en.settings, "wl_priority", true), "сняли галочку — обычный лучший: " + currentName(en));
+            // «Не работает»: сервис
+            final Map<String, String> plan = new java.util.concurrent.ConcurrentHashMap<String, String>();
+            Engine.Staller old = Engine.STALL;
+            Engine.STALL = (h, port) -> {
+                String what = port == 0 ? "direct" : fn.portWhat.containsKey(port) ? fn.portWhat.get(port) : "cur";
+                String how = what.startsWith("proxy:fast1") ? "vpn" : what.startsWith("proxy:") ? "other" : what;
+                String st = plan.containsKey(h + "|" + how) ? plan.get(h + "|" + how) : plan.containsKey(h + "|*") ? plan.get(h + "|*") : "ok";
+                if ("stall".equals(st)) return Json.obj("state", "stall", "bytes", 16000L, "detail", "соединение замирает после 15 КБ");
+                if ("fail".equals(st)) return Json.obj("state", "fail", "bytes", 0L, "detail", "сайт не отвечает");
+                return Json.obj("state", "ok", "bytes", 70000L, "detail", "68 КБ");
+            };
+            try {
+                String before = Json.write(en.settings.get("proxy_list"));
+                plan.put("www.youtube.com|cur", "stall");
+                plan.put("www.youtube.com|direct", "stall");
+                Api.call(en, "nw_fix", Json.obj("kind", "service", "value", "YouTube"));
+                waitIdle(en);
+                Map<String, Object> last = Json.map(Json.map(en.state(), "nw"), "last");
+                check(last != null && "proxy".equals(Json.str(last, "route")) && Json.bool(last, "changed", false)
+                        && Json.bool(last, "can_undo", false) && Json.str(last, "verdict").contains("теперь через VPN"),
+                        "YouTube режется — теперь через VPN: " + Json.write(last));
+                check(Json.str(en.settings, "proxy_list").contains("youtube.com"), "маршрут записан");
+                check(Json.write(Json.list(last, "steps")).contains("замирает"), "видно, что было «не полностью»");
+                Api.call(en, "nw_undo", Json.obj());
+                waitIdle(en);
+                check(Json.write(en.settings.get("proxy_list")).equals(before)
+                        && !Json.bool(Json.map(Json.map(en.state(), "nw"), "last"), "can_undo", true), "«Отменить» — как было");
+                // ни как сейчас, ни через VPN, ни без VPN — через другой сервер
+                plan.clear();
+                plan.put("discord.com|cur", "fail");
+                plan.put("discord.com|vpn", "fail");
+                plan.put("discord.com|direct", "fail");
+                en.nwFix("service", "Discord", "");
+                waitIdle(en);
+                last = Json.map(Json.map(en.state(), "nw"), "last");
+                check(Json.str(last, "route").startsWith("server:") && Json.str(last, "verdict").contains("теперь через «"),
+                        "через другой сервер: " + Json.write(last));
+                // нигде — ничего не меняем
+                plan.clear();
+                plan.put("api.openai.com|*", "fail");
+                en.nwFix("service", "ChatGPT", "");
+                waitIdle(en);
+                last = Json.map(Json.map(en.state(), "nw"), "last");
+                check(!Json.bool(last, "changed", true) && Json.str(last, "verdict").contains("не открывается ни"), "нигде не работает: " + Json.write(last));
+                // приложение: известное — проверяется как сервис; неизвестное — без VPN по выбору
+                plan.clear();
+                en.nwFix("app", "com.google.android.youtube", "");
+                waitIdle(en);
+                last = Json.map(Json.map(en.state(), "nw"), "last");
+                check("YouTube".equals(Json.str(last, "name")) && Json.str(last, "verdict").contains("качается полностью"),
+                        "приложение YouTube — проверка сервиса: " + Json.write(last));
+                try {
+                    en.nwFix("app", "com.example.game", "");
+                    check(false, "неизвестное приложение без выбора пути");
+                } catch (Engine.UserError ok) {
+                    // так и надо
+                }
+                en.nwFix("app", "com.example.game", "direct");
+                waitIdle(en);
+                check(Json.list(en.settings, "excluded_apps").contains("com.example.game"), "неизвестное приложение — без VPN");
+                Api.call(en, "nw_undo", Json.obj());
+                waitIdle(en);
+                check(!Json.list(en.settings, "excluded_apps").contains("com.example.game"), "«Отменить» для приложения");
+                try {
+                    en.nwFix("service", "Нет такого", "");
+                    check(false, "неизвестный сервис");
+                } catch (Engine.UserError ok) {
+                    // так и надо
+                }
+                Map<String, Object> tg = en.nwTargets();
+                check(Json.list(tg, "services").size() == Services.ALL.size() && Json.map(tg, "known_apps").containsKey("com.discord"),
+                        "списки для окна");
+                check("www.youtube.com".equals(Services.checkHost(Services.find("YouTube"))), "YouTube — по странице с плеером");
+            } finally {
+                Engine.STALL = old;
+            }
+            en.shutdown();
         });
 
         test("Журнал ошибок в движке: сбои задач, секреты серверов, действия интерфейса", () -> {

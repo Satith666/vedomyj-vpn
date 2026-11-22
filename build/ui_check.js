@@ -153,11 +153,59 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
     "Тема: тёмная, светлая и «как в Windows» переключаются в настройках", `${thLight} ${thAutoL} ${thAutoD} ${autoChecked} ${thDark}`);
   await page.evaluate(() => go("home"));
 
+  // 5б. «Способ»: стрелки-списки у плиток (движок, конфиги AmneziaWG и ускорение, чем ускорять без VPN)
+  await page.waitForSelector('[data-dd="m_server"]');
+  const ddItems = async (sel) => {
+    await page.click(sel);
+    await page.waitForSelector("#popover:not([hidden]) .dd");
+    const items = await page.$$eval("#popover .dd-item, #popover .dd-head", (els) => els.map((e) => e.textContent.replace(/\s+/g, " ").trim()));
+    await page.keyboard.press("Escape");
+    await page.mouse.click(5, 5);
+    await page.waitForTimeout(150);
+    return items.join(" | ");
+  };
+  const ddSrv = await ddItems('[data-dd="m_server"]');
+  const ddAwg = await ddItems('[data-dd="m_awg"]');
+  const ddOff = await ddItems('[data-dd="m_off"]');
+  ok(/Xray/.test(ddSrv) && /Hysteria2/.test(ddSrv) && /sing-box/.test(ddSrv) && /zapret/.test(ddAwg) && /ByeDPI/.test(ddAwg)
+    && /Zapret, запасной ByeDPI/.test(ddOff) && (await page.locator('.tg-dd[data-dd="dpi"]').count()) === 1,
+    "«Способ»: списки у плиток и у ускорения", `${ddSrv.slice(0, 60)} / ${ddAwg.slice(0, 60)} / ${ddOff.slice(0, 40)}`);
+  await page.click('[data-dd="m_server"]');
+  await page.click('#popover [data-pick="eng:xray"]');
+  await page.waitForTimeout(600);
+  const engPick = await page.evaluate(() => S.engine && S.engine.pick);
+  await page.click('[data-dd="m_server"]');
+  await page.click('#popover [data-pick="eng:auto"]');
+  await page.waitForTimeout(400);
+  ok(engPick === "xray", "Движок выбирается прямо в плитке «VPN-сервер»", engPick);
+
+  // 5в. «Не работает» и «Белые списки» — ряд из двух одинаковых кнопок
+  const nwBox = await page.locator(".nw-row .nw-cell").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)));
+  await page.click('[data-act="wl_toggle"]');
+  await page.waitForTimeout(900);
+  const wlOn = await page.getAttribute('[data-act="wl_toggle"]', "aria-checked");
+  const wlSet = await page.evaluate(() => S.settings && S.settings.wl_priority !== undefined ? S.wl.manual : null);
+  await page.click('[data-act="wl_toggle"]');
+  await page.waitForTimeout(900);
+  const wlOff = await page.getAttribute('[data-act="wl_toggle"]', "aria-checked");
+  ok(nwBox.length === 2 && Math.abs(nwBox[0] - nwBox[1]) <= 1 && wlOn === "true" && wlOff === "false" && wlSet !== false,
+    "«Не работает» и «Белые списки» в один ряд, галочка переключается", `${nwBox} ${wlOn} ${wlOff}`);
+  await page.click('[data-act="nw_open"]');
+  await page.waitForSelector("#nwBox [data-nwsel]");
+  await page.click('#nwBox [data-nwsel="Telegram"]');
+  await page.click("#nwGo");
+  await page.waitForSelector("#nwRes .nw-res:not(.busy)", { timeout: 60000 });
+  const nwText = await page.textContent("#nwRes");
+  await page.click('#nwBox [data-nwtab="site"]');
+  const nwSite = await page.locator("#nwSite").count();
+  await page.locator("#nwBox [data-close]").first().click();
+  ok(/Telegram/.test(nwText) && nwSite === 1, "«Не работает»: сервис проверяется всеми путями, есть вкладка «Сайт»", nwText.slice(0, 90));
+
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
   const PAGES = ["home", "status", "more", "features", "zapret", "byedpi", "services", "routes", "traffic", "updates", "settings",
     "log", "tips", "manual", "share", "ads", "errors", "family", "pro"];
-  const MODALS = ["modalAddSub()", "modalAddServer()", "modalAwgStart()", "modalFamInvite()", "modalVps()"];
+  const MODALS = ["modalAddSub()", "modalAddServer()", "modalAwgStart()", "modalFamInvite()", "modalVps()", "modalNotWorking()"];
   const tight = [];
   for (const [w, h] of [[1180, 760], [900, 700], [720, 640]]) {
     await page.setViewportSize({ width: w, height: h });
