@@ -451,6 +451,9 @@ FAKE_OLD_CORE: dict = {}
 STATSQUERY: dict = {"n": 0}  # сколько раз скорость читали запуском «xray api statsquery»  # {"on": True} — ядро без страницы метрик (старая версия)
 
 
+_ENGINE_PORT = [34000]
+
+
 def make_engine(tmp: str):
     os.makedirs(os.path.join(tmp, "bin"), exist_ok=True)
     open(os.path.join(tmp, "bin", "xray.exe" if sys.platform == "win32" else "xray"), "w").close()
@@ -462,8 +465,12 @@ def make_engine(tmp: str):
             MESSAGES.append(d["text"])
 
     e = engmod.Engine(tmp, notify)
-    e.settings.update(ping_host=f"127.0.0.1:{WEB}", socks_port=netutil.find_free_ports(1, 34000)[0],
-                      http_port=netutil.find_free_ports(1, 34100)[0], system_proxy=False, autopilot=False)
+    # каждому движку — свои, ещё не выдававшиеся порты: фоновый поток движка из прошлой проверки
+    # (переподключение, автоподбор) не займёт порт, который только что отдали новому движку
+    socks, http = netutil.find_free_ports(2, _ENGINE_PORT[0])
+    _ENGINE_PORT[0] = http + 1 if http < 34800 else 34000
+    e.settings.update(ping_host=f"127.0.0.1:{WEB}", socks_port=socks,
+                      http_port=http, system_proxy=False, autopilot=False)
     e.events = events
     return e
 
