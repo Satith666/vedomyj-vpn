@@ -417,10 +417,21 @@ function go(p) {
   if (p === "errors") loadErrors();
 }
 
+/* Тема: «dark», «light» или «auto» (как в Windows: окно Edge знает тему системы и сообщает о её смене). */
+let themeMq = null;
+function themePref() {
+  const v = (S && S.theme) || localStorage.getItem("pult-theme") || "dark";
+  return v === "light" || v === "auto" ? v : "dark";
+}
 function renderTheme() {
-  const theme = (S && S.theme) || localStorage.getItem("pult-theme") || "dark";
-  document.documentElement.dataset.theme = theme;
-  localStorage.setItem("pult-theme", theme);
+  const pref = themePref();
+  if (!themeMq && window.matchMedia) {
+    themeMq = window.matchMedia("(prefers-color-scheme: light)");
+    try { themeMq.addEventListener("change", () => { if (themePref() === "auto") renderTheme(); }); } catch (e) { /* старый движок */ }
+  }
+  const light = pref === "light" || (pref === "auto" && !!(themeMq && themeMq.matches));
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  localStorage.setItem("pult-theme", pref);
 }
 
 function renderProblemsBadge() {
@@ -1003,7 +1014,7 @@ function renderMore() {
       ${row("settings", "gear", t("nav_settings"), t("more_settings"))}
     </section>
     <div class="more-foot">
-      <button class="btn btn-small" data-act="theme">${icon(S.theme === "light" ? "moon" : "sun")}${S.theme === "light" ? t("theme_dark") : t("theme_light")}</button>
+      <button class="btn btn-small" data-act="theme">${icon(isLight() ? "moon" : "sun")}${isLight() ? t("theme_dark") : t("theme_light")}</button>
       <button class="btn btn-small" data-act="lang_toggle">${LANG === "ru" ? "English" : "Русский"}</button>
       <span class="grow"></span><span>${esc(t("version_v", { v: S.version }))}</span>
     </div>`;
@@ -2295,7 +2306,8 @@ function renderSettings(full) {
       <div class="upd-row"><span class="list-text"><b>${t("language")}</b></span>
         <div class="seg" role="radiogroup" aria-label="${t("language")}"><button data-lang="ru" aria-checked="${LANG === "ru"}" role="radio">Русский</button><button data-lang="en" aria-checked="${LANG === "en"}" role="radio">English</button></div></div>
       <div class="upd-row"><span class="list-text"><b>${t("theme")}</b></span>
-        <div class="seg" role="radiogroup" aria-label="${t("theme")}"><button data-theme-set="dark" aria-checked="${S.theme !== "light"}" role="radio">${t("theme_dark_short")}</button><button data-theme-set="light" aria-checked="${S.theme === "light"}" role="radio">${t("theme_light_short")}</button></div></div>
+        <div class="seg" role="radiogroup" aria-label="${t("theme")}">${[["auto", t("theme_auto_short")], ["dark", t("theme_dark_short")], ["light", t("theme_light_short")]].map(([v, l]) =>
+          `<button data-theme-set="${v}" aria-checked="${themePref() === v}" role="radio">${l}</button>`).join("")}</div></div>
     </section>
     <h2 class="section-title">${t("privacy_title")}</h2>
     <section class="card card-pad stack" style="gap:10px" id="pinBox">${pinBoxHtml()}</section>
@@ -3141,6 +3153,8 @@ function modalVps() {
 
 const LIST_NAMES = () => ({ proxy_list: t("list_proxy"), direct_list: t("list_direct"), block_list: t("list_block") });
 
+const isLight = () => document.documentElement.dataset.theme === "light";
+
 function setTheme(next) {
   if (S) S.theme = next;
   localStorage.setItem("pult-theme", next);
@@ -3405,7 +3419,7 @@ const ACTIONS = {
   run_check: () => { checkReport = null; act("run_check").then(() => renderCheckBox()); },
   copy_check: () => checkReport && copy(checkReport.text, t("report_copied")),
   show_report: () => checkReport && checkReport.file && act("show_report", { name: checkReport.file }),
-  theme: () => setTheme(S.theme === "light" ? "dark" : "light"),
+  theme: () => setTheme(isLight() ? "dark" : "light"),
   lang_toggle: () => setLang(LANG === "ru" ? "en" : "ru"),
   quit: async () => {
     if (await confirmModal(t("quit_q"), t("quit_text"), t("quit"), false)) {

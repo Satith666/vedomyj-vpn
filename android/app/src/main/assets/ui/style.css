@@ -416,3 +416,12 @@ details.card-pad .btns { margin-top: 10px; }
 .m-opt { padding: 10px 12px; }
 #subs .row .meta { white-space: normal; }
 .row + .pad { padding-top: 12px; }
+
+/* ---------- Компактные кнопки (1.15.2): ниже, но палец попадает (не меньше 42 px) ---------- */
+.btn { min-height: 42px; padding: 0 14px; border-radius: 11px; }
+.m-opt { min-height: 46px; padding: 7px 10px; }
+.m-opt.sel { background: var(--accent-soft); }
+.power { width: 128px; height: 128px; }
+.power .i { width: 46px; height: 46px; }
+.hero { gap: 10px; padding-top: 12px; }
+.h-cell { padding: 8px 12px; }

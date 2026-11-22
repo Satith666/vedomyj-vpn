@@ -842,3 +842,19 @@ form[data-form="ads_lookup"] .input { flex: 1 1 auto; min-width: 0; width: auto;
 .tg-row { padding: 12px 10px; }
 .proxy-form { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(190px, max-content); }
 @media (max-width: 860px) { .proxy-form { grid-template-columns: 1fr; } }
+
+/* ---------- Компактные кнопки (1.16.2): ниже кнопки, плитки способов и рамки; отступы текста не меньше 9 px ---------- */
+.topbar { height: 50px; }
+.btn { height: 32px; padding: 0 12px; gap: 6px; }
+.btn-small { height: 28px; padding: 0 9px; }
+.icon-btn { width: 32px; height: 32px; }
+.icon-btn.plain { width: 30px; height: 30px; }
+.dd-btn { height: 34px; }
+.search { height: 32px; }
+.input { height: 32px; }
+textarea.input { height: auto; }
+.m-opt { min-height: 46px; padding: 7px 12px; gap: 10px; }
+.tg-row { padding: 9px 10px; }
+.hero { padding: 16px 18px; gap: 12px; }
+.con-main .stats > div { padding: 9px 12px; }
+.con-main .stats dd { font-size: 18px; }

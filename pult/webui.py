@@ -441,7 +441,9 @@ class UIServer:
         if action == "save_settings":
             return self._save_settings(a, task, vpn_task)
         if action == "set_ui":
-            for key in ("theme", "sort", "collapsed", "icon"):
+            if a.get("theme") in ("auto", "dark", "light"):
+                e.settings["theme"] = a["theme"]
+            for key in ("sort", "collapsed", "icon"):
                 if key in a:
                     e.settings[key] = a[key]
             if a.get("lang") in ("ru", "en"):

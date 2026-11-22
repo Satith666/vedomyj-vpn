@@ -4,6 +4,7 @@
 //   • выпадающее меню едет за кнопкой при прокрутке или закрывается — не висит в стороне;
 //   • «подключён» горит ровно у одного сервера;
 //   • журнал подключения есть на экране «Состояние»;
+//   • тема: тёмная, светлая и «как в Windows» переключаются в настройках;
 //   • на всех экранах и в окнах текст не прилипает к краям, кнопки не налезают друг на друга (ширина 1180, 900 и 720);
 //   • в консоли нет ошибок.
 const { chromium } = require("playwright");
@@ -132,6 +133,25 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   await page.locator("#stJournal summary").click();
   const jl = await page.locator("#journalBox li").count();
   ok(jl >= 1, "Журнал подключения на экране «Состояние»", `записей: ${jl}`);
+
+  // 5а. тема: тёмная, светлая и «как в Windows» (следует за темой системы на лету)
+  await page.evaluate(() => go("settings"));
+  await page.waitForSelector('[data-theme-set="auto"]');
+  const themeOf = () => page.evaluate(() => document.documentElement.dataset.theme);
+  await page.click('[data-theme-set="light"]');
+  const thLight = await themeOf();
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.click('[data-theme-set="auto"]');
+  const thAutoL = await themeOf();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForTimeout(200);
+  const thAutoD = await themeOf();
+  const autoChecked = await page.getAttribute('[data-theme-set="auto"]', "aria-checked");
+  await page.click('[data-theme-set="dark"]');
+  const thDark = await themeOf();
+  ok(thLight === "light" && thAutoL === "light" && thAutoD === "dark" && autoChecked === "true" && thDark === "dark",
+    "Тема: тёмная, светлая и «как в Windows» переключаются в настройках", `${thLight} ${thAutoL} ${thAutoD} ${autoChecked} ${thDark}`);
+  await page.evaluate(() => go("home"));
 
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
