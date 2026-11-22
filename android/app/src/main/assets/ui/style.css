@@ -399,3 +399,20 @@ details.card-pad .btns { margin-top: 10px; }
 .fam-tri { padding-left: 0; padding-right: 0; }
 .fam-tri .main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .fam-helper .main { display: flex; flex-direction: column; gap: 2px; }
+
+/* ---------- Отступы на узком экране (1.16.1): проверяет coretest/ui_walk.js (__audit) ---------- */
+.btns .btn { flex: 1 1 auto; white-space: nowrap; }
+.btns .btn:not(.small) { min-width: max-content; padding: 0 14px; }
+.btn { white-space: nowrap; }
+.btn.wide { white-space: normal; }
+.card > .seg { margin: 4px 16px 0; }
+.card > .seg-note { margin: 10px 16px 12px; }
+.card > .eng-card { margin: 0; border-radius: 0; border-width: 1px 0 0; background: transparent; }
+@media (max-width: 380px) {
+  .seg.four { grid-template-columns: 1fr 1fr; }
+  .seg.four button { padding: 10px 6px; font-size: 13.5px; }
+}
+.m-opt .m-text small, .m-opt small { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.25; }
+.m-opt { padding: 10px 12px; }
+#subs .row .meta { white-space: normal; }
+.row + .pad { padding-top: 12px; }

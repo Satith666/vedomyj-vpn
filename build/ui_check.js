@@ -4,8 +4,11 @@
 //   • выпадающее меню едет за кнопкой при прокрутке или закрывается — не висит в стороне;
 //   • «подключён» горит ровно у одного сервера;
 //   • журнал подключения есть на экране «Состояние»;
+//   • на всех экранах и в окнах текст не прилипает к краям, кнопки не налезают друг на друга (ширина 1180, 900 и 720);
 //   • в консоли нет ошибок.
 const { chromium } = require("playwright");
+const fs = require("fs");
+const path = require("path");
 const port = process.argv[2];
 const fails = [];
 const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAIL]"} ${name}${detail ? " — " + detail : ""}`); if (!cond) fails.push(name); };
@@ -129,6 +132,31 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   await page.locator("#stJournal summary").click();
   const jl = await page.locator("#journalBox li").count();
   ok(jl >= 1, "Журнал подключения на экране «Состояние»", `записей: ${jl}`);
+
+  // 6. отступы: все экраны и главные окна на трёх ширинах окна
+  const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
+  const PAGES = ["home", "status", "more", "features", "zapret", "byedpi", "services", "routes", "traffic", "updates", "settings",
+    "log", "tips", "manual", "share", "ads", "errors", "family"];
+  const MODALS = ["modalAddSub()", "modalAddServer()", "modalAwgStart()", "modalFamInvite()", "modalVps()"];
+  const tight = [];
+  for (const [w, h] of [[1180, 760], [900, 700], [720, 640]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await page.evaluate(audit);
+    for (const name of PAGES) {
+      await page.evaluate((n) => go(n), name);
+      await page.waitForTimeout(350);
+      for (const [kind, d] of await page.evaluate("__audit()")) tight.push(`${w}/${name}: ${kind} ${d}`);
+    }
+    await page.evaluate(() => go("home"));
+    for (const m of MODALS) {
+      await page.evaluate(m);
+      await page.waitForTimeout(350);
+      for (const [kind, d] of await page.evaluate("__audit()")) tight.push(`${w}/${m}: ${kind} ${d}`);
+      await page.evaluate(() => closeModal());
+      await page.waitForTimeout(150);
+    }
+  }
+  ok(tight.length === 0, "Отступы: текст и кнопки не прилипают к краям и друг к другу", tight.slice(0, 6).join(" | "));
 
   ok(errors.length === 0, "В консоли нет ошибок", errors.slice(0, 3).join(" | "));
   await browser.close();

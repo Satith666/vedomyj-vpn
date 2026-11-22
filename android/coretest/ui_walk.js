@@ -1,6 +1,8 @@
 // Проверка интерфейса Android-версии: проход по экранам на ширине телефона, без ошибок в консоли.
 // Запуск: node ui_walk.js <порт> <папка для снимков>
 const { chromium } = require("playwright");
+const fs = require("fs");
+const path = require("path");
 const port = process.argv[2];
 const out = process.argv[3];
 (async () => {
@@ -380,6 +382,21 @@ const out = process.argv[3];
   await page.waitForTimeout(1200);
   const off = await page.evaluate(() => JSON.parse(window.Pult.call("state", "{}")).result.status);
   if (off !== "off") throw new Error("still on");
+  // отступы на всех экранах при ширине 360 и 412: текст не у края, кнопки не вплотную (build/layout_audit.js)
+  const audit = fs.readFileSync(path.join(__dirname, "..", "..", "build", "layout_audit.js"), "utf8");
+  const tight = [];
+  for (const w of [360, 412]) {
+    await page.setViewportSize({ width: w, height: 800 });
+    await page.evaluate(audit);
+    for (const v of ["home", "status", "share", "transfer", "vps", "family", "settings", "apps", "rules", "routes", "ads", "dpi", "check", "errors", "log"]) {
+      if (v !== "home") await page.evaluate((x) => window.pultGo(x), v);
+      await page.waitForTimeout(400);
+      for (const [kind, d] of await page.evaluate("__audit()")) tight.push(`${w}/${v}: ${kind} ${d}`);
+      if (v !== "home") { await page.evaluate(() => window.pultBack()); await page.waitForTimeout(250); }
+    }
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (tight.length) throw new Error("tight layout:\n" + tight.join("\n"));
   // горизонтальная прокрутка
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflow) throw new Error("horizontal overflow");

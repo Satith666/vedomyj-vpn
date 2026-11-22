@@ -797,3 +797,46 @@ form[data-form="ads_lookup"] .input { flex: 1 1 auto; min-width: 0; width: auto;
 .fam-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; color: var(--text); font-size: 13.5px; }
 .fam-edit { max-height: 56vh; overflow: auto; padding-right: 4px; gap: 10px; }
 .fam-edit > b { margin-top: 6px; }
+
+/* ---------- Отступы и узкое окно (1.16.1) ----------
+   Правила проверяет build/ui_check.js (__audit): текст не ближе 9–12 px к краю кнопки или карточки,
+   кнопки не вплотную, ничего не обрезано и не вылезает за окно. */
+.con-main { padding: 26px; }
+.con-main .hero-top { gap: 18px; }
+.con-main .power { margin: 4px; }                       /* свечение кнопки не упирается в край карточки */
+@media (max-width: 1040px) { .con-grid { grid-template-columns: 1fr; } }
+.con-main .hero-top { flex-wrap: wrap; row-gap: 10px; }
+.m-opt .m-text small { white-space: normal; overflow: hidden; text-overflow: clip; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3; }
+.m-opt { padding: 11px 14px; }
+.con-more { display: inline-block; margin-top: 10px; padding: 4px 2px; }
+.dd-btn { padding-right: 38px; }
+.dd-btn > span, .dd-btn b { min-width: 0; }
+.btn { white-space: nowrap; }
+.toolbar, .pin-form, .modal-actions { row-gap: 8px; }
+.pin-form .btn { flex: none; }
+.upd-row { flex-wrap: wrap; row-gap: 8px; }
+.upd-row .list-text { flex: 1 1 220px; min-width: 0; }
+@media (max-width: 860px) {
+  .route-add { flex-wrap: wrap; }
+  .route-add select.input { width: 100%; }
+  .route-add .btn { flex: 1 1 auto; }
+  .proxy-form { grid-template-columns: 1fr; }
+  .proxy-form .px-chain-new { grid-column: auto; }
+  .lists, .lists.two { grid-template-columns: 1fr; }
+  .site-row { grid-template-columns: minmax(0, 1fr) 150px 32px; }
+  .px-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .px-check { grid-column: 1 / -1; }
+}
+.lists h3 { flex-wrap: wrap; row-gap: 2px; }
+.lists h3 small { white-space: nowrap; }
+.lists textarea { min-height: 150px; }
+.fam-row .toolbar { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .page { padding-left: 14px; padding-right: 14px; }
+  .con-main { padding: 20px; }
+  .con-main .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .con-main .stats > div:last-child { grid-column: 1 / -1; }
+  .fam-mode { min-width: 0; width: 100%; }
+}
+.tg-row { padding: 12px 10px; }

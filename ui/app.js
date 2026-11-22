@@ -2330,8 +2330,8 @@ function pinBoxHtml() {
       <input class="input" id="pinNew" type="password" inputmode="numeric" maxlength="12" placeholder="${esc(t(p.set ? "pin_new2" : "pin_new"))}" autocomplete="off">
       <select class="input" id="pinMinutes" aria-label="${esc(t("pin_lock_after"))}">${minutes.map(m =>
         `<option value="${m}" ${m === (p.minutes || 0) ? "selected" : ""}>${esc(m ? t("pin_after_min", { n: m }) : t("pin_after_close"))}</option>`).join("")}</select>
-      <button class="btn btn-primary btn-small" type="submit">${t(p.set ? "pin_change" : "pin_enable")}</button>
-      ${p.set ? `<button class="btn btn-ghost btn-small btn-danger" type="button" id="pinRemove">${t("pin_remove")}</button>` : ""}
+      <button class="btn btn-primary" type="submit">${t(p.set ? "pin_change" : "pin_enable")}</button>
+      ${p.set ? `<button class="btn btn-ghost btn-danger" type="button" id="pinRemove">${t("pin_remove")}</button>` : ""}
     </form>
     <div class="feat-row" style="padding:10px 0 0;border-top:1px solid var(--line)">
       <span class="list-text"><b>${t("secure_title")}</b><span>${t(sec.available ? "secure_text" : "secure_na")}</span></span>

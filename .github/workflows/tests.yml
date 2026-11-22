@@ -41,7 +41,7 @@ jobs:
         run: |
           npm install --no-save --no-audit --no-fund playwright@1 >/dev/null
           npx playwright install --with-deps chromium >/dev/null
-          UI_SERVER_SECONDS=240 python3 build/ui_server.py > ui_server.log 2>&1 &
+          UI_SERVER_SECONDS=360 python3 build/ui_server.py > ui_server.log 2>&1 &
           for i in $(seq 1 90); do grep -q '"port"' ui_server.log && break; sleep 1; done
           PORT=$(python3 -c "import json; print([json.loads(l) for l in open('ui_server.log') if l.startswith('{')][-1]['port'])")
           node build/ui_check.js "$PORT"
