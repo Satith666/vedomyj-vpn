@@ -840,3 +840,5 @@ form[data-form="ads_lookup"] .input { flex: 1 1 auto; min-width: 0; width: auto;
   .fam-mode { min-width: 0; width: 100%; }
 }
 .tg-row { padding: 12px 10px; }
+.proxy-form { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(190px, max-content); }
+@media (max-width: 860px) { .proxy-form { grid-template-columns: 1fr; } }
