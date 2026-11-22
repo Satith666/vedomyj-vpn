@@ -818,8 +818,8 @@
           <span class="${down ? "bad" : ""}">${esc(l1)}</span>${l2 ? `<small>${esc(l2)}</small>` : ""}</div>
           <button class="icon-btn" data-act="vps-forget" data-id="${esc(h.id)}" aria-label="${esc(t("vps_forget"))}">${icon("trash")}</button></div>
         <div class="btns"><button class="btn" data-act="vps-check" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("refresh")}${esc(t("vps_check"))}</button>
-          <button class="btn" data-act="vps-friend" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_friend_add"))}</button>
-          ${h.bridge_of ? `<span class="hint">${esc(t("vps_is_bridge"))}</span>` : `<button class="btn" data-act="vps-bridge" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("server")}${esc(t("vps_bridge_btn"))}</button>`}</div>
+          <button class="btn" data-act="vps-friend" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_friend_add"))}</button></div>
+        ${h.bridge_of ? `<p class="hint">${esc(t("vps_is_bridge"))}</p>` : `<button class="btn wide" data-act="vps-bridge" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("server")}${esc(t("vps_bridge_short"))}</button>`}
         ${fr ? `<div class="vps-friends">${fr}</div>` : ""}</div>`;
     }).join("");
     return html + `<p class="hint">${esc(t("vps_pass_note"))}</p></div></section>`;
