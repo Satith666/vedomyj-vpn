@@ -1721,6 +1721,7 @@ function renderVpsBox() {
       <div class="toolbar">
         <button class="btn btn-small" data-vstat="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("refresh")}${t("vps_check")}</button>
         <button class="btn btn-small" data-vfriend="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("plus")}${t("vps_friend_add")}</button>
+        ${h.bridge_of ? `<span class="hint">${esc(t("vps_is_bridge"))}</span>` : `<button class="btn btn-small" data-vbridge="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("routes")}${t("vps_bridge_btn")}</button>`}
       </div>
       ${friends ? `<div class="vps-friends">${friends}</div>` : ""}
     </div>`;
@@ -1730,6 +1731,7 @@ function renderVpsBox() {
     if (r.ok) toast(t("vw_started"), "info", 9000);
   }));
   box.querySelectorAll("[data-vfriend]").forEach(b => b.addEventListener("click", () => vpsFriendModal(b.dataset.vfriend)));
+  box.querySelectorAll("[data-vbridge]").forEach(b => b.addEventListener("click", () => vpsBridgeModal(b.dataset.vbridge)));
   box.querySelectorAll("[data-vqr]").forEach(b => b.addEventListener("click", () =>
     qrModal("friend:" + b.dataset.vqr, t("qr_friend", { name: b.dataset.vname }), "friend")));
   box.querySelectorAll("[data-vdel]").forEach(b => b.addEventListener("click", async () => {
@@ -1754,6 +1756,32 @@ function vpsFriendModal(id) {
     m.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", closeModal));
     m.querySelector("#mOk").addEventListener("click", async () => {
       const r = await act("vps_friend_add", { id, name: $("#fName").value.trim() }, { quiet: true });
+      if (!r.ok) return showModalError(r.error);
+      closeModal();
+      toast(t("vw_started"), "info", 12000);
+    });
+  });
+}
+
+/* Мост через российский сервер: адрес российского VPS — на него ставится Xray, который ведёт на этот сервер. */
+function vpsBridgeModal(via) {
+  openModal(`<h2>${t("vps_bridge_btn")}</h2><p class="modal-text">${t("vps_bridge_text")}</p>
+    <div class="form-grid" style="padding:0">
+      <label class="field"><span>${t("vps_bridge_host")}</span><input class="input" id="bHost" placeholder="203.0.113.20" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>${t("vw_port")}</span><input class="input" id="bPort" value="22" inputmode="numeric"></label>
+      <label class="field"><span>${t("vw_user")}</span><input class="input" id="bUser" value="root" autocomplete="off" spellcheck="false"></label>
+      <label class="field"><span>${t("vps_name")}</span><input class="input" id="bName" placeholder="${esc(t("vps_bridge_name"))}"></label>
+    </div>
+    <p class="hint" style="margin:0">${icon("lock", "inline-ico soft")}${t("vps_pass_note")}</p>
+    <div class="modal-error" id="mErr" hidden></div>
+    <div class="modal-actions"><button class="btn btn-ghost" data-close>${t("cancel")}</button>
+      <button class="btn btn-primary" id="mOk">${t("vps_bridge_go")}</button></div>`, m => {
+    m.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", closeModal));
+    m.querySelector("#mOk").addEventListener("click", async () => {
+      const host = $("#bHost").value.trim();
+      if (!host) return showModalError(t("vw_need_host"));
+      const r = await act("vps_bridge", { host, via, port: $("#bPort").value.trim() || "22", user: $("#bUser").value.trim() || "root",
+        name: $("#bName").value.trim() }, { quiet: true });
       if (!r.ok) return showModalError(r.error);
       closeModal();
       toast(t("vw_started"), "info", 12000);

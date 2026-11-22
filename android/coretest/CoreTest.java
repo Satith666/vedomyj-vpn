@@ -1161,6 +1161,33 @@ public class CoreTest {
             check(Json.list(e.state(), "vps").isEmpty(), "сервер убирается из приложения");
         });
 
+        test("Свой сервер: мост через российский сервер (vk.com, белые списки)", () -> {
+            e.vpsSetup("vps2.example.net", "22", "root", "secret", "Второй");
+            waitIdle(e);
+            String id = "";
+            for (Object o : Json.list(e.state(), "vps")) {
+                if ("vps2.example.net".equals(Json.str(Json.map(o), "host"))) id = Json.str(Json.map(o), "id");
+            }
+            e.vpsBridge("ru.example.net", "22", "root", "secret", id, "");
+            waitIdle(e);
+            check(fake.lastScript.contains("vps2.example.net") && fake.lastScript.contains("vk.com")
+                    && fake.lastScript.contains("geoip:ru"), "на российский сервер уходит скрипт моста");
+            Map<String, Object> br = serverByName(e, "Мост (белые списки)");
+            check(br != null && Json.bool(br, "wl", false), "мост — сервер для белых списков: " + br);
+            String bridgeOf = "";
+            for (Object o : Json.list(e.state(), "vps")) {
+                if ("ru.example.net".equals(Json.str(Json.map(o), "host"))) bridgeOf = Json.str(Json.map(o), "bridge_of");
+            }
+            check(id.equals(bridgeOf), "в окне видно, что это мост");
+            boolean threw = false;
+            try { e.vpsBridge("ru2.example.net", "22", "root", "secret", "nope", ""); } catch (Vps.VpsError ex) { threw = true; }
+            check(threw, "мост без основного сервера не ставится");
+            for (Object o : new ArrayList<Object>(Json.list(e.state(), "vps"))) {
+                String h = Json.str(Json.map(o), "host");
+                if (h.equals("ru.example.net") || h.equals("vps2.example.net")) e.vpsForget(Json.str(Json.map(o), "id"));
+            }
+        });
+
         test("VPN на время: выключается сам, «ещё час» продлевает", () -> {
             e.connect();
             waitIdle(e);

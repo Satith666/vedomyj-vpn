@@ -4045,13 +4045,37 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
 
     # ---------- мастер своего сервера ----------
 
-    def vps_setup(self, host: str, port, user: str, name: str = "") -> list[str]:
+    def vps_bridge(self, host: str, port, user: str, via_id: str, name: str = "") -> list[str]:
+        """Мост через российский сервер: ставит на него Xray, который передаёт трафик на твой основной сервер
+        (via_id). Ключ основного берётся из его ссылки — второй раз входить на основной сервер не нужно."""
+        main = self._vps_find(via_id)
+        link = next((x.link for x in self.servers if x.sub_id == "manual" and x.link.startswith("vless://")
+                     and x.address == main["host"] and x.port == vps.PORT_TCP and "security=reality" in x.link), "")
+        if not link:
+            raise RuntimeError("Не нашёл ключ основного сервера среди своих серверов — настрой его мастером ещё раз.")
+        try:
+            fwd = vps.parse_forward(link)
+        except vps.VpsError as exc:
+            raise RuntimeError(str(exc)) from exc
+        name = (name or "").strip()[:40] or i18n.tr(vps.BRIDGE_NAME)
+        if not self.WL_NAME.search(name):
+            name = f"{name} · белые списки"[:60]  # по названию программа узнаёт серверы для белых списков
+        links = self.vps_setup(host, port, user, name, body=vps.bridge_script(fwd), sni=vps.RU_SNI)
+        for h in self.settings.get("vps_hosts") or []:
+            if h.get("host") == vps.check_input(host, port, user)[0]:
+                h["bridge_of"] = via_id
+        self.save()
+        self.log(f"Мост «{name}» передаёт трафик на «{main.get('name', '')}». При белых списках программа берёт его первым.")
+        return links
+
+    def vps_setup(self, host: str, port, user: str, name: str = "", body: str | None = None,
+                  sni: str = vps.SNI) -> list[str]:
         """Настраивает свой VPS через ssh и добавляет его в список. Пароль человек вводит в окне ssh сам."""
         try:
             host, port, user = vps.check_input(host, port, user)
         except vps.VpsError as exc:
             raise RuntimeError(str(exc)) from exc
-        name = (name or "").strip()[:40] or i18n.tr("Свой VPS")
+        name = (name or "").strip()[:60] or i18n.tr("Свой VPS")
         script_path = os.path.join(self.paths.data_dir, "vps_install.sh")
         out_path = os.path.join(self.paths.data_dir, "vps_install.log")
         self.progress("Открываю окно для входа на сервер — введи там пароль")
@@ -4059,9 +4083,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         try:
             hint = i18n.tr("VEDOMYJ VPN: введи пароль от сервера и нажми Enter. Символы пароля не отображаются — "
                            "так и должно быть.")
-            proc = vps.start(host, port, user, script_path, out_path, hint)
+            proc = vps.start(host, port, user, script_path, out_path, hint, body)
             result = vps.wait(proc, out_path, self.progress, self.stop_event.is_set)
-            links = vps.make_links(host, result, name)
+            links = vps.make_links(host, result, name, sni)
         except vps.VpsError as exc:
             if str(exc) == "остановлено":
                 raise Cancelled() from exc
@@ -4115,7 +4139,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     def vps_view(self) -> list[dict]:
         """Свои серверы для окна программы (без ключей друзей — их отдаёт только QR-код)."""
         return [{"id": h["id"], "name": h.get("name", ""), "host": h["host"], "port": h.get("port", 22),
-                 "user": h.get("user", "root"), "status": h.get("status") or {},
+                 "user": h.get("user", "root"), "status": h.get("status") or {}, "bridge_of": h.get("bridge_of", ""),
                  "friends": [{"id": f["id"], "name": f.get("name", ""), "ts": f.get("ts", 0)}
                              for f in h.get("friends") or []]}
                 for h in self.settings.get("vps_hosts") or []]

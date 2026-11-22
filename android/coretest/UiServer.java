@@ -208,6 +208,7 @@ public class UiServer {
             case "hotspot_stop": e.setShare(false, "", "", ""); return true;
             case "share_new_pass": e.newSharePassword(); return true;
             case "vps": e.vpsSetup(Json.str(a, "host"), Json.str(a, "port"), Json.str(a, "user"), Json.str(a, "password"), Json.str(a, "name")); return true;
+            case "vps_bridge": e.vpsBridge(Json.str(a, "host"), Json.str(a, "port"), Json.str(a, "user"), Json.str(a, "password"), Json.str(a, "via"), Json.str(a, "name")); return true;
             case "vps_add": e.vpsAdd(Json.str(a, "host"), Json.str(a, "port"), Json.str(a, "user"), Json.str(a, "password"), Json.str(a, "name")); return true;
             case "vps_status": e.vpsStatus(Json.str(a, "id"), Json.str(a, "password")); return true;
             case "vps_friend_add": e.vpsFriendAdd(Json.str(a, "id"), Json.str(a, "password"), Json.str(a, "name")); return true;

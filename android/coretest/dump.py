@@ -65,6 +65,20 @@ elif mode == "services":
     print(canon([[[s["name"], s["domains"], bool(s.get("russian"))] for s in services.SERVICES], dpi.YOUTUBE_DOMAINS, dpi.DISCORD_DOMAINS]))
 elif mode == "vps":
     sys.stdout.write(vps.script())
+elif mode == "vpsbridge":
+    good = ("vless://3f1c2a9e-1b2c-4d5e-8f90-1234567890ab@203.0.113.10:443?type=tcp&security=reality"
+            "&pbk=cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4&fp=chrome&sni=www.microsoft.com&sid=0123456789abcdef&flow=xtls-rprx-vision#x")
+    for ln in (good, good.replace("203.0.113.10", "[2001:db8::7]"), good.replace(":443?", ":8443?").replace("&flow=xtls-rprx-vision", ""),
+               good.replace("3f1c2a9e", "$(id)x"), good.replace("203.0.113.10", "a;b"), good.replace("security=reality", "security=tls"),
+               good.replace("type=tcp", "type=ws"), good.replace("sni=www.microsoft.com", "sni=$HOME"), good.replace(":443?", ":99999?"),
+               good.replace("sid=0123456789abcdef", "sid="), "vmess://abc"):
+        try:
+            print(canon(vps.parse_forward(ln)))
+        except vps.VpsError:
+            print("bad")
+    sys.stdout.write(vps.bridge_script(vps.parse_forward(good)))
+    print("\n".join(vps.make_links("198.51.100.5", "9a9a9a9a-1b2c-4d5e-8f90-1234567890ab|cnUtcHVibGljLWtleS1mb3ItdGVzdGluZy1icmlkZ2V4|fedcba9876543210|0a0b0c0d",
+                                    "Мост · белые списки", vps.RU_SNI)))
 elif mode == "dns":
     from pult import netutil
     for h in ("allvsub.cc", "Sub.Example.COM.", "пример.рф", "a.b.c.d.e"):

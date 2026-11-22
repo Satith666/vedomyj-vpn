@@ -5796,6 +5796,45 @@ public final class Engine {
 
     public void vpsSetup(final String host, final String port, final String user, final String password,
                          final String name) throws Vps.VpsError {
+        vpsInstall(host, port, user, password, name, Vps.script(), Vps.SNI, "");
+    }
+
+    /** Мост через российский сервер (как vps_bridge): ключ основного — из его ссылки среди своих серверов. */
+    public void vpsBridge(String host, String port, String user, String password, String via, String name) throws Vps.VpsError {
+        Map<String, Object> main = null;
+        synchronized (lock) {
+            for (Object o : vpsHosts()) {
+                if (via.equals(Json.str(Json.map(o), "id"))) {
+                    main = Json.map(o);
+                }
+            }
+        }
+        if (main == null) {
+            throw new Vps.VpsError(Text.t("Этот сервер не найден — добавь его ещё раз.", "This server was not found — add it again."));
+        }
+        String link = "";
+        synchronized (lock) {
+            for (Server s : servers) {
+                if (s.subId.isEmpty() && s.link.startsWith("vless://") && s.address.equals(Json.str(main, "host"))
+                        && s.port == Vps.PORT_TCP && s.link.contains("security=reality")) {
+                    link = s.link;
+                    break;
+                }
+            }
+        }
+        if (link.isEmpty()) {
+            throw new Vps.VpsError(Text.t("Не нашёл ключ основного сервера среди своих серверов — настрой его мастером ещё раз.",
+                    "The main server's key is not among your servers — set it up with the wizard again."));
+        }
+        String label = name == null || name.trim().isEmpty() ? Text.t(Vps.BRIDGE_NAME, "Bridge (whitelists)") : name.trim();
+        if (!Server.WL_NAME.matcher(label).find()) {
+            label = Text.shorten(label + " · белые списки", 60); // по названию программа узнаёт серверы для белых списков
+        }
+        vpsInstall(host, port, user, password, label, Vps.bridgeScript(Vps.parseForward(link), Vps.RU_SNI), Vps.RU_SNI, via);
+    }
+
+    private void vpsInstall(final String host, final String port, final String user, final String password,
+                            final String name, final String script, final String sni, final String bridgeOf) throws Vps.VpsError {
         final Object[] in = Vps.checkInput(host, port, user);
         if (password == null || password.isEmpty()) {
             throw new Vps.VpsError(Text.t("Впиши пароль от сервера (он в письме хостинга).",
@@ -5807,7 +5846,7 @@ public final class Engine {
             public void run() {
                 final Vps.Progress pr = new Vps.Progress();
                 try {
-                    p.sshRun((String) in[0], (Integer) in[1], (String) in[2], password, Vps.script(), new LineSink() {
+                    p.sshRun((String) in[0], (Integer) in[1], (String) in[2], password, script, new LineSink() {
                         @Override
                         public void line(String s) {
                             if (pr.feed(s)) {
@@ -5849,7 +5888,7 @@ public final class Engine {
                 }
                 List<String> links;
                 try {
-                    links = Vps.makeLinks((String) in[0], pr.result, label);
+                    links = Vps.makeLinks((String) in[0], pr.result, label, sni);
                 } catch (Vps.VpsError e) {
                     throw new UserError(e.getMessage());
                 }
@@ -5870,7 +5909,10 @@ public final class Engine {
                         }
                     }
                 }
-                vpsEntry((String) in[0], (Integer) in[1], (String) in[2], label);
+                Map<String, Object> entry = vpsEntry((String) in[0], (Integer) in[1], (String) in[2], label);
+                if (!bridgeOf.isEmpty() && entry != null) {
+                    entry.put("bridge_of", bridgeOf);
+                }
                 log("Свой сервер готов, добавлено входов: " + n + ".", "Your server is ready, entries added: " + n + ".");
                 say(Text.t("Свой сервер готов и добавлен в список.", "Your server is ready and added to the list."), "ok");
                 saveSettings();
@@ -5963,7 +6005,7 @@ public final class Engine {
                 }
                 Map<String, Object> st = Json.map(h, "status");
                 out.add(Json.obj("id", Json.str(h, "id"), "name", Json.str(h, "name"), "host", Json.str(h, "host"),
-                        "status", st == null ? new LinkedHashMap<String, Object>() : st, "friends", fr));
+                        "status", st == null ? new LinkedHashMap<String, Object>() : st, "friends", fr, "bridge_of", Json.str(h, "bridge_of")));
             }
         }
         return out;

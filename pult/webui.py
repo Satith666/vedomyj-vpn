@@ -757,6 +757,9 @@ class UIServer:
         if action == "vps_setup":
             return task("Мастер своего сервера", e.vps_setup, str(a.get("host", "")), a.get("port", 22),
                         str(a.get("user", "root")), str(a.get("name", "")))
+        if action == "vps_bridge":
+            return task("Мост через российский сервер", e.vps_bridge, str(a.get("host", "")), a.get("port", 22),
+                        str(a.get("user", "root")), str(a.get("via", "")), str(a.get("name", "")))
         if action == "vps_list":
             return e.vps_view()
         if action == "vps_add":

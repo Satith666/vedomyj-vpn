@@ -3507,6 +3507,86 @@ def _real_bash() -> str:
     return ""
 
 
+@case("Свой сервер: мост через российский сервер — ключ основного, маскировка под vk.com, российское — напрямую, белые списки")
+def t_vps_bridge():
+    import subprocess as sp
+    good = ("vless://3f1c2a9e-1b2c-4d5e-8f90-1234567890ab@203.0.113.10:443?type=tcp&security=reality"
+            "&pbk=cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4&fp=chrome&sni=www.microsoft.com&sid=0123456789abcdef"
+            "&flow=xtls-rprx-vision#x")
+    fwd = vps.parse_forward(good)
+    check(fwd["address"] == "203.0.113.10" and fwd["flow"] == "xtls-rprx-vision" and fwd["sid"] == "0123456789abcdef",
+          f"ключ основного сервера разобран: {fwd}")
+    for bad in (good.replace("3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", "$(reboot)-1b2c-4d5e-8f90-1234567890ab"),
+                good.replace("203.0.113.10", "a;b"), good.replace("sid=0123456789abcdef", "sid=`id`"),
+                good.replace("security=reality", "security=tls"), good.replace("type=tcp", "type=ws"),
+                good.replace("sni=www.microsoft.com", "sni=$HOME")):
+        try:
+            vps.parse_forward(bad)
+            check(False, f"опасная ссылка принята: {bad[:60]}")
+        except vps.VpsError:
+            pass
+    body = vps.bridge_script(fwd)
+    check("vk.com" in body and "PULT_RESULT:$UUID|$PUB|$SID|$XPATH" in body and "install-release.sh" in body,
+          "скрипт моста — как основной, с маскировкой под vk.com")
+    start = body.index("<<JSON\n") + 7
+    raw = body[start:body.index("\nJSON\n", start)]
+    for var, val in (("$UUID", "11111111-2222-4333-8444-555555555555"), ("$PRIV", "privkey"), ("$SID", "ab12"), ("$XPATH", "p4th")):
+        raw = raw.replace(var, val)
+    check("$" not in raw and "`" not in raw, "в настройках моста нет ничего, что выполнит оболочка")
+    cfg = json.loads(raw)
+    ab = next(o for o in cfg["outbounds"] if o["tag"] == "abroad")
+    rules = cfg["routing"]["rules"]
+    check(ab["settings"]["vnext"][0]["address"] == "203.0.113.10" and ab["streamSettings"]["realitySettings"]["publicKey"]
+          == fwd["pbk"] and ab["settings"]["vnext"][0]["users"][0]["flow"] == "xtls-rprx-vision", "мост ведёт на основной сервер")
+    check(rules[-1]["outboundTag"] == "abroad" and any(r.get("ip") == ["geoip:ru"] and r["outboundTag"] == "direct" for r in rules)
+          and any("domain:ru" in (r.get("domain") or []) for r in rules) and rules[0]["outboundTag"] == "block",
+          "российское — напрямую, локальная сеть — закрыта, остальное — за границу")
+    check(cfg["inbounds"][0]["streamSettings"]["realitySettings"]["serverNames"] == ["vk.com"], "вход моста — под vk.com")
+    r = sp.run(["bash", "-n"], input=body, capture_output=True, text=True)
+    check(r.returncode == 0, f"скрипт моста без ошибок синтаксиса bash: {r.stderr[:200]}")
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    orig_start = vps.start
+    scenario = {"lines": [], "bodies": []}
+
+    def fake_start(host, port, user, script_path, out_path, hint="", body=None):
+        scenario["bodies"].append((host, body))
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(scenario["lines"]) + "\n")
+        return sp.Popen([sys.executable, "-c", "import time; time.sleep(0.3)"])
+
+    try:
+        engmod.vps.start = fake_start
+        e = make_engine(tmp)
+        e.startup()
+        scenario["lines"] = ["PULT_RESULT:3f1c2a9e-1b2c-4d5e-8f90-1234567890ab|cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4"
+                             "|0123456789abcdef|a1b2c3d4e5f6"]
+        e.vps_setup("203.0.113.10", 22, "root", "Germany")  # имена латиницей: проверка перевода журнала
+        vid = e.vps_view()[0]["id"]
+        scenario["lines"] = ["PULT_RESULT:9a9a9a9a-1b2c-4d5e-8f90-1234567890ab|cnUtcHVibGljLWtleS1mb3ItdGVzdGluZy1icmlkZ2V4"
+                             "|fedcba9876543210|0a0b0c0d"]
+        links_ = e.vps_bridge("198.51.100.5", 22, "root", vid, "Bridge WL")
+        host, body2 = scenario["bodies"][-1]
+        check(host == "198.51.100.5" and body2 and "203.0.113.10" in body2 and "vk.com" in body2, "мост ставится на российский сервер")
+        check(all("sni=vk.com" in x and "@198.51.100.5:" in x for x in links_), f"ссылки моста: {links_}")
+        mine = [s for s in e.servers if s.link in links_]
+        check(len(mine) == 2 and all(e.is_wl_server(s) for s in mine), f"мост — сервер для белых списков: {[s.name for s in mine]}")
+        view = {h["host"]: h for h in e.vps_view()}
+        check(view["198.51.100.5"]["bridge_of"] == vid and not view["203.0.113.10"]["bridge_of"], "в окне видно, что это мост")
+        e.settings["manual_links"] = [x for x in e.settings["manual_links"] if "203.0.113.10" not in x]
+        e._rebuild_servers()
+        try:
+            e.vps_bridge("198.51.100.6", 22, "root", vid)
+            check(False, "без ключа основного сервера мост не ставится")
+        except RuntimeError as exc:
+            check("ключ основного" in str(exc), str(exc))
+    finally:
+        engmod.vps.start = orig_start
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @case("Мастер своего сервера: скрипт, ход установки, ссылки и проверка")
 def t_vps():
     import subprocess as sp

@@ -272,6 +272,10 @@ public final class Vps {
 
     /** Ссылки на свой сервер. Значения из ответа сервера проверяются по строгим шаблонам. */
     public static List<String> makeLinks(String host, String result, String name) throws VpsError {
+        return makeLinks(host, result, name, SNI);
+    }
+
+    public static List<String> makeLinks(String host, String result, String name, String sni) throws VpsError {
         String[] parts = result.split("\\|", -1);
         if (parts.length != 4) {
             throw new VpsError(Text.t("сервер прислал непонятный ответ", "the server sent an unclear answer"));
@@ -285,12 +289,155 @@ public final class Vps {
             throw new VpsError(Text.t("сервер прислал непонятный ответ", "the server sent an unclear answer"));
         }
         String hp = host.contains(":") ? "[" + host + "]" : host;
-        String common = "security=reality&pbk=" + pub + "&fp=chrome&sni=" + SNI + "&sid=" + sid;
+        String common = "security=reality&pbk=" + pub + "&fp=chrome&sni=" + sni + "&sid=" + sid;
         List<String> links = new ArrayList<String>();
         links.add("vless://" + uuid + "@" + hp + ":" + PORT_TCP + "?type=tcp&" + common + "&flow=xtls-rprx-vision#"
                 + Text.quote(name));
         links.add("vless://" + uuid + "@" + hp + ":" + PORT_XHTTP + "?type=xhttp&path=%2F" + path + "&" + common + "#"
                 + Text.quote(name + " · XHTTP"));
         return links;
+    }
+
+    // ---------- мост через российский сервер (как pult/vps.py, 1.23) ----------
+
+    public static final String RU_SNI = "vk.com";
+    public static final String BRIDGE_NAME = "Мост (белые списки)";
+    static final String RX_UUID = "[0-9a-fA-F-]{36}", RX_PUB = "[A-Za-z0-9_\\-]{40,50}", RX_SID = "[0-9a-f]{0,16}",
+            RX_HOST = "[A-Za-z0-9.\\-]{1,253}|[0-9A-Fa-f:]{2,39}", RX_SNI = "[a-z0-9.\\-]{3,100}";
+
+    /** Ссылка основного сервера (VLESS + Reality) → куда мосту передавать трафик. Всё проверяется по шаблонам. */
+    public static java.util.Map<String, Object> parseForward(String link) throws VpsError {
+        VpsError bad = new VpsError(Text.t("у основного сервера нет подходящего входа (нужен VLESS + Reality, как делает мастер)",
+                "the main server has no suitable entry (VLESS + Reality is needed, as the wizard makes)"));
+        String l = link == null ? "" : link.trim();
+        if (!l.startsWith("vless://")) {
+            throw bad;
+        }
+        l = l.substring(8);
+        int hash = l.indexOf('#');
+        if (hash >= 0) {
+            l = l.substring(0, hash);
+        }
+        String query = "";
+        int q = l.indexOf('?');
+        if (q >= 0) {
+            query = l.substring(q + 1);
+            l = l.substring(0, q);
+        }
+        int at = l.lastIndexOf('@');
+        if (at < 0) {
+            throw bad;
+        }
+        String uuid = Text.unquote(l.substring(0, at)), hp = l.substring(at + 1);
+        String host;
+        int port = PORT_TCP;
+        if (hp.startsWith("[")) {
+            int end = hp.indexOf(']');
+            if (end < 0) {
+                throw bad;
+            }
+            host = hp.substring(1, end);
+            if (hp.length() > end + 1 && hp.charAt(end + 1) == ':') {
+                port = parsePort(hp.substring(end + 2), bad);
+            }
+        } else {
+            int c = hp.lastIndexOf(':');
+            host = c >= 0 ? hp.substring(0, c) : hp;
+            if (c >= 0) {
+                port = parsePort(hp.substring(c + 1), bad);
+            }
+        }
+        java.util.Map<String, String> qs = new java.util.LinkedHashMap<String, String>();
+        for (String kv : query.split("&")) {
+            int eq = kv.indexOf('=');
+            if (eq > 0 && !qs.containsKey(kv.substring(0, eq))) {
+                qs.put(kv.substring(0, eq), Text.unquote(kv.substring(eq + 1)));
+            }
+        }
+        String type = qs.containsKey("type") ? qs.get("type") : "tcp";
+        String pbk = str(qs, "pbk"), sid = str(qs, "sid"), sni = str(qs, "sni"), flow = str(qs, "flow");
+        host = host.toLowerCase(java.util.Locale.ROOT);
+        if (!"reality".equals(qs.get("security")) || !"tcp".equals(type) || !host.matches(RX_HOST) || !uuid.matches(RX_UUID)
+                || !pbk.matches(RX_PUB) || !sid.matches(RX_SID) || !sni.matches(RX_SNI)
+                || !(flow.isEmpty() || "xtls-rprx-vision".equals(flow))) {
+            throw bad;
+        }
+        java.util.Map<String, Object> fwd = new java.util.LinkedHashMap<String, Object>();
+        fwd.put("address", host);
+        fwd.put("port", (long) port);
+        fwd.put("uuid", uuid);
+        fwd.put("pbk", pbk);
+        fwd.put("sid", sid);
+        fwd.put("sni", sni);
+        fwd.put("flow", flow);
+        return fwd;
+    }
+
+    private static String str(java.util.Map<String, String> m, String k) {
+        return m.containsKey(k) ? m.get(k) : "";
+    }
+
+    private static int parsePort(String v, VpsError bad) throws VpsError {
+        if (!v.matches("[0-9]{1,5}") || Integer.parseInt(v) < 1 || Integer.parseInt(v) > 65535) {
+            throw bad;
+        }
+        return Integer.parseInt(v);
+    }
+
+    /** Настройки Xray моста — как bridge_config в pult/vps.py (порядок ключей тот же). */
+    public static java.util.Map<String, Object> bridgeConfig(String uuid, String priv, String sid, String xpath,
+                                                            java.util.Map<String, Object> fwd, String sni) {
+        java.util.Map<String, Object> user = Json.obj("id", fwd.get("uuid"), "encryption", "none");
+        if (!Json.str(fwd, "flow").isEmpty()) {
+            user.put("flow", fwd.get("flow"));
+        }
+        return Json.obj(
+                "log", Json.obj("loglevel", "warning"),
+                "inbounds", Json.arr(
+                        Json.obj("tag", "reality", "listen", "0.0.0.0", "port", (long) PORT_TCP, "protocol", "vless",
+                                "settings", Json.obj("clients", Json.arr(Json.obj("id", uuid, "flow", "xtls-rprx-vision")), "decryption", "none"),
+                                "streamSettings", Json.obj("network", "tcp", "security", "reality", "realitySettings", reality(sni, priv, sid)),
+                                "sniffing", sniff()),
+                        Json.obj("tag", "xhttp", "listen", "0.0.0.0", "port", (long) PORT_XHTTP, "protocol", "vless",
+                                "settings", Json.obj("clients", Json.arr(Json.obj("id", uuid)), "decryption", "none"),
+                                "streamSettings", Json.obj("network", "xhttp", "xhttpSettings", Json.obj("path", "/" + xpath),
+                                        "security", "reality", "realitySettings", reality(sni, priv, sid)),
+                                "sniffing", sniff())),
+                "outbounds", Json.arr(
+                        Json.obj("tag", "abroad", "protocol", "vless",
+                                "settings", Json.obj("vnext", Json.arr(Json.obj("address", fwd.get("address"), "port", fwd.get("port"),
+                                        "users", Json.arr(user)))),
+                                "streamSettings", Json.obj("network", "tcp", "security", "reality",
+                                        "realitySettings", Json.obj("serverName", fwd.get("sni"), "publicKey", fwd.get("pbk"),
+                                                "shortId", fwd.get("sid"), "fingerprint", "chrome"))),
+                        Json.obj("tag", "direct", "protocol", "freedom"),
+                        Json.obj("tag", "block", "protocol", "blackhole")),
+                "routing", Json.obj("domainStrategy", "IPIfNonMatch", "rules", Json.arr(
+                        Json.obj("type", "field", "ip", Json.arr("geoip:private"), "outboundTag", "block"),
+                        Json.obj("type", "field", "domain", Json.arr("domain:ru", "domain:su", "domain:xn--p1ai"), "outboundTag", "direct"),
+                        Json.obj("type", "field", "ip", Json.arr("geoip:ru"), "outboundTag", "direct"),
+                        Json.obj("type", "field", "network", "tcp,udp", "outboundTag", "abroad"))));
+    }
+
+    private static java.util.Map<String, Object> reality(String sni, String priv, String sid) {
+        return Json.obj("dest", sni + ":443", "serverNames", Json.arr(sni), "privateKey", priv, "shortIds", Json.arr(sid));
+    }
+
+    private static java.util.Map<String, Object> sniff() {
+        return Json.obj("enabled", true, "destOverride", Json.arr("http", "tls", "quic"), "routeOnly", true);
+    }
+
+    /** Скрипт для российского сервера: тот же, что для основного, но с настройками моста. */
+    public static String bridgeScript(java.util.Map<String, Object> fwd, String sni) throws VpsError {
+        if (!sni.matches(RX_SNI)) {
+            throw new VpsError(Text.t("неверный адрес сайта для маскировки", "bad masking site address"));
+        }
+        String cfg = Json.write(bridgeConfig("$UUID", "$PRIV", "$SID", "$XPATH", fwd, sni));
+        String mark = "cat > /usr/local/etc/xray/config.json <<JSON\n";
+        int start = SCRIPT.indexOf(mark) + mark.length();
+        int end = SCRIPT.indexOf("\nJSON\n", start);
+        String body = SCRIPT.substring(0, start) + cfg + SCRIPT.substring(end);
+        return body.replace("__PORT_TCP__", String.valueOf(PORT_TCP)).replace("__PORT_XHTTP__", String.valueOf(PORT_XHTTP))
+                .replace("__SNI__", sni).replace("(VLESS + Reality and XHTTP + Reality)", "(bridge: VLESS + Reality → main server)");
     }
 }

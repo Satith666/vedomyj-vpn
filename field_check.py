@@ -577,7 +577,7 @@ def check_warp_xray(paths: xray.Paths, acct: dict | None) -> None:
     значит ядро действительно ведёт WARP через цепочку, а не мимо неё."""
     if not acct:
         return
-    passed = 0
+    passed, working = 0, None
     for i in range(len(warp.PRESETS)):
         p = warp.preset(i)
         conf = warp.build_conf(acct, p)
@@ -592,12 +592,17 @@ def check_warp_xray(paths: xray.Paths, acct: dict | None) -> None:
             continue
         got = _run_trace(paths, cfg, port, "warpx")
         passed += got in ("on", "plus")
+        if got in ("on", "plus") and working is None:
+            working = p
         add("ok" if got in ("on", "plus") else "warn",
             T(f"WARP в ядре {p['label']} ({p['endpoint']}): ", f"WARP in the core {p['label']} ({p['endpoint']}): ") + got)
     add("ok" if passed else "error", T(f"WARP во встроенном ядре: работают {passed} из {len(warp.PRESETS)} наборов обманок",
                                        f"WARP in the built-in core: {passed} of {len(warp.PRESETS)} decoy sets work"))
     # «WARP после VPN»: «VPN» — вход SOCKS этого же ядра (с UDP), WARP идёт к Cloudflare через него
-    conf = warp.build_conf(acct, warp.preset(0))
+    # (набор обманок — первый сработавший выше: сеть GitHub до отдельных адресов Cloudflare иногда не доходит)
+    if working is None:
+        return
+    conf = warp.build_conf(acct, working)
     for how in ("dialerProxy", "proxySettings"):
         res = {}
         for good in (True, False):

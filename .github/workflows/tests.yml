@@ -46,6 +46,16 @@ jobs:
           PORT=$(python3 -c "import json; print([json.loads(l) for l in open('ui_server.log') if l.startswith('{')][-1]['port'])")
           node build/ui_check.js "$PORT"
 
+  server:
+    name: Свой сервер на настоящем Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Скрипт мастера, подключение к своему серверу и мост
+        run: sudo python3 build/server_check.py
+
   android:
     name: Android
     runs-on: ubuntu-latest

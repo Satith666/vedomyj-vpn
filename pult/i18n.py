@@ -32,6 +32,18 @@ def _names(text: str) -> str:
 # (регулярное выражение по-русски, замена по-английски)
 RULES: list[tuple[str, str]] = [
 
+    # свой сервер: мост через российский сервер (vps.py, 1.23)
+    (r"^Мост «(.+?)» передаёт трафик на «(.*?)»\. При белых списках программа берёт его первым\.$",
+     r"Bridge “\1” passes traffic to “\2”. With whitelists the app takes it first."),
+    (r"^Не нашёл ключ основного сервера среди своих серверов — настрой его мастером ещё раз\.$",
+     "The main server's key is not among your servers — set it up with the wizard again."),
+    (r"(.+) · белые списки$", r"\1 · whitelists"),
+    (r"^Мост \(белые списки\)$", "Bridge (whitelists)"),
+    (r"у основного сервера нет подходящего входа \(нужен VLESS \+ Reality, как делает мастер\)",
+     "the main server has no suitable entry (VLESS + Reality is needed, as the wizard makes)"),
+    (r"^неверный адрес сайта для маскировки$", "bad masking site address"),
+    (r"^Мост через российский сервер$", "Bridge via a Russian server"),
+
     # «Семья», шаг 2: сеть торрентов (dht.py, family.py, 1.22)
     (r"^bencode: (.+)$", lambda m: "bencode: " + {"неизвестный тип": "unknown type", "лишние байты": "extra bytes",
                                                    "слишком глубоко": "too deep", "обрыв": "truncated",

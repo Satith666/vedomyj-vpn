@@ -209,6 +209,91 @@ def script() -> str:
             .replace("__SNI__", SNI))
 
 
+# ---------- мост через российский сервер (1.23) ----------
+# Российский VPS принимает подключение (маскировка под российский сайт — такие адреса пускают и «белые списки»)
+# и передаёт его на твой основной сервер за границей. Российские сайты он открывает сам, напрямую.
+
+RU_SNI = "vk.com"
+BRIDGE_NAME = "Мост (белые списки)"
+_RX_UUID = r"[0-9a-fA-F-]{36}"
+_RX_PUB = r"[A-Za-z0-9_\-]{40,50}"
+_RX_SID = r"[0-9a-f]{0,16}"
+_RX_HOST = r"[A-Za-z0-9.\-]{1,253}|[0-9A-Fa-f:]{2,39}"
+_RX_SNI = r"[a-z0-9.\-]{3,100}"
+
+
+def parse_forward(link: str) -> dict:
+    """Ссылка основного сервера (VLESS + Reality) → куда мосту передавать трафик. Всё проверяется по шаблонам:
+    эти значения попадают в скрипт для сервера."""
+    from urllib.parse import parse_qs, unquote, urlsplit
+    u = urlsplit((link or "").strip())
+    q = {k: v[0] for k, v in parse_qs(u.query).items()}
+    host = (u.hostname or "").strip("[]")
+    try:
+        port = u.port or PORT_TCP
+    except ValueError:
+        raise VpsError("у основного сервера нет подходящего входа (нужен VLESS + Reality, как делает мастер)") from None
+    fwd = {"address": host, "port": port, "uuid": unquote(u.username or ""), "pbk": q.get("pbk", ""),
+           "sid": q.get("sid", ""), "sni": q.get("sni", ""), "flow": q.get("flow", "")}
+    if u.scheme != "vless" or q.get("security") != "reality" or q.get("type", "tcp") != "tcp" \
+            or not re.fullmatch(_RX_HOST, host) or not re.fullmatch(_RX_UUID, fwd["uuid"]) \
+            or not re.fullmatch(_RX_PUB, fwd["pbk"]) or not re.fullmatch(_RX_SID, fwd["sid"]) \
+            or not re.fullmatch(_RX_SNI, fwd["sni"]) or fwd["flow"] not in ("", "xtls-rprx-vision") \
+            or not 1 <= int(fwd["port"]) <= 65535:
+        raise VpsError("у основного сервера нет подходящего входа (нужен VLESS + Reality, как делает мастер)")
+    return fwd
+
+
+def bridge_config(uuid: str, priv: str, sid: str, xpath: str, fwd: dict, sni: str = RU_SNI,
+                  port_tcp: int = PORT_TCP, port_xhttp: int = PORT_XHTTP, listen: str = "0.0.0.0") -> dict:
+    """Настройки Xray моста. В скрипт идут с переменными оболочки ($UUID…), в проверку на GitHub — с настоящими."""
+    reality = {"dest": f"{sni}:443", "serverNames": [sni], "privateKey": priv, "shortIds": [sid]}
+    sniff = {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True}
+    user = {"id": fwd["uuid"], "encryption": "none"}
+    if fwd.get("flow"):
+        user["flow"] = fwd["flow"]
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {"tag": "reality", "listen": listen, "port": port_tcp, "protocol": "vless",
+             "settings": {"clients": [{"id": uuid, "flow": "xtls-rprx-vision"}], "decryption": "none"},
+             "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": reality}, "sniffing": sniff},
+            {"tag": "xhttp", "listen": listen, "port": port_xhttp, "protocol": "vless",
+             "settings": {"clients": [{"id": uuid}], "decryption": "none"},
+             "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": f"/{xpath}"}, "security": "reality",
+                                "realitySettings": dict(reality)}, "sniffing": sniff},
+        ],
+        "outbounds": [
+            {"tag": "abroad", "protocol": "vless",
+             "settings": {"vnext": [{"address": fwd["address"], "port": int(fwd["port"]), "users": [user]}]},
+             "streamSettings": {"network": "tcp", "security": "reality",
+                                "realitySettings": {"serverName": fwd["sni"], "publicKey": fwd["pbk"],
+                                                    "shortId": fwd["sid"], "fingerprint": "chrome"}}},
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "block", "protocol": "blackhole"},
+        ],
+        "routing": {"domainStrategy": "IPIfNonMatch", "rules": [
+            {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
+            {"type": "field", "domain": ["domain:ru", "domain:su", "domain:xn--p1ai"], "outboundTag": "direct"},
+            {"type": "field", "ip": ["geoip:ru"], "outboundTag": "direct"},
+            {"type": "field", "network": "tcp,udp", "outboundTag": "abroad"},
+        ]},
+    }
+
+
+def bridge_script(fwd: dict, sni: str = RU_SNI) -> str:
+    """Скрипт для российского сервера: тот же, что для основного, но с настройками моста."""
+    import json
+    if not re.fullmatch(_RX_SNI, sni):
+        raise VpsError("неверный адрес сайта для маскировки")
+    cfg = json.dumps(bridge_config("$UUID", "$PRIV", "$SID", "$XPATH", fwd, sni), separators=(",", ":"), ensure_ascii=True)
+    start = SCRIPT.index("cat > /usr/local/etc/xray/config.json <<JSON\n") + len("cat > /usr/local/etc/xray/config.json <<JSON\n")
+    end = SCRIPT.index("\nJSON\n", start)
+    body = SCRIPT[:start] + cfg + SCRIPT[end:]
+    return (body.replace("__PORT_TCP__", str(PORT_TCP)).replace("__PORT_XHTTP__", str(PORT_XHTTP))
+            .replace("__SNI__", sni).replace("(VLESS + Reality and XHTTP + Reality)", "(bridge: VLESS + Reality → main server)"))
+
+
 def check_input(host: str, port, user: str) -> tuple[str, int, str]:
     host = (host or "").strip().strip("[]")
     user = (user or "root").strip()
@@ -271,7 +356,7 @@ def read_progress(out_path: str) -> tuple[str, str, str]:
     return step, error, result
 
 
-def make_links(host: str, result: str, name: str) -> list[str]:
+def make_links(host: str, result: str, name: str, sni: str = SNI) -> list[str]:
     """Ссылки на свой сервер. Значения из ответа сервера проверяются по строгим шаблонам."""
     parts = result.split("|")
     if len(parts) != 4:
@@ -281,7 +366,7 @@ def make_links(host: str, result: str, name: str) -> list[str]:
             or not re.fullmatch(r"[0-9a-f]{2,16}", sid) or not re.fullmatch(r"[0-9a-f]{4,32}", path):
         raise VpsError("сервер прислал непонятный ответ")
     hp = f"[{host}]" if ":" in host else host
-    common = f"security=reality&pbk={pub}&fp=chrome&sni={SNI}&sid={sid}"
+    common = f"security=reality&pbk={pub}&fp=chrome&sni={sni}&sid={sid}"
     return [
         f"vless://{uuid}@{hp}:{PORT_TCP}?type=tcp&{common}&flow=xtls-rprx-vision#{quote(name)}",
         f"vless://{uuid}@{hp}:{PORT_XHTTP}?type=xhttp&path=%2F{path}&{common}#{quote(name + ' · XHTTP')}",

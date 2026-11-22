@@ -818,7 +818,8 @@
           <span class="${down ? "bad" : ""}">${esc(l1)}</span>${l2 ? `<small>${esc(l2)}</small>` : ""}</div>
           <button class="icon-btn" data-act="vps-forget" data-id="${esc(h.id)}" aria-label="${esc(t("vps_forget"))}">${icon("trash")}</button></div>
         <div class="btns"><button class="btn" data-act="vps-check" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("refresh")}${esc(t("vps_check"))}</button>
-          <button class="btn" data-act="vps-friend" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_friend_add"))}</button></div>
+          <button class="btn" data-act="vps-friend" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_friend_add"))}</button>
+          ${h.bridge_of ? `<span class="hint">${esc(t("vps_is_bridge"))}</span>` : `<button class="btn" data-act="vps-bridge" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("server")}${esc(t("vps_bridge_btn"))}</button>`}</div>
         ${fr ? `<div class="vps-friends">${fr}</div>` : ""}</div>`;
     }).join("");
     return html + `<p class="hint">${esc(t("vps_pass_note"))}</p></div></section>`;
@@ -1821,6 +1822,16 @@
         <label class="field">${esc(t("vps_name"))}<input id="vaName" placeholder="${esc(t("vps_name_ph"))}"></label>`,
         (pw, sh) => act("vps_add", { host: $("#vaHost", sh).value, port: $("#vaPort", sh).value, user: $("#vaUser", sh).value,
           password: pw, name: $("#vaName", sh).value }));
+    },
+    "vps-bridge"(el) {
+      const via = el.dataset.id;
+      vpsPassSheet(t("vps_bridge_btn"), t("vps_bridge_text"),
+        `<label class="field">${esc(t("vps_bridge_host"))}<input id="vbHost" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="203.0.113.20"></label>
+        <div class="field-row"><label class="field">${esc(t("vps_user"))}<input id="vbUser" autocapitalize="off" spellcheck="false" value="root"></label>
+          <label class="field">${esc(t("vps_port"))}<input id="vbPort" inputmode="numeric" value="22"></label></div>
+        <label class="field">${esc(t("vps_name"))}<input id="vbName" placeholder="${esc(t("vps_bridge_name"))}"></label>`,
+        (pw, sh) => act("vps_bridge", { host: $("#vbHost", sh).value, port: $("#vbPort", sh).value, user: $("#vbUser", sh).value,
+          password: pw, via, name: $("#vbName", sh).value }));
     },
     "vps-check"(el) {
       const id = el.dataset.id;

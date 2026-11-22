@@ -90,6 +90,23 @@ public class Dump {
         if (mode.equals("vps")) {
             out.print(Vps.script());
         }
+        if (mode.equals("vpsbridge")) {
+            String good = "vless://3f1c2a9e-1b2c-4d5e-8f90-1234567890ab@203.0.113.10:443?type=tcp&security=reality"
+                    + "&pbk=cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4&fp=chrome&sni=www.microsoft.com&sid=0123456789abcdef&flow=xtls-rprx-vision#x";
+            String[] links = {good, good.replace("203.0.113.10", "[2001:db8::7]"), good.replace(":443?", ":8443?").replace("&flow=xtls-rprx-vision", ""),
+                    good.replace("3f1c2a9e", "$(id)x"), good.replace("203.0.113.10", "a;b"), good.replace("security=reality", "security=tls"),
+                    good.replace("type=tcp", "type=ws"), good.replace("sni=www.microsoft.com", "sni=$HOME"), good.replace(":443?", ":99999?"),
+                    good.replace("sid=0123456789abcdef", "sid="), "vmess://abc"};
+            for (String l : links) {
+                try {
+                    out.println(Json.canonical(Vps.parseForward(l)));
+                } catch (Vps.VpsError e) {
+                    out.println("bad");
+                }
+            }
+            out.print(Vps.bridgeScript(Vps.parseForward(good), Vps.RU_SNI));
+            out.println(String.join("\n", Vps.makeLinks("198.51.100.5", "9a9a9a9a-1b2c-4d5e-8f90-1234567890ab|cnUtcHVibGljLWtleS1mb3ItdGVzdGluZy1icmlkZ2V4|fedcba9876543210|0a0b0c0d", "Мост · белые списки", Vps.RU_SNI)));
+        }
         if (mode.equals("dns")) {
             for (String h : new String[]{"allvsub.cc", "Sub.Example.COM.", "пример.рф", "a.b.c.d.e"}) {
                 StringBuilder hx = new StringBuilder();
