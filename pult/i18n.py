@@ -32,6 +32,32 @@ def _names(text: str) -> str:
 # (регулярное выражение по-русски, замена по-английски)
 RULES: list[tuple[str, str]] = [
 
+    # свой сервер: AmneziaWG 2.0 и устройства (vps.py, 1.24)
+    (r"^AmneziaWG не установился(: .*)?$", lambda m: "AmneziaWG was not installed" + (": " + tr(m.group(1)[2:]) if m.group(1) else "")),
+    (r"^Устройство не добавлено(: .*)?$", lambda m: "The device was not added" + (": " + tr(m.group(1)[2:]) if m.group(1) else "")),
+    (r"^Свой сервер «(.+?)»: AmneziaWG 2\.0 установлен, конфиг этого компьютера добавлен в свои серверы\.$",
+     r"Own server “\1”: AmneziaWG 2.0 is installed, this computer's config is added to your servers."),
+    (r"^Свой сервер «(.+?)»: добавлено устройство AmneziaWG «(.+?)»\.$", r"Own server “\1”: AmneziaWG device “\2” was added."),
+    (r"^Сначала установи AmneziaWG 2\.0 на этот сервер\.$", "Install AmneziaWG 2.0 on this server first."),
+    (r"^Слишком много устройств — сначала удали ненужные\.$", "Too many devices — remove the ones you don't need first."),
+    (r"^Роутер$", "Router"),
+    (r"AmneziaWG программа ставит только на Ubuntu \(22\.04 или новее\)", "the app installs AmneziaWG only on Ubuntu (22.04 or newer)"),
+    (r"не удалось установить AmneziaWG — у сервера нет доступа к репозиторию Amnezia или закончилось место",
+     "could not install AmneziaWG — the server can't reach the Amnezia repository or is out of space"),
+    (r"модуль AmneziaWG не загрузился — обнови систему сервера, перезагрузи его и попробуй снова",
+     "the AmneziaWG module did not load — update the server system, reboot it and try again"),
+    (r"AmneziaWG на сервере не запустился", "AmneziaWG did not start on the server"),
+    (r"на сервере нет AmneziaWG, установленного программой — сначала нажми «AmneziaWG 2\.0»",
+     "the server has no AmneziaWG installed by the app — press “AmneziaWG 2.0” first"),
+    (r"на сервере уже 248 устройств — больше не поместится", "the server already has 248 devices — no more fit"),
+    (r"^Ставлю AmneziaWG на сервер$", "Installing AmneziaWG on the server"),
+    (r"^Добавляю устройство на сервер$", "Adding a device to the server"),
+    (r"неверный ключ или порт AmneziaWG", "bad AmneziaWG key or port"),
+    (r"неверный ключ AmneziaWG", "bad AmneziaWG key"),
+    (r"неверные параметры AmneziaWG", "bad AmneziaWG parameters"),
+    (r"^Свой сервер: AmneziaWG 2\.0$", "Own server: AmneziaWG 2.0"),
+    (r"^Свой сервер: устройство AmneziaWG$", "Own server: AmneziaWG device"),
+
     # свой сервер: мост через российский сервер (vps.py, 1.23)
     (r"^Мост «(.+?)» передаёт трафик на «(.*?)»\. При белых списках программа берёт его первым\.$",
      r"Bridge “\1” passes traffic to “\2”. With whitelists the app takes it first."),

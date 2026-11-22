@@ -4140,11 +4140,13 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         """Свои серверы для окна программы (без ключей друзей — их отдаёт только QR-код)."""
         return [{"id": h["id"], "name": h.get("name", ""), "host": h["host"], "port": h.get("port", 22),
                  "user": h.get("user", "root"), "status": h.get("status") or {}, "bridge_of": h.get("bridge_of", ""),
+                 "awg": bool((h.get("awg") or {}).get("pub")),
+                 "awg_devices": [{"id": d["id"], "name": d.get("name", ""), "ts": d.get("ts", 0)} for d in h.get("awg_peers") or []],
                  "friends": [{"id": f["id"], "name": f.get("name", ""), "ts": f.get("ts", 0)}
                              for f in h.get("friends") or []]}
                 for h in self.settings.get("vps_hosts") or []]
 
-    def _vps_run(self, h: dict, body: str, what: str) -> str:
+    def _vps_run(self, h: dict, body: str, what: str, timeout: float = 300.0) -> str:
         """Выполняет скрипт на своём сервере через окно ssh и возвращает строку PULT_RESULT."""
         script_path = os.path.join(self.paths.data_dir, "vps_task.sh")
         out_path = os.path.join(self.paths.data_dir, "vps_task.log")
@@ -4154,7 +4156,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         try:
             proc = vps.start(h["host"], int(h.get("port", 22)), h.get("user", "root"), script_path, out_path,
                              hint, body=body)
-            return vps.wait(proc, out_path, self.progress, self.stop_event.is_set, timeout=300.0)
+            return vps.wait(proc, out_path, self.progress, self.stop_event.is_set, timeout=timeout)
         except vps.VpsError as exc:
             if str(exc) == "остановлено":
                 raise Cancelled() from exc
@@ -4219,6 +4221,70 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self.log(f"Свой сервер «{h['name']}»: создан ключ для «{name}». QR-код — в разделе «Поделиться».")
         self.notify("vps", friend="friend:" + friend["id"], name=name)
         return {"id": friend["id"], "name": name}
+
+    # ---------- AmneziaWG 2.0 на своём сервере и устройства (роутер) ----------
+
+    VPS_AWG_DEVICES_MAX = 20
+
+    def vps_awg(self, vps_id: str) -> str:
+        """Ставит AmneziaWG 2.0 на свой сервер (рядом с Xray) и добавляет конфиг этого компьютера в свои серверы.
+        Ключ устройства создаётся здесь: на сервер уходит только открытый."""
+        from . import warp
+        h = self._vps_find(vps_id)
+        priv, pub = warp.keypair()
+        params = vps.awg_params()
+        port = 30000 + secrets.randbelow(30000)
+        result = self._vps_run(h, vps.awg_script(pub, port, params), "AmneziaWG не установился", timeout=1200.0)
+        try:
+            spub, port, n = vps.parse_awg_result(result)
+        except vps.VpsError as exc:
+            raise RuntimeError(f"AmneziaWG не установился: {exc}") from exc
+        conf = vps.awg_client_conf(h["host"], port, spub, priv, n, params, warp.DNS_YANDEX_I1)
+        name = f"{h.get('name') or 'VPS'} · AmneziaWG"
+        old = [x for x in self.settings.get("manual_links", []) if x.startswith("awg://")
+               and (links.parse_link(x) or Server(name="", protocol="")).name == name]
+        if old:  # переустановка: прежний конфиг этого сервера больше не подходит
+            self.settings["manual_links"] = [x for x in self.settings["manual_links"] if x not in old]
+        h["awg"] = {"port": port, "pub": spub, "params": params}
+        h["awg_peers"] = []
+        self.save()
+        self.add_servers(links.awg_link(conf, name))
+        self.log(f"Свой сервер «{h.get('name', '')}»: AmneziaWG 2.0 установлен, конфиг этого компьютера добавлен в свои серверы.")
+        self.notify("vps")
+        self.notify("servers")
+        return name
+
+    def vps_awg_device(self, vps_id: str, name: str) -> dict:
+        """Ещё одно устройство в AmneziaWG своего сервера (роутер, телевизор, второй телефон): свой ключ."""
+        from . import warp
+        h = self._vps_find(vps_id)
+        awg = h.get("awg") or {}
+        if not awg.get("pub"):
+            raise RuntimeError("Сначала установи AmneziaWG 2.0 на этот сервер.")
+        peers = h.setdefault("awg_peers", [])
+        if len(peers) >= self.VPS_AWG_DEVICES_MAX:
+            raise RuntimeError("Слишком много устройств — сначала удали ненужные.")
+        name = (name or "").strip()[:30] or i18n.tr("Роутер")
+        priv, pub = warp.keypair()
+        result = self._vps_run(h, vps.awg_peer_script(pub), "Устройство не добавлено")
+        try:
+            spub, port, n = vps.parse_awg_result(result)
+        except vps.VpsError as exc:
+            raise RuntimeError(f"Устройство не добавлено: {exc}") from exc
+        conf = vps.awg_client_conf(h["host"], port, spub, priv, n, awg["params"], warp.DNS_YANDEX_I1)
+        dev = {"id": secrets.token_hex(4), "name": name, "n": n, "ts": int(time.time()), "conf": conf}
+        peers.append(dev)
+        self.save()
+        self.log(f"Свой сервер «{h.get('name', '')}»: добавлено устройство AmneziaWG «{name}».")
+        self.notify("vps", awgdev="awgdev:" + dev["id"], name=name)
+        return {"id": dev["id"], "name": name}
+
+    def _vps_awg_dev(self, dev_id: str) -> dict | None:
+        for h in self.settings.get("vps_hosts") or []:
+            for d in h.get("awg_peers") or []:
+                if d.get("id") == dev_id:
+                    return d
+        return None
 
     def vps_friend_remove(self, vps_id: str, friend_id: str) -> None:
         h = self._vps_find(vps_id)
@@ -4310,6 +4376,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             for f in h.get("friends") or []:
                 items.append({"id": "friend:" + f["id"], "kind": "friend", "name": f.get("name", ""),
                               "server": h.get("name", "")})
+            for d in h.get("awg_peers") or []:
+                items.append({"id": "awgdev:" + d["id"], "kind": "awgdev", "name": d.get("name", ""),
+                              "server": h.get("name", "")})
         if self.own_warp():
             items.append({"id": "warp", "kind": "warp", "name": "WARP"})
         lan = netutil.lan_ip() if self.settings.get("allow_lan") else ""
@@ -4332,6 +4401,10 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
                 return friend["links"][0]
         elif item_id == "warp":
             return self.warp_share_text()
+        elif item_id.startswith("awgdev:"):
+            dev = self._vps_awg_dev(item_id[7:])
+            if dev and dev.get("conf"):
+                return dev["conf"]
         elif item_id == "wifi":
             ssid, password = self._hotspot_credentials()
             return hotspot.wifi_qr_text(ssid, password)

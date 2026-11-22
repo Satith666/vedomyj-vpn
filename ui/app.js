@@ -1651,7 +1651,8 @@ let shareQr = null;
 
 const shareLabel = it => it.kind === "sub" ? t("qr_sub", { name: it.name })
   : it.kind === "server" ? t("qr_server", { name: it.name })
-  : it.kind === "friend" ? t("qr_friend", { name: it.name }) : it.kind === "warp" ? t("qr_warp") : t("qr_tg");
+  : it.kind === "friend" ? t("qr_friend", { name: it.name }) : it.kind === "warp" ? t("qr_warp")
+  : it.kind === "awgdev" ? t("qr_awgdev", { name: it.name }) : t("qr_tg");
 const shareHint = kind => t(`qr_${kind}_hint`);
 const shareWarn = kind => kind === "telegram" ? "" : t(`qr_${kind}_warn`);
 
@@ -1722,7 +1723,12 @@ function renderVpsBox() {
         <button class="btn btn-small" data-vstat="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("refresh")}${t("vps_check")}</button>
         <button class="btn btn-small" data-vfriend="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("plus")}${t("vps_friend_add")}</button>
         ${h.bridge_of ? `<span class="hint">${esc(t("vps_is_bridge"))}</span>` : `<button class="btn btn-small" data-vbridge="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("routes")}${t("vps_bridge_btn")}</button>`}
+        ${h.awg ? `<button class="btn btn-small" data-vawgdev="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("plus")}${t("vps_awg_dev_btn")}</button>`
+          : `<button class="btn btn-small" data-vawg="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("shield")}${t("vps_awg_btn")}</button>`}
       </div>
+      ${(h.awg_devices || []).length ? `<div class="vps-friends">${h.awg_devices.map(d => `<div class="vps-friend">
+        <span class="list-text"><b>${esc(d.name)}</b><span>${esc(t("vps_awg_dev_made", { d: dateStr(d.ts) }))}</span></span>
+        <button class="btn btn-small" data-vawgconf="${esc(d.id)}" data-vname="${esc(d.name)}">${icon("qr")}${t("vps_awg_dev_conf")}</button></div>`).join("")}</div>` : ""}
       ${friends ? `<div class="vps-friends">${friends}</div>` : ""}
     </div>`;
   }).join("") + `<p class="hint" style="margin:0">${icon("lock", "inline-ico soft")}${t("vps_pass_note")}</p>`;
@@ -1732,6 +1738,13 @@ function renderVpsBox() {
   }));
   box.querySelectorAll("[data-vfriend]").forEach(b => b.addEventListener("click", () => vpsFriendModal(b.dataset.vfriend)));
   box.querySelectorAll("[data-vbridge]").forEach(b => b.addEventListener("click", () => vpsBridgeModal(b.dataset.vbridge)));
+  box.querySelectorAll("[data-vawg]").forEach(b => b.addEventListener("click", async () => {
+    if (!await confirmModal(t("vps_awg_btn"), t("vps_awg_text"), t("vps_awg_go"), false)) return;
+    const r = await act("vps_awg", { id: b.dataset.vawg });
+    if (r.ok) toast(t("vw_started"), "info", 12000);
+  }));
+  box.querySelectorAll("[data-vawgdev]").forEach(b => b.addEventListener("click", () => vpsAwgDeviceModal(b.dataset.vawgdev)));
+  box.querySelectorAll("[data-vawgconf]").forEach(b => b.addEventListener("click", () => awgRouterModal(b.dataset.vawgconf, b.dataset.vname)));
   box.querySelectorAll("[data-vqr]").forEach(b => b.addEventListener("click", () =>
     qrModal("friend:" + b.dataset.vqr, t("qr_friend", { name: b.dataset.vname }), "friend")));
   box.querySelectorAll("[data-vdel]").forEach(b => b.addEventListener("click", async () => {
@@ -1759,6 +1772,49 @@ function vpsFriendModal(id) {
       if (!r.ok) return showModalError(r.error);
       closeModal();
       toast(t("vw_started"), "info", 12000);
+    });
+  });
+}
+
+/* Устройство AmneziaWG (роутер, телевизор, второй телефон): имя → свой ключ на сервере. */
+function vpsAwgDeviceModal(id) {
+  openModal(`<h2>${t("vps_awg_dev_btn")}</h2><p class="modal-text">${t("vps_awg_dev_text")}</p>
+    <label class="field"><span>${t("vps_friend_name")}</span><input class="input" id="dName" maxlength="30" placeholder="${esc(t("vps_awg_dev_ph"))}"></label>
+    <div class="modal-error" id="mErr" hidden></div>
+    <div class="modal-actions"><button class="btn btn-ghost" data-close>${t("cancel")}</button>
+      <button class="btn btn-primary" id="mOk">${t("vps_friend_go")}</button></div>`, m => {
+    m.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", closeModal));
+    m.querySelector("#mOk").addEventListener("click", async () => {
+      const r = await act("vps_awg_device", { id, name: $("#dName").value.trim() }, { quiet: true });
+      if (!r.ok) return showModalError(r.error);
+      closeModal();
+      toast(t("vw_started"), "info", 12000);
+    });
+  });
+}
+
+/* Конфиг для роутера: QR-код, файл и как его поставить на OpenWrt и Keenetic. */
+async function awgRouterModal(devId, name) {
+  const [c, q] = await Promise.all([act("vps_awg_conf", { id: devId }, { quiet: true }), act("share_qr", { id: "awgdev:" + devId }, { quiet: true })]);
+  if (!c.ok) return;
+  const conf = c.result;
+  openModal(`<div class="modal-head"><h2>${esc(t("vps_awg_router_title", { name }))}</h2>
+      <button class="icon-btn plain" data-close aria-label="${t("close")}">${icon("x")}</button></div>
+    ${q.ok ? `<div class="qr-img qr-modal">${q.result.svg}</div>` : ""}
+    <ol class="steps"><li>${esc(t("vps_awg_router_1"))}</li><li>${esc(t("vps_awg_router_2"))}</li><li>${esc(t("vps_awg_router_3"))}</li></ol>
+    <p class="qr-warn">${icon("alert", "inline-ico")}<span>${esc(t("vps_awg_router_warn"))}</span></p>
+    <div class="modal-actions"><button class="btn btn-primary" id="mSave">${icon("download")}${t("vps_awg_router_save")}</button>
+      <button class="btn" id="mCopy">${icon("copy")}${t("copy")}</button></div>`, m => {
+    m.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", closeModal));
+    m.querySelector("#mCopy").addEventListener("click", () => copy(conf, t("copied")));
+    m.querySelector("#mSave").addEventListener("click", () => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([conf], { type: "text/plain" }));
+      a.download = `awg-${(name || "router").replace(/[^A-Za-z0-9_-]+/g, "") || "router"}.conf`;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     });
   });
 }
@@ -1832,7 +1888,7 @@ async function loadQr(id) {
 function renderQrBox() {
   const box = $("#qrBox");
   if (!box || !shareItems) return;
-  const kindIcon = { sub: "vpn", server: "globe", telegram: "monitor", friend: "key", warp: "shield" };
+  const kindIcon = { sub: "vpn", server: "globe", telegram: "monitor", friend: "key", warp: "shield", awgdev: "shield" };
   const cur = shareItems.find(i => i.id === shareSel);
   const list = shareItems.map(it => {
     const off = it.kind === "telegram" && !it.ready;
@@ -4063,6 +4119,7 @@ function connectEvents() {
       case "vps":
         if (page === "share") { loadVps(); loadShareItems(); }
         if (d.friend) qrModal(d.friend, t("qr_friend", { name: d.name || "" }), "friend");
+        if (d.awgdev) awgRouterModal(d.awgdev.slice(7), d.name || "");
         break;
       case "repair":
         repairResult = d.result;

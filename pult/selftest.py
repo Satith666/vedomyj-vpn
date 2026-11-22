@@ -3588,6 +3588,101 @@ def t_vps_bridge():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@case("Свой сервер: AmneziaWG 2.0 — маскировка своя у сервера, ключ устройства не уходит на сервер, устройство для роутера")
+def t_vps_awg():
+    import subprocess as sp
+    from pult import warp
+    for _ in range(200):
+        p = vps.check_awg_params(vps.awg_params())
+        rng = sorted(tuple(map(int, p[k].split("-"))) for k in ("H1", "H2", "H3", "H4"))
+        check(rng[0][0] >= 5 and all(rng[i][1] < rng[i + 1][0] for i in range(3)) and p["S2"] != p["S1"] + 56
+              and p["Jmin"] < p["Jmax"] <= 1280 and 4 <= p["S4"] <= 27, f"параметры AmneziaWG 2.0: {p}")
+    params = vps.awg_params()
+    priv, pub = warp.keypair()
+    body = vps.awg_script(pub, 45123, params)
+    check(pub in body and priv not in body and "ListenPort = 45123" in body and f"H1 = {params['H1']}" in body
+          and "ppa:amnezia/ppa" in body and "PULT_RESULT:$SPUB|45123" in body, "скрипт AmneziaWG для сервера")
+    for bad in (("$(reboot)aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", 45123), (pub, 80), (pub, 70000)):
+        try:
+            vps.awg_script(bad[0], bad[1], params)
+            check(False, f"плохой ключ или порт принят: {bad}")
+        except (vps.VpsError, ValueError):
+            pass
+    for bad in (dict(params, H1="1-100"), dict(params, H2=params["H1"]), dict(params, S1="1;reboot")):
+        try:
+            vps.awg_script(pub, 45123, bad)
+            check(False, "опасные параметры приняты")
+        except (vps.VpsError, ValueError):
+            pass
+    if sys.platform != "win32" and shutil.which("bash"):
+        for sc in (body, vps.awg_peer_script(pub)):
+            r = sp.run(["bash", "-n"], input=sc, capture_output=True, text=True)
+            check(r.returncode == 0, f"скрипт без ошибок синтаксиса bash: {r.stderr[:200]}")
+    for bad in ("x|45123", f"{pub}|80", f"{pub}|45123|999", f"{pub}|45123|1|2"):
+        try:
+            vps.parse_awg_result(bad)
+            check(False, f"непонятный ответ принят: {bad}")
+        except vps.VpsError:
+            pass
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    orig_start = vps.start
+    scenario = {"lines": [], "bodies": []}
+    _, spub = warp.keypair()
+
+    def fake_start(host, port, user, script_path, out_path, hint="", body=None):
+        scenario["bodies"].append(body)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(scenario["lines"]) + "\n")
+        return sp.Popen([sys.executable, "-c", "import time; time.sleep(0.3)"])
+
+    try:
+        engmod.vps.start = fake_start
+        e = make_engine(tmp)
+        e.startup()
+        scenario["lines"] = ["PULT_RESULT:3f1c2a9e-1b2c-4d5e-8f90-1234567890ab|cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4"
+                             "|0123456789abcdef|a1b2c3d4e5f6"]
+        e.vps_setup("203.0.113.10", 22, "root", "Germany")
+        vid = e.vps_view()[0]["id"]
+        scenario["lines"] = ["PULT_STEP:awg", f"PULT_RESULT:{spub}|45123"]
+        name = e.vps_awg(vid)
+        srv = next(x for x in e.servers if x.name == name)
+        conf = srv.awg_conf
+        cpriv = re.search(r"PrivateKey = (\S+)", conf).group(1)
+        sent = scenario["bodies"][-1]
+        h = e.settings["vps_hosts"][0]
+        check(srv.engine == "awg" and "Endpoint = 203.0.113.10:45123" in conf and f"PublicKey = {spub}" in conf
+              and warp.public_of(cpriv) in sent and cpriv not in sent, "конфиг этого компьютера: на сервер ушёл только открытый ключ")
+        check(all(f"{k} = {h['awg']['params'][k]}" in conf and f"{k} = {h['awg']['params'][k]}" in sent for k in ("S3", "S4", "H1", "H4")),
+              "маскировка у сервера и устройства одна и та же")
+        check(e.vps_view()[0]["awg"] and not e.vps_view()[0]["awg_devices"], "окно видит AmneziaWG на сервере")
+        scenario["lines"] = [f"PULT_RESULT:{spub}|45123|3"]
+        dev = e.vps_awg_device(vid, "Router")
+        dconf = e._vps_awg_dev(dev["id"])["conf"]
+        check("Address = 10.66.66.3/32" in dconf and "PrivateKey" in dconf and "awg set awg0 peer" in scenario["bodies"][-1],
+              "устройство для роутера — свой ключ и свой адрес")
+        view = e.vps_view()[0]["awg_devices"]
+        check(len(view) == 1 and "conf" not in view[0], "в окно — без ключа (конфиг — только по кнопке)")
+        items = {i["id"]: i for i in e.share_items()}
+        check(f"awgdev:{dev['id']}" in items and e.share_text(f"awgdev:{dev['id']}") == dconf, "QR-код конфига устройства")
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        check(ui.dispatch("vps_awg_conf", {"id": dev["id"]}) == dconf, "кнопка «Конфиг» в окне")
+        text = "\n".join(e.logs)
+        check(cpriv not in text and "PrivateKey" not in text, "ключи не попадают в журнал")
+        scenario["lines"] = ["PULT_ERROR:awg_os"]
+        try:
+            e.vps_awg(vid)
+            check(False, "ошибка на сервере должна дойти до человека")
+        except RuntimeError as exc:
+            check("Ubuntu" in str(exc), f"понятная причина: {exc}")
+    finally:
+        engmod.vps.start = orig_start
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @case("Мастер своего сервера: скрипт, ход установки, ссылки и проверка")
 def t_vps():
     import subprocess as sp

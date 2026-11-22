@@ -760,6 +760,15 @@ class UIServer:
         if action == "vps_bridge":
             return task("Мост через российский сервер", e.vps_bridge, str(a.get("host", "")), a.get("port", 22),
                         str(a.get("user", "root")), str(a.get("via", "")), str(a.get("name", "")))
+        if action == "vps_awg":
+            return task("Свой сервер: AmneziaWG 2.0", e.vps_awg, str(a.get("id", "")))
+        if action == "vps_awg_device":
+            return task("Свой сервер: устройство AmneziaWG", e.vps_awg_device, str(a.get("id", "")), str(a.get("name", "")))
+        if action == "vps_awg_conf":
+            dev = e._vps_awg_dev(str(a.get("id", "")))
+            if not dev:
+                raise ActionError("Устройство не найдено.")
+            return dev.get("conf", "")  # только в окно программы (127.0.0.1 с ключом) — для роутера
         if action == "vps_list":
             return e.vps_view()
         if action == "vps_add":

@@ -403,3 +403,185 @@ def wait(proc: subprocess.Popen, out_path: str, on_step, should_stop, timeout: f
             proc.terminate()
             raise VpsError("установка идёт слишком долго — попробуй ещё раз")
         time.sleep(1.0)
+
+
+# ---------- AmneziaWG 2.0 на своём сервере и устройства (роутер) — 1.24 ----------
+# Ключи устройств создаёт программа: на сервер уходит только открытый ключ, закрытый с компьютера не уходит.
+# Параметры маскировки (Jc, S1–S4, диапазоны H1–H4) тоже выбирает программа: у сервера и всех устройств
+# они должны совпадать (I1 — нет, это только у устройства).
+
+AWG_NET = "10.66.66"
+AWG_ERRORS = {
+    "awg_os": "AmneziaWG программа ставит только на Ubuntu (22.04 или новее)",
+    "awg_install": "не удалось установить AmneziaWG — у сервера нет доступа к репозиторию Amnezia или закончилось место",
+    "awg_module": "модуль AmneziaWG не загрузился — обнови систему сервера, перезагрузи его и попробуй снова",
+    "awg_service": "AmneziaWG на сервере не запустился",
+    "noawg": "на сервере нет AmneziaWG, установленного программой — сначала нажми «AmneziaWG 2.0»",
+    "awg_full": "на сервере уже 248 устройств — больше не поместится",
+}
+ERRORS.update(AWG_ERRORS)
+STEPS.update({"awg": "Ставлю AmneziaWG на сервер", "peer": "Добавляю устройство на сервер"})
+_RX_WGKEY = r"[A-Za-z0-9+/]{42,43}="
+
+
+def awg_params(rnd=None) -> dict:
+    """Набор маскировки AmneziaWG 2.0: свой у каждого сервера. Диапазоны H1–H4 не пересекаются и не задевают 1–4."""
+    import secrets as _s
+    rnd = rnd or _s.randbelow
+    r = lambda lo, hi: lo + rnd(hi - lo + 1)  # noqa: E731
+    jmin = r(20, 60)
+    s1 = r(15, 150)
+    s2 = r(15, 150)
+    while s2 == s1 + 56:  # одинаковые размеры первых пакетов снова выдали бы WireGuard
+        s2 = r(15, 150)
+    hs, lo = [], r(100_000, 10_000_000)
+    for _ in range(4):
+        width = r(100_000, 50_000_000)
+        hs.append(f"{lo}-{lo + width}")
+        lo = lo + width + r(1_000, 100_000_000)
+    order = [0, 1, 2, 3]
+    for i in range(3, 0, -1):  # какой тип пакета в каком диапазоне — тоже случайно
+        j = rnd(i + 1)
+        order[i], order[j] = order[j], order[i]
+    p = {"Jc": r(3, 8), "Jmin": jmin, "Jmax": jmin + r(20, 300), "S1": s1, "S2": s2, "S3": r(8, 55), "S4": r(4, 27)}
+    for i, k in enumerate(("H1", "H2", "H3", "H4")):
+        p[k] = hs[order[i]]
+    return p
+
+
+def check_awg_params(p: dict) -> dict:
+    """Параметры идут в скрипт для сервера — только числа и диапазоны чисел."""
+    out = {}
+    for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4"):
+        v = int(p[k])
+        if not 0 <= v <= 1280:
+            raise VpsError("неверные параметры AmneziaWG")
+        out[k] = v
+    for k in ("H1", "H2", "H3", "H4"):
+        m = re.fullmatch(r"([0-9]{1,10})-([0-9]{1,10})", str(p[k]))
+        if not m or not 5 <= int(m.group(1)) <= int(m.group(2)) <= 4294967295:
+            raise VpsError("неверные параметры AmneziaWG")
+        out[k] = f"{int(m.group(1))}-{int(m.group(2))}"
+    rng = sorted(tuple(int(x) for x in out[k].split("-")) for k in ("H1", "H2", "H3", "H4"))
+    if any(rng[i][1] >= rng[i + 1][0] for i in range(3)) or out["Jmin"] > out["Jmax"]:
+        raise VpsError("неверные параметры AmneziaWG")
+    return out
+
+
+def _awg_lines(p: dict) -> str:
+    p = check_awg_params(p)
+    return "\n".join(f"{k} = {p[k]}" for k in ("Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"))
+
+
+AWG_SCRIPT = r"""#!/bin/bash
+# VEDOMYJ VPN: installs AmneziaWG 2.0 (kernel module from ppa:amnezia/ppa) next to Xray.
+say()  { echo "PULT_STEP:$1"; }
+fail() { echo "PULT_ERROR:$1"; exit 1; }
+[ "$(id -u)" = "0" ] || fail root
+. /etc/os-release 2>/dev/null
+[ "$ID" = "ubuntu" ] || fail awg_os
+export DEBIAN_FRONTEND=noninteractive
+say packages
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq software-properties-common python3-launchpadlib gnupg2 iptables >/dev/null 2>&1 || fail awg_install
+apt-get install -y -qq "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
+say awg
+add-apt-repository -y ppa:amnezia/ppa >/dev/null 2>&1 || fail awg_install
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq amneziawg amneziawg-tools >/dev/null 2>&1 || apt-get install -y -qq amneziawg >/dev/null 2>&1 || fail awg_install
+command -v awg >/dev/null 2>&1 || fail awg_install
+modprobe amneziawg >/dev/null 2>&1 || fail awg_module
+say keys
+umask 077
+mkdir -p /etc/amnezia/amneziawg
+SPRIV=$(awg genkey)
+SPUB=$(echo "$SPRIV" | awg pubkey)
+[ -n "$SPUB" ] || fail keys
+IFACE=$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')
+[ -n "$IFACE" ] || IFACE=eth0
+say config
+systemctl stop awg-quick@awg0 >/dev/null 2>&1 || true
+cat > /etc/amnezia/amneziawg/awg0.conf <<CONF
+[Interface]
+PrivateKey = $SPRIV
+Address = __NET__.1/24
+ListenPort = __PORT__
+__PARAMS__
+PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s __NET__.0/24 -o $IFACE -j MASQUERADE; iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT
+PostDown = iptables -t nat -D POSTROUTING -s __NET__.0/24 -o $IFACE -j MASQUERADE; iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT
+
+[Peer]
+PublicKey = __CPUB__
+AllowedIPs = __NET__.2/32
+CONF
+say tune
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+  ufw allow __PORT__/udp >/dev/null 2>&1
+fi
+if command -v firewall-cmd >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port=__PORT__/udp >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+say start
+systemctl enable awg-quick@awg0 >/dev/null 2>&1 || true
+systemctl restart awg-quick@awg0 >/dev/null 2>&1
+sleep 2
+awg show awg0 >/dev/null 2>&1 || fail awg_service
+echo "PULT_RESULT:$SPUB|__PORT__"
+"""
+
+# ещё одно устройство (роутер, телевизор, второй телефон): свой ключ и свой адрес в сети AmneziaWG
+AWG_PEER_SCRIPT = r"""#!/bin/bash
+fail() { echo "PULT_ERROR:$1"; exit 1; }
+echo "PULT_STEP:peer"
+[ "$(id -u)" = "0" ] || fail root
+CONF=/etc/amnezia/amneziawg/awg0.conf
+[ -f "$CONF" ] && command -v awg >/dev/null 2>&1 || fail noawg
+N=""
+for i in $(seq 3 250); do
+  grep -q "__NET__.$i/32" "$CONF" || { N=$i; break; }
+done
+[ -n "$N" ] || fail awg_full
+printf '\n[Peer]\nPublicKey = %s\nAllowedIPs = __NET__.%s/32\n' "__CPUB__" "$N" >> "$CONF"
+awg set awg0 peer "__CPUB__" allowed-ips "__NET__.$N/32" >/dev/null 2>&1 || fail awg_service
+SPUB=$(awg show awg0 public-key)
+PORT=$(awg show awg0 listen-port)
+echo "PULT_RESULT:$SPUB|$PORT|$N"
+"""
+
+
+def awg_script(client_pub: str, port: int, params: dict) -> str:
+    if not re.fullmatch(_RX_WGKEY, client_pub or "") or not 1024 <= int(port) <= 65535:
+        raise VpsError("неверный ключ или порт AmneziaWG")
+    return (AWG_SCRIPT.replace("__PARAMS__", _awg_lines(params)).replace("__CPUB__", client_pub)
+            .replace("__PORT__", str(int(port))).replace("__NET__", AWG_NET))
+
+
+def awg_peer_script(client_pub: str) -> str:
+    if not re.fullmatch(_RX_WGKEY, client_pub or ""):
+        raise VpsError("неверный ключ AmneziaWG")
+    return AWG_PEER_SCRIPT.replace("__CPUB__", client_pub).replace("__NET__", AWG_NET)
+
+
+def parse_awg_result(result: str) -> tuple[str, int, int]:
+    """«ключ сервера|порт[|номер устройства]» → (ключ, порт, номер). Всё проверяется по шаблонам."""
+    parts = result.split("|")
+    if len(parts) not in (2, 3) or not re.fullmatch(_RX_WGKEY, parts[0]) or not re.fullmatch(r"[0-9]{4,5}", parts[1]) \
+            or (len(parts) == 3 and not re.fullmatch(r"[0-9]{1,3}", parts[2])):
+        raise VpsError("сервер прислал непонятный ответ")
+    n = int(parts[2]) if len(parts) == 3 else 2
+    if not 1024 <= int(parts[1]) <= 65535 or not 2 <= n <= 250:
+        raise VpsError("сервер прислал непонятный ответ")
+    return parts[0], int(parts[1]), n
+
+
+def awg_client_conf(host: str, port: int, server_pub: str, client_priv: str, n: int, params: dict,
+                    i1: str = "", dns: str = "1.1.1.1, 1.0.0.1") -> str:
+    """Конфиг AmneziaWG для устройства (компьютер, телефон, роутер)."""
+    hp = f"[{host}]" if ":" in host else host
+    lines = ["[Interface]", f"PrivateKey = {client_priv}", f"Address = {AWG_NET}.{int(n)}/32", f"DNS = {dns}",
+             _awg_lines(params)]
+    if i1:
+        lines.append(f"I1 = {i1}")
+    lines += ["", "[Peer]", f"PublicKey = {server_pub}", f"Endpoint = {hp}:{int(port)}", "AllowedIPs = 0.0.0.0/0, ::/0",
+              "PersistentKeepalive = 25"]
+    return "\n".join(lines) + "\n"

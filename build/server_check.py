@@ -64,6 +64,59 @@ def client(link: str, port: int, name: str) -> subprocess.Popen:
                      "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "proxy"}]}}, name)
 
 
+def sh(cmd: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=120)
+
+
+def awg_client(idx: int, conf: str) -> bool:
+    """Устройство в отдельном сетевом пространстве (как другой компьютер): туннель и ping сервера AmneziaWG."""
+    ns, net = f"awgc{idx}", f"10.20{idx}.0"
+    sh(f"ip netns add {ns}; ip link add vh{idx} type veth peer name vc{idx}; ip link set vc{idx} netns {ns}; "
+       f"ip addr add {net}.1/24 dev vh{idx}; ip link set vh{idx} up; "
+       f"ip netns exec {ns} ip addr add {net}.2/24 dev vc{idx}; ip netns exec {ns} ip link set vc{idx} up; "
+       f"ip netns exec {ns} ip link set lo up")
+    conf = conf.replace("AllowedIPs = 0.0.0.0/0, ::/0", "AllowedIPs = 10.66.66.1/32")
+    conf = "\n".join(ln for ln in conf.splitlines() if not ln.startswith("DNS ="))
+    conf = __import__("re").sub(r"Endpoint = [^\n]+:", f"Endpoint = {net}.1:", conf)
+    path = f"/tmp/{ns}.conf"
+    with open(path, "w") as f:
+        f.write(conf + "\n")
+    os.chmod(path, 0o600)
+    up = sh(f"ip netns exec {ns} awg-quick up {path}")
+    if up.returncode:
+        print(up.stdout[-500:], up.stderr[-500:])
+    ping = sh(f"ip netns exec {ns} ping -c 3 -W 3 10.66.66.1")
+    return ping.returncode == 0
+
+
+def awg_check() -> None:
+    """AmneziaWG 2.0: скрипт программы ставит его на эту машину, два устройства (компьютер и «роутер»)
+    подключаются со своими ключами и видят сервер через туннель."""
+    from pult import warp
+    params = vps.awg_params()
+    priv, pub = warp.keypair()
+    out = subprocess.run(["bash", "-s"], input=vps.awg_script(pub, 45123, params), capture_output=True, text=True,
+                         timeout=1500)
+    res = next((ln[12:] for ln in out.stdout.splitlines() if ln.startswith("PULT_RESULT:")), "")
+    err = next((ln[11:] for ln in out.stdout.splitlines() if ln.startswith("PULT_ERROR:")), "")
+    ok(bool(res), "AmneziaWG 2.0 установлен скриптом программы", vps.ERRORS.get(err, err) or out.stderr[-300:])
+    if not res:
+        return
+    spub, port, n = vps.parse_awg_result(res)
+    conf = vps.awg_client_conf("203.0.113.1", port, spub, priv, n, params, warp.DNS_YANDEX_I1)
+    ok(awg_client(1, conf), "Устройство 1 (этот компьютер) видит сервер через AmneziaWG 2.0")
+    priv2, pub2 = warp.keypair()
+    out = subprocess.run(["bash", "-s"], input=vps.awg_peer_script(pub2), capture_output=True, text=True, timeout=120)
+    res = next((ln[12:] for ln in out.stdout.splitlines() if ln.startswith("PULT_RESULT:")), "")
+    ok(bool(res), "Устройство для роутера добавлено на сервер", out.stdout[-300:])
+    if res:
+        spub2, port2, n2 = vps.parse_awg_result(res)
+        conf2 = vps.awg_client_conf("203.0.113.1", port2, spub2, priv2, n2, params, warp.DNS_YANDEX_I1)
+        ok(spub2 == spub and n2 == 3 and awg_client(2, conf2), "Устройство 2 («роутер») видит сервер со своим ключом", f"адрес {n2}")
+    show = sh("awg show awg0")
+    ok("peer:" in show.stdout and show.stdout.count("peer:") == 2, "На сервере два устройства", str(show.stdout.count("peer:")))
+
+
 def main() -> int:
     if os.geteuid() != 0:
         print("Нужен root: sudo python3 build/server_check.py")
@@ -102,6 +155,7 @@ def main() -> int:
     finally:
         for p in procs:
             p.terminate()
+    awg_check()
     print(f"\nОшибок: {len(fails)}")
     return 1 if fails else 0
 
