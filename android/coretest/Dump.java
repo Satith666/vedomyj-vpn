@@ -41,6 +41,12 @@ public class Dump {
                 }
                 continue;
             }
+            if (mode.equals("adsabp")) {
+                List<Set<String>> ab = AdBlock.parseAbp(line.replace("\\n", "\n"));
+                out.println(Json.canonical(Arrays.asList((Object) new ArrayList<Object>(new TreeSet<String>(ab.get(0))),
+                        new ArrayList<Object>(new TreeSet<String>(ab.get(1))))));
+                continue;
+            }
             if (mode.equals("adsline")) {
                 Set<String> got = new TreeSet<String>(AdBlock.parse(line.replace("\\n", "\n"), line.startsWith("||") ? "adblock" : "domains"));
                 out.println(Json.canonical(new ArrayList<Object>(got)));

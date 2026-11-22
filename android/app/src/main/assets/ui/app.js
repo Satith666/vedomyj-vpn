@@ -1225,6 +1225,7 @@
     render() {
       const A = S.ads || {};
       return `<div id="adsTop" class="stack"></div>
+        <section class="card" id="adsChk"></section>
         <div id="adsSus"></div>
         <section class="card"><div class="card-head"><h2>${esc(t("ads_level"))}</h2></div><div class="card-body" id="adsLevel"></div></section>
         <section class="card"><div class="card-head"><h2>${esc(t("ads_lists"))}</h2></div><div id="adsLists"></div></section>
@@ -1277,7 +1278,8 @@
         <p class="hint">${esc(t("ads_lv_" + (A.level || "normal") + "_text"))}</p>`);
       const counts = A.counts || {};
       const n = (id) => counts[id] ? " · " + t("ads_n", { n: counts[id] }) : "";
-      safeHtml("#adsLists", ["popups", "threats", "ru"].map((id) =>
+      setHtml("#adsChk", adsCheckHtml(A, busy));
+      safeHtml("#adsLists", ["popups", "threats", "ru", "m_ads", "m_privacy", "m_malware"].map((id) =>
           swRow("ads-list", (A.lists || {})[id], t("ads_l_" + id), t("ads_l_" + id + "_text") + n(id), `data-id="${id}"`)).join("")
         + `<div class="card-body"><p class="hint">${esc(A.total ? t("ads_total", { n: A.total, ago: ago(A.updated_at) }) : t("ads_no_lists"))}
           ${A.missing && A.missing.length ? " " + esc(t("ads_missing")) : ""}</p>
@@ -1289,6 +1291,21 @@
           <p class="hint">${esc(t("ads_today"))}</p></div>${top || `<p class="hint pad">${esc(t("ads_journal_empty"))}</p>`}`);
     },
   };
+
+  // «Почему реклама проходит?» — пункты с «Исправить» (Engine.adsCheckNow)
+  const ADS_FIX_LABEL = { ads_on: "fix_turn_on", ads_resume: "ads_resume", ads_update: "fix_download", ads_apply: "fix_apply",
+    ads_without_vpn: "fix_turn_on", apps: "fix_where" };
+  function adsCheckHtml(A, busy) {
+    const c = A.check;
+    const ic = { ok: "check", info: "shield", warn: "alert", error: "ban" };
+    const running = taskOf("ads_check");
+    const rows = c ? c.items.map((x) => `<div class="check-item ${x.level === "warn" ? "warn" : x.level}">${icon(ic[x.level] || "alert")}
+        <div class="main"><b>${esc(x.title)}</b>${x.detail ? `<span>${esc(x.detail)}</span>` : ""}
+        ${x.fix && ADS_FIX_LABEL[x.fix] && x.level !== "ok" ? `<button class="btn small${x.level === "error" ? " primary" : ""}" data-act="ads-fix" data-v="${x.fix}">${esc(t(ADS_FIX_LABEL[x.fix]))}</button>` : ""}</div></div>`).join("") : "";
+    const sum = c ? (c.errors || c.warnings ? t("ads_chk_sum", { e: c.errors, w: c.warnings }) : t("ads_chk_ok")) : t("ads_chk_hint");
+    return `<div class="card-head"><h2>${esc(t("ads_chk_title"))}</h2></div><div class="card-body"><p class="hint">${esc(running ? running + "…" : sum)}</p>
+      <button class="btn${c ? "" : " primary"} wide" data-act="ads-check" ${running || busy ? "disabled" : ""}>${icon("refresh")}${esc(t("ads_chk_btn"))}</button></div>${rows}`;
+  }
 
   // ---------- обход замедлений ----------
   VIEWS.dpi = {
@@ -1888,6 +1905,17 @@
       poll();
     },
     "ads-update"() { act("ads_update"); poll(); },
+    "ads-check"() { if (act("ads_check", {}) !== undefined) poll(); },
+    "ads-fix"(el) {
+      const f = el.dataset.v;
+      if (f === "ads_on") act("ads_set", { values: { block_ads: true } });
+      else if (f === "ads_resume") act("ads_pause", { minutes: 0 });
+      else if (f === "ads_update") act("ads_update");
+      else if (f === "ads_apply") act("filter_start");
+      else if (f === "ads_without_vpn") act("ads_set", { values: { ads_without_vpn: true } });
+      else if (f === "apps") { go("apps"); return; }
+      poll();
+    },
     "ads-pause"(el) { act("ads_pause", { minutes: Number(el.dataset.v) }); poll(); },
     "ads-site"(el) {
       const allow = el.dataset.v === "1";

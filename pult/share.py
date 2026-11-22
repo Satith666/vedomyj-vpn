@@ -62,7 +62,8 @@ def _path(v):
 def _ads_lists(v):
     if not isinstance(v, dict):
         raise ValueError
-    return {k: bool(v[k]) for k in ("popups", "threats", "ru", "telemetry") if k in v and isinstance(v[k], bool)}
+    return {k: bool(v[k]) for k in ("popups", "threats", "ru", "telemetry", "m_ads", "m_privacy", "m_malware")
+            if k in v and isinstance(v[k], bool)}
 
 
 def _strategy_name(v):

@@ -41,6 +41,8 @@ public final class Api {
                 Map<String, Object> v = Json.map(a, "values");
                 return e.setAds(v == null ? Json.obj() : v);
             }
+            case "ads_check":
+                return e.adsCheck();
             case "ads_update":
                 return e.updateAdblock(false);
             case "ads_allow":

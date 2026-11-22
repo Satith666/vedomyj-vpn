@@ -70,17 +70,80 @@ AD_NAME = re.compile(r"(^|[.\-])(ads?|adv|adverts?|advertising|adserv(er|ice)s?|
                      r"marketgid|lentainform|adskeeper|appsflyer|branch\.io|onesignal|pushwoosh|sendpulse|amplitude|mixpanel|"
                      r"segment\.(io|com)|newrelic|nr-data|sentry|bugsnag|crashlytics")
 
+# Списки как у расширения «Монстр»: зеркала uBlock Origin (первое ответившее — и хватит), EasyList, RU AdList.
+_UBO = ("https://ublockorigin.github.io/uAssetsCDN/{}", "https://ublockorigin.pages.dev/{}",
+        "https://cdn.jsdelivr.net/gh/uBlockOrigin/uAssetsCDN@main/{}", "https://cdn.statically.io/gh/uBlockOrigin/uAssetsCDN/main/{}")
+_RUAD = ("https://raw.githubusercontent.com/easylist/ruadlist/master/{}", "https://cdn.jsdelivr.net/gh/easylist/ruadlist@master/{}")
+
+
+def _ubo(path: str, official: str = "") -> list[str]:
+    return [u.format(path) for u in _UBO] + ([official] if official else [])
+
+
 # отдельные списки: id → (адреса, формат)
 EXTRA = {
     "popups": ([u.format("popupads") for u in _HAGEZI], "domains"),      # всплывающие окна и «попандеры»
     "threats": ([u.format("tif.mini") for u in _HAGEZI], "domains"),     # мошенничество, вирусы, фишинг
     "ru": (list(_ADGUARD_RU), "adblock"),                                # российские рекламные сети (AdGuard Russian)
     "telemetry": ([u.format("native.winoffice") for u in _HAGEZI], "domains"),  # слежка Windows и Office
+    # «Монстр»: реклама
+    "easylist": (_ubo("thirdparties/easylist.txt", "https://easylist.to/easylist/easylist.txt"), "abp"),
+    "ubo": (_ubo("filters/filters.min.txt"), "abp"),
+    "ruadlist": ([u.format("RuAdList-uBO.txt") for u in _RUAD], "abp"),
+    # «Монстр»: трекеры и счётчики
+    "easyprivacy": (_ubo("thirdparties/easyprivacy.txt", "https://easylist.to/easylist/easyprivacy.txt"), "abp"),
+    "ubo_privacy": (_ubo("filters/privacy.min.txt"), "abp"),
+    "pgl": (["https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext",
+             "https://ublockorigin.github.io/uAssets/thirdparties/pgl.yoyo.org/as/serverlist"], "domains"),
+    "ru_counters": ([u.format("cntblock.txt") for u in _RUAD], "abp"),
+    # «Монстр»: опасные сайты
+    "urlhaus": (["https://malware-filter.gitlab.io/urlhaus-filter/urlhaus-filter-online.txt",
+                 "https://curbengh.github.io/urlhaus-filter/urlhaus-filter-online.txt",
+                 "https://malware-filter.pages.dev/urlhaus-filter-online.txt"], "abp"),
+    "ubo_badware": (_ubo("filters/badware.min.txt"), "abp"),
 }
-DEFAULT_LISTS = {"popups": True, "threats": True, "ru": True, "telemetry": False}
+# группы «Монстра»: одна галочка — несколько списков
+GROUPS = {"m_ads": ("easylist", "ubo", "ruadlist"), "m_privacy": ("easyprivacy", "ubo_privacy", "pgl", "ru_counters"),
+          "m_malware": ("urlhaus", "ubo_badware")}
+GROUPED = frozenset(x for ids in GROUPS.values() for x in ids)
+TOGGLES = ("popups", "threats", "ru", "telemetry", *GROUPS)   # галочки в окне
+DEFAULT_LISTS = {"popups": True, "threats": True, "ru": True, "telemetry": False,
+                 "m_ads": True, "m_privacy": True, "m_malware": True}
+
+
+def list_on(lists: dict, key: str) -> bool:
+    """Включена ли галочка списка (ключа нет в настройках — значение по умолчанию: новые списки сразу работают)."""
+    v = (lists or {}).get(key)
+    return bool(DEFAULT_LISTS.get(key, False) if v is None else v)
+
+
+THREATS = frozenset(("threats", "urlhaus", "ubo_badware", "m_malware"))
+
+
+def only_threats(ids: list[str]) -> bool:
+    """Адрес только в списках опасных сайтов — сам его не разрешаем, спрашиваем человека."""
+    return bool(ids) and all(i in THREATS for i in ids)
+
+
+def list_ids(lists: dict) -> list[str]:
+    """Какие списки качать и собирать: основной, отдельные и списки включённых групп «Монстра»."""
+    out = ["main"] + [k for k in EXTRA if k not in GROUPED and list_on(lists, k)]
+    for g, ids in GROUPS.items():
+        if list_on(lists, g):
+            out += list(ids)
+    return out
 
 _DOMAIN_RE = re.compile(r"^(?=.{4,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?\.)+[a-z0-9-]{2,63}$")
 _ADBLOCK_RE = re.compile(r"^\|\|([a-z0-9._-]+)\^(\$important)?$")
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+_ABP_RE = re.compile(r"^(@@)?\|\|([a-z0-9._-]+)\^(?:\$(.*))?$")
+# Из списков фильтров (EasyList, uBlock) берём только правила «на весь адрес»: без условий, $important, $all,
+# $document, $popup. $third-party — только в разделах «рекламные серверы» и «следящие серверы»: там это просто
+# адреса рекламных сетей. Правила с путём, $domain=, $script и т. п. по одному адресу не проверить — их оставляем
+# расширению в браузере.
+_ABP_WIDE = frozenset(("important", "all", "document", "doc", "popup"))
+_ABP_THIRD = frozenset(("third-party", "3p"))
+_ABP_EXC = frozenset(("important", "all", "document", "doc", "third-party", "3p", "~third-party", "1p", "first-party"))
 
 
 def main_url(list_id: str, level: str = DEFAULT_LEVEL) -> list[str]:
@@ -100,9 +163,43 @@ def _clean(value: str) -> str:
     return v if _DOMAIN_RE.match(v) else ""
 
 
+def parse_abp(text: str) -> tuple[set[str], set[str]]:
+    """Список фильтров Adblock Plus / uBlock → (адреса для блокировки, исключения @@ из самого списка)."""
+    block: set[str] = set()
+    allow: set[str] = set()
+    third_ok = False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line[0] == "!":
+            if line.startswith("! *** "):  # раздел сборного списка: «! *** easylist:easylist/easylist_adservers.txt ***»
+                name = line.lower()
+                third_ok = "adservers" in name or "trackingservers" in name
+            continue
+        if line[0] == "[" or "#" in line:  # заголовок или скрытие элементов (##, #@#, #?#…) — не про адреса
+            continue
+        m = _ABP_RE.match(line.lower())
+        if not m:
+            continue
+        d = _clean(m.group(2))
+        if not d or _IPV4_RE.match(d):
+            continue
+        opts = {x.strip() for x in m.group(3).split(",")} if m.group(3) else set()
+        if m.group(1):
+            if opts <= _ABP_EXC:
+                allow.add(d)
+        elif opts <= _ABP_WIDE or (third_ok and opts - _ABP_WIDE <= _ABP_THIRD):
+            block.add(d)
+    return block, allow
+
+
 def parse(text: str, fmt: str = "domains") -> set[str]:
     """Текст списка → множество доменов. domains — по одному в строке (можно «0.0.0.0 домен» и «*.домен»),
-    adblock — только правила вида ||домен^ без условий (правила с $… нельзя проверить по одному адресу)."""
+    adblock — только правила вида ||домен^ без условий (правила с $… нельзя проверить по одному адресу),
+    abp — списки фильтров EasyList и uBlock (см. parse_abp)."""
+    if fmt == "abp":
+        return parse_abp(text)[0]
     out: set[str] = set()
     for line in text.splitlines():
         line = line.strip()
@@ -288,6 +385,10 @@ def download(list_id: str, cache_dir: str, level: str = DEFAULT_LEVEL, proxy_por
     os.makedirs(cache_dir, exist_ok=True)
     dest = os.path.join(cache_dir, cache_name(list_id, level))
     fmt = "domains" if list_id == "main" else EXTRA[list_id][1]
+    prev = 0
+    if os.path.isfile(dest):
+        with open(dest, encoding="utf-8", errors="replace") as f:
+            prev = len(parse(f.read(), fmt))
     last: Exception | None = None
     for url in main_url(list_id, level):
         try:
@@ -296,6 +397,8 @@ def download(list_id: str, cache_dir: str, level: str = DEFAULT_LEVEL, proxy_por
                 count = len(parse(f.read(), fmt))
             if count < 50:
                 raise IOError("в скачанном списке почти нет адресов")
+            if prev >= 1000 and count < prev * 0.4:  # обрезанный ответ или подмена: старая копия лучше
+                raise IOError(f"список скачался не целиком ({count} адресов вместо {prev})")
             os.replace(dest + ".new", dest)
             return count
         except Exception as exc:  # пробуем запасной адрес
@@ -321,12 +424,18 @@ def cache_path(list_id: str, cache_dir: str, level: str = DEFAULT_LEVEL) -> str:
 
 
 def load(list_id: str, cache_dir: str, level: str = DEFAULT_LEVEL) -> set[str]:
+    return load_full(list_id, cache_dir, level)[0]
+
+
+def load_full(list_id: str, cache_dir: str, level: str = DEFAULT_LEVEL) -> tuple[set[str], set[str]]:
+    """(адреса, исключения из самого списка)."""
     path = cache_path(list_id, cache_dir, level)
     if not os.path.isfile(path):
-        return set()
+        return set(), set()
     fmt = "domains" if list_id == "main" else EXTRA[list_id][1]
     with open(path, encoding="utf-8", errors="replace") as f:
-        return parse(f.read(), fmt)
+        text = f.read()
+    return parse_abp(text) if fmt == "abp" else (parse(text, fmt), set())
 
 
 def lookup(cache_dir: str, level: str, lists: dict, custom: str, allow: str, host: str) -> dict:
@@ -337,7 +446,7 @@ def lookup(cache_dir: str, level: str, lists: dict, custom: str, allow: str, hos
         raise ValueError("Не похоже на адрес сайта. Пример: example.com.")
     cand = {h, *_parents(h)}
     found = []
-    for list_id in ["main"] + [k for k in EXTRA if lists.get(k)]:
+    for list_id in list_ids(lists):
         path = cache_path(list_id, cache_dir, level)
         if not os.path.isfile(path):
             continue
@@ -362,14 +471,20 @@ def build(cache_dir: str, out_path: str, level: str, lists: dict, custom: str = 
     Возвращает {"total", "lists": {id: число}, "missing": [id, …], "built_at"}."""
     counts, missing = {}, []
     domains: set[str] = set()
-    for list_id in ["main"] + [k for k in EXTRA if lists.get(k)]:
-        got = load(list_id, cache_dir, level)
+    excepts: set[str] = set()
+    for list_id in list_ids(lists):
+        got, exc = load_full(list_id, cache_dir, level)
         if not got:
             missing.append(list_id)
         counts[list_id] = len(got)
         domains |= got
-    domains = protect(domains)  # свои сайты из «Блокировать» главнее встроенной защиты
+        excepts |= exc
+    for g, ids in GROUPS.items():  # число адресов группы — для окна
+        if list_on(lists, g):
+            counts[g] = sum(counts.get(i, 0) for i in ids)
     own = parse_user(custom)
+    domains = apply_allow(domains, excepts - own)  # исключения самих списков (@@||…^), кроме своих сайтов
+    domains = protect(domains)  # свои сайты из «Блокировать» главнее встроенной защиты
     counts["custom"] = len(own)
     domains |= own
     final = minimize(apply_allow(domains, parse_user(allow)))

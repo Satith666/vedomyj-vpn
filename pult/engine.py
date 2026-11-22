@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, amneziawg, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, notworking, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, adscheck, amneziawg, dnsmode, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, notworking, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -31,7 +31,8 @@ class Cancelled(RuntimeError):
 
 
 class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin, family.FamilyMixin,
-             protect.ProtectMixin, collect.CollectMixin, notworking.NotWorkingMixin):
+             protect.ProtectMixin, collect.CollectMixin, notworking.NotWorkingMixin, adscheck.AdsCheckMixin,
+             dnsmode.DnsModeMixin):
     """События для интерфейса (notify(event, **data)) приходят из рабочих потоков:
     log, busy, servers, server, status, live, connections, services, service, summary, error, settings."""
 
@@ -74,6 +75,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._ads_site_asked: set[str] = set()
         self._ads_ask_times: collections.deque = collections.deque(maxlen=10)
         self.ads_suspects: collections.deque = collections.deque(maxlen=20)
+        self.ads_check_last: dict | None = None  # «Проверить блокировку рекламы» (adscheck.py)
         self.tray_queue: collections.deque = collections.deque(maxlen=5)  # всплывающие сообщения у значка в трее
         self.ports: dict = {}
         self.geo_in_use = False
@@ -119,6 +121,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._protect_init()        # предохранители, автооткат, безопасный запуск (protect.py)
         self._collect_init()        # «Сбор ошибок» (collect.py)
         self._nw_init()             # «Не работает» (notworking.py)
+        self._dns_init()            # реклама «через DNS» во всех программах и для всего дома (dnsmode.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
         # обход замедлений: zapret и ByeDPI
@@ -366,6 +369,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._ads_migrate()
         self._routing_migrate()
         self.awg_restore()
+        if os.path.isfile(self._dns_state_path) or any(self._dns_wanted()):
+            threading.Thread(target=self.dns_startup, daemon=True).start()  # DNS компьютера после сбоя — как было
         self._monitor.start()
         self._check_files()
         if not self.paths.xray_exists():
@@ -437,6 +442,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             try:
                 self.byedpi.stop()
                 self.zapret.shutdown()
+                self.dns_stop()  # DNS компьютера — как было (до того, как помощник с правами закроется)
                 self.admin.shutdown()
                 if self.hotspot.get("on"):
                     hotspot.run("stop")  # программа закрыта — раздача без VPN никому не нужна
@@ -2141,7 +2147,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         except RuntimeError:
             ads = {}
         ads_lists = [self._ads_list_name(x["id"]) for x in ads.get("lists") or []] if ads.get("blocked") else []
-        if ads.get("blocked") and not ads.get("custom") and ads_lists and [x["id"] for x in ads["lists"]] != ["threats"]:
+        if ads.get("blocked") and not ads.get("custom") and ads_lists and not adblock.only_threats([x["id"] for x in ads["lists"]]):
             self.ads_allow(host)
             self.build_adblock()
             self.apply_ads()
@@ -2983,10 +2989,11 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             self.start_filter()
         elif self.filter_on:
             self.stop_filter()
+        if self.dnsf or any(self._dns_wanted()) or os.path.isfile(self._dns_state_path):
+            self.dns_apply()  # тот же список — и для блокировки через DNS (или вернуть DNS компьютера как было)
 
     def _ads_ids(self) -> list[str]:
-        lists = self.settings.get("ads_lists") or {}
-        return ["main"] + [k for k in adblock.EXTRA if lists.get(k)]
+        return adblock.list_ids(self.settings.get("ads_lists") or {})
 
     def build_adblock(self) -> dict | None:
         """Собрать adblock.dat из скачанных списков, своих сайтов и исключений (без сети)."""
@@ -3056,7 +3063,11 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     @staticmethod
     def _ads_list_name(list_id: str) -> str:
         return {"main": "реклама и трекеры", "popups": "всплывающие окна", "threats": "опасные сайты",
-                "ru": "российская реклама", "telemetry": "слежка Windows"}.get(list_id, list_id)
+                "ru": "российская реклама", "telemetry": "слежка Windows", "easylist": "EasyList",
+                "ubo": "uBlock filters", "ruadlist": "RU AdList", "easyprivacy": "EasyPrivacy",
+                "ubo_privacy": "uBlock Privacy", "pgl": "Peter Lowe", "ru_counters": "RU AdList: счётчики",
+                "urlhaus": "URLhaus", "ubo_badware": "uBlock Badware", "m_ads": "реклама как в «Монстре»",
+                "m_privacy": "трекеры и счётчики", "m_malware": "опасные сайты (URLhaus)"}.get(list_id, list_id)
 
     def set_ads(self, **changes) -> tuple[bool, bool]:
         """Настройки блокировки рекламы. Возвращает (нужно скачать списки, нужно пересобрать и применить)."""
@@ -3072,6 +3083,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         if "without_vpn" in changes and bool(changes["without_vpn"]) != bool(s.get("ads_without_vpn", True)):
             s["ads_without_vpn"] = bool(changes["without_vpn"])
             need_apply = True
+        for key in ("dns_system", "dns_home"):
+            if key in changes and bool(changes[key]) != bool(s.get(f"ads_{key}")):
+                s[f"ads_{key}"] = bool(changes[key])
+                need_apply = True
+                self.log({"dns_system": "Реклама во всех программах (через DNS): ", "dns_home": "Реклама для всего дома: "}[key]
+                         + ("включено." if changes[key] else "выключено."))
         if "level" in changes:
             level = str(changes["level"])
             if level not in adblock.LEVELS:
@@ -3082,7 +3099,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         if "lists" in changes and isinstance(changes["lists"], dict):
             lists = dict(s.get("ads_lists") or {})
             for k, v in changes["lists"].items():
-                if k in adblock.EXTRA and bool(v) != bool(lists.get(k)):
+                if k in adblock.TOGGLES and bool(v) != adblock.list_on(lists, k):
                     lists[k] = bool(v)
                     need_apply = True
                     need_download = need_download or bool(v)
@@ -3134,6 +3151,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self.settings["ads_pause_until"] = time.time() + minutes * 60 if minutes else 0
         self._ads_paused_state = bool(minutes)
         self.save()
+        if self.dnsf:
+            self.dnsf.set_domains(self._dns_domains())  # на паузе фильтр через DNS тоже пропускает всё
         self.log(f"Блокировка рекламы на паузе {minutes} мин." if minutes else "Блокировка рекламы снова работает.")
         self.notify("settings")
 
@@ -3206,7 +3225,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             return  # не из списков (или человек сам добавил его в «Блокировать»)
         ids = [x["id"] for x in r["lists"]]
         names = [self._ads_list_name(i) for i in ids]
-        threat = ids == ["threats"]
+        threat = adblock.only_threats(ids)
         item = {"site": site, "host": host, "lists": names, "threat": threat, "at": time.time()}
         self.ads_suspects.appendleft(item)
         where = ", ".join(f"«{n}»" for n in names)
@@ -3249,7 +3268,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         st = self.ads_stats
         return {"enabled": bool(s.get("block_ads")), "without_vpn": bool(s.get("ads_without_vpn", True)),
                 "level": s.get("ads_level", adblock.DEFAULT_LEVEL), "levels": list(adblock.LEVELS),
-                "lists": {k: bool((s.get("ads_lists") or {}).get(k)) for k in adblock.EXTRA},
+                "lists": {k: adblock.list_on(s.get("ads_lists") or {}, k) for k in adblock.TOGGLES},
+                "check": self.ads_check_last, "dns": self.dns_state(),
                 "counts": info.get("lists", {}), "total": info.get("total", 0),
                 "ready": os.path.isfile(self._ads_dat), "mode": self._ads_mode(),
                 "updated_at": s.get("ads_updated_at", 0), "update_hours": s.get("ads_update_hours", 24),

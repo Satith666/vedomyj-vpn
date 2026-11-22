@@ -1424,6 +1424,74 @@ function renderByedpi(full) {
 
 const ADS_LEVELS = ["light", "normal", "pro", "pro_plus"];
 const ADS_LISTS = ["popups", "threats", "ru", "telemetry"];
+const ADS_MONSTER = ["m_ads", "m_privacy", "m_malware"];
+
+/* «Проверить блокировку рекламы»: пункты с «Исправить» (adscheck.py). */
+const ADS_FIX = {
+  ads_on: () => adsSet({ enabled: true }),
+  ads_resume: () => act("ads_pause", { minutes: 0 }).then(r => r.ok && scheduleRefresh(50)),
+  ads_update: () => act("ads_update"),
+  ads_apply: () => act("ads_apply"),
+  ads_without_vpn: () => adsSet({ without_vpn: true }),
+  sysproxy_on: () => act("save_settings", { system_proxy: true }).then(r => r.ok && toast(t("system_proxy_on"), "ok", 3500)),
+  quic_on: () => act("save_settings", { block_quic: true }).then(r => r.ok && toast(t("block_quic_on"), "ok", 3500)),
+  tun: () => go("more"),
+  dns_on: () => adsSet({ dns_system: true }),
+  monster: () => modalMonster(),
+};
+const ADS_FIX_LABEL = { ads_on: "fix_turn_on", ads_resume: "ads_resume", ads_update: "fix_download", ads_apply: "fix_apply",
+  ads_without_vpn: "fix_turn_on", sysproxy_on: "fix_turn_on", quic_on: "fix_turn_on", tun: "fix_where", dns_on: "fix_turn_on",
+  monster: "monster_how" };
+
+/* Реклама «через DNS»: во всех программах и для всего дома (dnsmode.py). */
+function adsDnsRows(a) {
+  const d = a.dns || {};
+  const off = !a.enabled || !d.supported;
+  const home = d.home && d.running && d.home_ip
+    ? `<span class="dns-ip">${t("ads_dns_home_ip", { ip: d.home_ip })} <button class="link-btn" data-act="copy_text" data-text="${esc(d.home_ip)}">${t("copy")}</button></span>` : "";
+  return `<div class="feat-row">
+      <span class="list-text"><b>${t("ads_dns_sys")}</b><span>${t(d.supported ? "ads_dns_sys_d" : "dpi_st_win")}</span></span>
+      ${sw(d.system, `data-act="ads_dns" data-k="dns_system" aria-label="${esc(t("ads_dns_sys"))}"`, off)}</div>
+    <div class="feat-row">
+      <span class="list-text"><b>${t("ads_dns_home")}</b><span>${t("ads_dns_home_d")}</span>${home}</span>
+      ${sw(d.home, `data-act="ads_dns" data-k="dns_home" aria-label="${esc(t("ads_dns_home"))}"`, off)}</div>
+    ${d.error ? `<div class="feat-row"><span class="warn-line">${esc(d.error)}</span></div>` : ""}`;
+}
+
+function adsCheckHtml() {
+  const c = S.ads && S.ads.check;
+  const running = busy("ads") && /блокировк|blocking/i.test(S.busy || "");
+  const ic = { ok: "check", info: "shield", warn: "alert", error: "x" };
+  const rows = c ? c.items.map(x => `<div class="chk-row ${x.level}">${icon(ic[x.level] || "alert")}
+      <span class="list-text"><b>${esc(x.title)}</b>${x.detail ? `<span>${esc(x.detail)}</span>` : ""}</span>
+      ${x.fix && ADS_FIX[x.fix] && x.level !== "ok" ? `<button class="btn btn-small ${x.level === "error" ? "btn-primary" : ""}" data-act="ads_fix" data-fix="${x.fix}">${t(ADS_FIX_LABEL[x.fix])}</button>` : ""}</div>`).join("") : "";
+  const sum = c ? (c.errors || c.warnings ? t("ads_chk_sum", { e: c.errors, w: c.warnings }) : t("ads_chk_ok")) : t("ads_chk_hint");
+  return `<section class="card ads-chk" id="adsCheck">
+    <div class="chk-head"><span class="list-text"><b>${t("ads_chk_title")}</b><span>${esc(sum)}</span></span>
+      ${running ? stopBtn(true) : `<button class="btn btn-small ${c ? "" : "btn-primary"}" data-act="ads_check_run" ${S.busy ? "disabled" : ""}>${icon("refresh")}${t("ads_chk_btn")}</button>`}</div>
+    ${rows ? `<div class="chk-list">${rows}</div>` : ""}</section>`;
+}
+
+/* «Монстр» — расширение для браузера: реклама внутри страниц и в YouTube. */
+function modalMonster() {
+  act("monster_open", {}, { quiet: true }).then(r => {
+    const found = r.ok && r.result.found;
+    openModal(`<h2>${t("monster_title")}</h2>
+      <p class="modal-text">${esc(t("monster_text"))}</p>
+      ${found ? `<ol class="steps">
+          <li>${t("monster_s1")} <button class="link-btn" id="mCopyExt">${t("monster_copy")}</button></li>
+          <li>${t("monster_s2")}</li>
+          <li>${t("monster_s3")} <button class="link-btn" id="mShowExt">${t("monster_show")}</button></li>
+          <li>${t("monster_s4")}</li></ol>`
+        : `<p class="warn-line">${esc(t("monster_missing"))}</p>`}
+      <div class="modal-actions"><button class="btn btn-primary" data-close>${t("close")}</button></div>`, m => {
+      const c = m.querySelector("#mCopyExt");
+      if (c) c.addEventListener("click", () => copy("chrome://extensions", t("monster_copied")));
+      const sh = m.querySelector("#mShowExt");
+      if (sh) sh.addEventListener("click", () => act("monster_open", { show: true }));
+    });
+  });
+}
 const hhmm = ts => new Date(ts * 1000).toLocaleTimeString(LANG === "ru" ? "ru-RU" : "en-GB", { hour: "2-digit", minute: "2-digit" });
 
 /* Коротко о состоянии: для плитки на главной и пункта в «Дополнительно». */
@@ -1479,6 +1547,10 @@ function renderAds(full) {
       <div class="dpi-meta">${meta.map(m => `<span>${esc(m)}</span>`).join("")}${a.enabled && a.today ? `<span>${esc(t("ads_today_n", { n: a.today }))}</span>` : ""}</div>
       <div class="ads-pause"><span class="hint">${t("ads_pause_hint")}</span><span class="grow"></span>${pause}</div>
     </section>
+    ${adsCheckHtml()}
+    <section class="card card-pad monster-card"><span class="dpi-ico">${icon("shield")}</span>
+      <span class="list-text"><b>${t("monster_card")}</b><span>${t("monster_card_d")}</span></span>
+      <button class="btn btn-small" data-act="monster">${t("monster_how")}</button></section>
     ${(a.suspects || []).length ? `<section class="card ads-suspects">
       <div class="card-head"><b>${t("ads_sus_title")}</b><span class="hint">${t("ads_sus_hint")}</span></div>
       ${a.suspects.map(x => `<div class="t-row sus-row">
@@ -1490,10 +1562,13 @@ function renderAds(full) {
       <div class="feat-row first">
         <span class="list-text"><b>${t("ads_novpn")}</b><span>${t("ads_novpn_d")}</span></span>
         ${sw(a.without_vpn, `data-act="ads_novpn" aria-label="${esc(t("ads_novpn"))}"`, !a.enabled)}</div>
+      ${adsDnsRows(a)}
       <div class="feat-row">
         <span class="list-text"><b>${t("ads_level")}</b><span>${t("ads_lv_" + a.level + "_d")}</span></span>
         <span class="seg" role="radiogroup" aria-label="${esc(t("ads_level"))}">${ADS_LEVELS.map(level).join("")}</span></div>
       ${ADS_LISTS.map(listRow).join("")}
+      <div class="feat-row sub-head"><span class="list-text"><b>${t("ads_monster_head")}</b><span>${t("ads_monster_head_d")}</span></span></div>
+      ${ADS_MONSTER.map(listRow).join("")}
       <div class="feat-row">
         <span class="list-text"><b>${t("ads_lists_upd")}</b><span>${esc(a.updated_at ? t("ads_updated", { when: ago(a.updated_at).replace(/^\S+\s/, "") }) : t("ads_never"))}</span></span>
         ${loading ? stopBtn(true) : `<button class="btn btn-small" data-act="ads_update" ${a.enabled && !S.busy ? "" : "disabled"}>${icon("refresh")}${t("update_now")}</button>`}</div>
@@ -3540,6 +3615,11 @@ const ACTIONS = {
   ads_level: el => adsSet({ level: el.dataset.v }),
   ads_list: el => adsSet({ lists: { [el.dataset.id]: !S.ads.lists[el.dataset.id] } }),
   ads_update: () => act("ads_update"),
+  ads_check_run: () => act("ads_check").then(r => r.ok && scheduleRefresh(50)),
+  copy_text: el => copy(el.dataset.text, t("ads_dns_copied")),
+  ads_dns: el => adsSet({ [el.dataset.k]: !(S.ads.dns || {})[el.dataset.k === "dns_system" ? "system" : "home"] }),
+  ads_fix: el => { const f = ADS_FIX[el.dataset.fix]; if (f) f(); },
+  monster: () => modalMonster(),
   vpn_site_direct: el => vpnSiteAnswer(el.dataset.site, true),
   vpn_site_keep: el => vpnSiteAnswer(el.dataset.site, false),
   ads_site_allow: el => adsSiteAnswer(el.dataset.site, true),

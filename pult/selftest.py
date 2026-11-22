@@ -192,6 +192,22 @@ ADS_LISTS = {
     "threats": "\n".join(f"phish{i}.bad.example" for i in range(60)) + "\n",
     "ru": "! Title: AdGuard Russian filter\n" + "\n".join(f"||ru{i}.adnet.example^" for i in range(60))
           + "\n||yandex.ru^$third-party\n||an.yandex.ru^\n##.banner\n||site.example/ads/*\n",
+    # списки «Монстра»: EasyList (разделы, $third-party только среди рекламных серверов, исключения), hosts, URLhaus
+    "easylist": "[Adblock Plus 2.0]\n! *** easylist:easylist/easylist_general_block.txt ***\n"
+                + "\n".join(f"||el{i}.ads-el.example^" for i in range(55))
+                + "\n||thirdparty-only.example^$third-party\n##.ad-banner\n||el-site.example/banner/*\n"
+                + "! *** easylist:easylist/easylist_adservers.txt ***\n||adserver-3p.example^$third-party\n"
+                + "||popserver.example^$popup,third-party\n||scripty.example^$script,third-party\n"
+                + "@@||ok-cdn.el0.ads-el.example^\n@@||el1.ads-el.example^$generichide\n",
+    "ubo": "\n".join(f"||ubo{i}.ubo.example^$important" for i in range(55)) + "\n||ubo-x.example^$domain=a.com\n",
+    "ruadlist": "\n".join(f"||ruad{i}.ruad.example^" for i in range(55)) + "\n",
+    "easyprivacy": "! *** easylist:easyprivacy/easyprivacy_trackingservers.txt ***\n"
+                   + "\n".join(f"||ep{i}.track.example^$third-party" for i in range(55)) + "\n",
+    "ubo_privacy": "\n".join(f"||up{i}.privacy.example^" for i in range(55)) + "\n",
+    "pgl": "# Peter Lowe\n" + "\n".join(f"127.0.0.1 pgl{i}.pgl.example" for i in range(55)) + "\n",
+    "ru_counters": "\n".join(f"||cnt{i}.counter.example^" for i in range(55)) + "\n",
+    "urlhaus": "\n".join(f"||mal{i}.malware.example^$document" for i in range(55)) + "\n||10.20.30.40^$document\n",
+    "ubo_badware": "\n".join(f"||bw{i}.badware.example^" for i in range(55)) + "\n",
 }
 
 
@@ -3214,6 +3230,37 @@ def t_adblock():
         check(need_download and need_apply, "первое включение скачивает списки")
         info = e.update_adblock(apply=False)
         check(info["total"] > 200 and info["lists"]["main"] == 68 and not info["missing"], f"сборка: {info}")
+        check(info["lists"]["easylist"] == 57 and info["lists"]["m_ads"] == 57 + 55 + 55 and info["lists"]["pgl"] == 55
+              and info["lists"]["urlhaus"] == 55, f"списки «Монстра» скачаны и разобраны: {info['lists']}")
+        with open(e._ads_dat, "rb") as f:
+            dat = adblock.decode_geosite(f.read())["ADS"]
+        check("adserver-3p.example" in dat and "popserver.example" in dat and "thirdparty-only.example" not in dat
+              and "scripty.example" not in dat and "ubo-x.example" not in dat and "10.20.30.40" not in dat,
+              "из EasyList и uBlock — только правила на весь адрес")
+        check("el0.ads-el.example" not in dat and "el1.ads-el.example" in dat and "ep3.track.example" in dat,
+              "исключения самих списков (@@) соблюдаются, $generichide — не исключение")
+        # «Монстр» выключен — его списки не собираются
+        e.set_ads(lists={"m_ads": False})
+        info2 = e.build_adblock()
+        check("easylist" not in info2["lists"] and "easyprivacy" in info2["lists"] and not e.ads_state()["lists"]["m_ads"],
+              f"группа «Монстра» выключается одной галочкой: {sorted(info2['lists'])}")
+        e.set_ads(lists={"m_ads": True})
+        # обрезанный список не заменяет хороший
+        cut = {"easylist": "||only.example^\n" * 3}
+        old_web = dict(ADS_LISTS)
+        ADS_LISTS.update(cut)
+        try:
+            try:
+                adblock.download("easylist", e._ads_cache)
+                check(False, "почти пустой список не принимается")
+            except Exception as exc:
+                check("почти нет адресов" in str(exc), str(exc))
+        finally:
+            ADS_LISTS.clear()
+            ADS_LISTS.update(old_web)
+        check(adblock.load("easylist", e._ads_cache) and len(adblock.load("easylist", e._ads_cache)) == 57,
+              "старая копия списка осталась")
+        e.build_adblock()
         with open(e._ads_dat, "rb") as f:
             dat = adblock.decode_geosite(f.read())["ADS"]
         check("doubleclick.net" in dat and "ad.doubleclick.net" not in dat and "popads.net" in dat
@@ -5440,6 +5487,227 @@ def t_notworking():
     finally:
         services.check_url, services.stall_test = old_check, old_stall
         engmod.services.whitelist_probe = old_probe
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case("«Проверить блокировку рекламы»: списки, фильтр, путь браузера, рекламные адреса, «Монстр»")
+def t_ads_check():
+    from pult import adblock
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    old_url, old_check = adblock.main_url, services.check_url
+    try:
+        adblock.main_url = lambda list_id, level="pro": ["http://127.0.0.1:%d/ads/%s" % (WEB, adblock.cache_name(list_id, level)[:-4])]
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.startup()
+        r = e.ads_check()
+        check(r["errors"] == 1 and r["items"][0]["fix"] == "ads_on", f"блокировка выключена — сразу так и сказать: {r['items']}")
+        e.set_ads(enabled=True)
+        r = e.ads_check()
+        fixes = {x["fix"] for x in r["items"]}
+        check("ads_update" in fixes and any("Не скачались списки" in x["title"] for x in r["items"]),
+              f"списки не скачаны — «Исправить» скачает: {[x['title'] for x in r['items']]}")
+        e.update_adblock(apply=False)
+        e.settings["system_proxy"] = False
+        wait_idle(e)
+        e.apply_ads()
+        check(e.filter_on, "фильтр без VPN работает")
+        probes = []
+
+        def blocked(url, port, region_sensitive, timeout=10.0):
+            probes.append((url, port))
+            return {"state": services.BLOCKED, "detail": "соединение сброшено", "ms": None}
+        services.check_url = blocked
+        r = e.ads_check()
+        titles = [x["title"] for x in r["items"]]
+        check(any("Браузеры идут мимо программы" in t for t in titles)
+              and any(x["fix"] == "sysproxy_on" for x in r["items"]), f"системный прокси выключен: {titles}")
+        check(any(t.startswith("Списки скачаны") for t in titles) and any(t == "Рекламные адреса закрыты" for t in titles),
+              f"списки и рекламные адреса в порядке: {titles}")
+        check(probes and all(p == e.ports["http"] for _, p in probes), "рекламные адреса проверяются через вход программы")
+        check(any(x["fix"] == "monster" for x in r["items"]), "про YouTube — подсказка про «Монстра»")
+        check(e.ads_state()["check"]["at"], "итог виден в окне")
+        services.check_url = lambda url, port, region_sensitive, timeout=10.0: {"state": services.OK, "detail": "", "ms": 50}
+        e.settings["system_proxy"] = True
+        r = e.ads_check()
+        bad = [x for x in r["items"] if x["title"] == "Рекламные адреса открываются через программу"]
+        check(bad and bad[0]["fix"] == "ads_apply" and r["errors"] >= 1, f"реклама проходит — «Исправить» применит снова: {r['items']}")
+        e.settings["ads_updated_at"] = time.time() - 10 * 86400
+        r = e.ads_check()
+        check(any(x["title"].startswith("Списки не обновлялись 10") for x in r["items"]), "старые списки — предупреждение")
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        m = ui.dispatch("monster_open", {})
+        check(m == {"found": False, "path": ""}, f"«Монстра» рядом с программой нет: {m}")
+        ext = os.path.join(e.paths.app_dir, "extras", "monster-adblock")
+        os.makedirs(ext)
+        with open(os.path.join(ext, "manifest.json"), "w") as f:
+            f.write("{}")
+        check(ui.dispatch("monster_open", {})["found"], "«Монстр» в комплекте найден")
+        i18n.set_lang("en")
+        try:
+            r = e.ads_check()
+            check(not any(i18n.CYRILLIC.search(x["title"] + x["detail"]) for x in r["items"]), f"по-английски: {r['items']}")
+        finally:
+            i18n.set_lang("ru")
+    finally:
+        adblock.main_url, services.check_url = old_url, old_check
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case("Реклама «через DNS»: свой DNS-фильтр, все программы, весь дом, возврат DNS после сбоя, помощник")
+def t_dns_mode():
+    from pult import admin_helper, adblock, dnsfilter, dnsmode
+    import struct as _st
+
+    def q(name: str, qtype: int = 1, qid: int = 0x1234) -> bytes:
+        return _st.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0) + b"".join(
+            bytes([len(x)]) + x.encode() for x in name.split(".")) + b"\x00" + _st.pack(">HH", qtype, 1)
+    # «настоящий» DNS выше: на всё отвечает 93.184.216.34
+    up = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    up.bind(("127.0.0.1", 0))
+    up_port = up.getsockname()[1]
+    asked = []
+
+    def serve_up():
+        while True:
+            try:
+                data, addr = up.recvfrom(4096)
+            except OSError:
+                return
+            asked.append(data)
+            qn = dnsfilter.parse_question(data)
+            resp = data[:2] + _st.pack(">HHHHH", 0x8180, 1, 1, 0, 0) + data[12:qn[2]] + \
+                b"\xc0\x0c" + _st.pack(">HHIH", 1, 1, 120, 4) + bytes([93, 184, 216, 34])
+            up.sendto(resp, addr)
+    threading.Thread(target=serve_up, daemon=True).start()
+    old_fwd = dnsfilter.DnsFilter._forward
+
+    def fwd(self, query):
+        s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s2.settimeout(2)
+        try:
+            s2.sendto(query, ("127.0.0.1", up_port))
+            return s2.recvfrom(4096)[0]
+        except OSError:
+            return None
+        finally:
+            s2.close()
+    dnsfilter.DnsFilter._forward = fwd
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    try:
+        check(dnsfilter.parse_question(q("Ads.Example.com"))[:2] == ("ads.example.com", 1), "разбор вопроса DNS")
+        check(dnsfilter.parse_question(b"\x00" * 5) is None, "мусор — не вопрос")
+        f = dnsfilter.DnsFilter(["8.8.8.8", "127.0.0.1", "nonsense"])
+        check(f.upstreams == ["8.8.8.8"], "выше — только настоящие DNS, не мы сами")
+        f.set_domains({"doubleclick.net", "ads.example.com"})
+        r = f.answer(q("x.doubleclick.net"))
+        check(r[:2] == b"\x12\x34" and r[-4:] == b"\x00\x00\x00\x00" and r[3] & 0x0F == 0, "реклама → 0.0.0.0, без ошибки")
+        r6 = f.answer(q("ads.example.com", 28))
+        check(r6[-16:] == b"\x00" * 16, "для IPv6 — ::")
+        n = len(asked)
+        ok = f.answer(q("site.example", qid=0x0101))
+        check(ok[:2] == b"\x01\x01" and ok[-4:] == bytes([93, 184, 216, 34]) and len(asked) == n + 1, "обычный сайт — ответ сверху")
+        ok2 = f.answer(q("site.example", qid=0x0202))
+        check(ok2[:2] == b"\x02\x02" and len(asked) == n + 1, "повтор — из кэша, со своим номером запроса")
+        check(f.stats["blocked"] == 2, f"счётчик: {f.stats}")
+        # сервер: UDP и TCP
+        port = netutil.find_free_ports(1, 25300)[0]
+        f.start(["127.0.0.1"], port)
+        try:
+            c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            c.settimeout(3)
+            c.sendto(q("doubleclick.net"), ("127.0.0.1", port))
+            check(c.recvfrom(4096)[0][-4:] == b"\x00\x00\x00\x00", "сервер по UDP")
+            c.close()
+            t = socket.create_connection(("127.0.0.1", port), timeout=3)
+            pkt = q("site.example", qid=0x0303)
+            t.sendall(_st.pack(">H", len(pkt)) + pkt)
+            ln = _st.unpack(">H", t.recv(2))[0]
+            body = t.recv(ln)
+            t.close()
+            check(body[:2] == b"\x03\x03" and body[-4:] == bytes([93, 184, 216, 34]), "сервер по TCP")
+        finally:
+            f.stop()
+        # помощник: DNS адаптера — только наш фильтр или прежние адреса
+        check(admin_helper.dns_commands(["filter", "12", "192.168.1.1"])[0][-3:] == ["address=127.0.0.1", "register=primary", "validate=no"],
+              "помощник: первым — наш фильтр")
+        for bad in (["filter", "1", "1.1.1.1", "8.8.8.8"], ["static", "x", "1.1.1.1"], ["static", "1", "1.1.1.1 & calc"],
+                    ["run", "1"], ["dhcp", "1", "1.1.1.1"], ["filter", "1", "::1"]):
+            check(admin_helper.dns_commands(bad) is None, f"помощник не пропускает: {bad}")
+        hp = admin_helper.Helper("tok", {}, 0, tmp)
+        check(hp._check_run("dns", ["dhcp", "3"]) == "" and hp._check_run("dns", ["dhcp", "3; x"]) != "", "проверка в помощнике")
+        # движок: все программы
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.startup()
+        calls = []
+        e.admin.run = lambda kind, args, timeout=40.0: calls.append((kind, list(args))) or {"ok": True}
+        e._dns_lister = lambda: [{"index": 12, "servers": ["192.168.1.1"], "static": False, "gateway": "192.168.1.1"},
+                                 {"index": 7, "servers": ["10.0.0.53", "10.0.0.54"], "static": True, "gateway": "10.0.0.1"}]
+        e.DNS_PORT = netutil.find_free_ports(1, 25400)[0]
+        e.settings["block_ads"] = True
+        os.makedirs(os.path.dirname(e._ads_dat), exist_ok=True)
+        with open(e._ads_dat, "wb") as fh:
+            fh.write(adblock.encode_geosite("ads", ["doubleclick.net"]))
+        e.set_ads(dns_system=True)
+        e.apply_ads()
+        st = e.ads_state()["dns"]
+        check(st["running"] and st["switched"] and ("dns", ["filter", "12", "192.168.1.1"]) in calls
+              and ("dns", ["filter", "7", "10.0.0.53"]) in calls, f"DNS адаптеров → наш фильтр, вторым — прежний: {calls}")
+        check(os.path.isfile(e._dns_state_path), "прежние настройки записаны до изменений")
+        check(e.dnsf.is_blocked("ad.doubleclick.net") and "10.0.0.53" in e.dnsf.upstreams, "те же списки, выше — прежний DNS")
+        e.ads_pause(5)
+        check(not e.dnsf.is_blocked("ad.doubleclick.net"), "пауза — и через DNS всё пропускается")
+        e.ads_pause(0)
+        calls.clear()
+        e.set_ads(dns_system=False)
+        e.apply_ads()
+        check(("dns", ["dhcp", "12"]) in calls and ("dns", ["static", "7", "10.0.0.53", "10.0.0.54"]) in calls
+              and not os.path.isfile(e._dns_state_path) and not e.ads_state()["dns"]["running"],
+              f"выключили — DNS как было (DHCP или прежние адреса): {calls}")
+        # сбой: программа закрылась, не вернув DNS — при запуске возвращается
+        with open(e._dns_state_path, "w") as fh:
+            json.dump({"adapters": [{"index": 5, "servers": ["1.1.1.1"], "static": True, "gateway": ""}]}, fh)
+        calls.clear()
+        e.dns_startup()
+        check(calls == [("dns", ["static", "5", "1.1.1.1"])] and not os.path.isfile(e._dns_state_path), f"возврат после сбоя: {calls}")
+        # Windows не дала прав — запись остаётся, прежние адреса не теряются
+        with open(e._dns_state_path, "w") as fh:
+            json.dump({"adapters": [{"index": 5, "servers": ["1.1.1.1"], "static": True, "gateway": ""}]}, fh)
+        e.admin.run = lambda kind, args, timeout=40.0: {"ok": False, "error": "access denied"}
+        e.set_ads(dns_system=True)
+        e.apply_ads()
+        with open(e._dns_state_path) as fh:
+            check(json.load(fh)["adapters"][0]["index"] == 5, "непрошедший возврат не затирает прежние адреса")
+        check(e.ads_state()["dns"]["error"], "Windows не дала поменять DNS — так и сказано")
+        e.admin.run = lambda kind, args, timeout=40.0: calls.append((kind, list(args))) or {"ok": True}
+        e.set_ads(dns_system=False)
+        e.apply_ads()
+        # весь дом: фильтр слушает адрес компьютера в сети
+        old_lan = netutil.lan_ip
+        netutil.lan_ip = lambda: "127.0.0.3"
+        try:
+            calls.clear()
+            e.set_ads(dns_home=True)
+            e.apply_ads()
+            st = e.ads_state()["dns"]
+            check(st["running"] and st["home_ip"] == "127.0.0.3" and not calls and not st["switched"],
+                  f"весь дом: фильтр на адресе компьютера, DNS самого компьютера не трогается: {st} {calls}")
+        finally:
+            netutil.lan_ip = old_lan
+        e.set_ads(enabled=False)
+        e.apply_ads()
+        check(not e.ads_state()["dns"]["running"], "блокировку выключили — фильтр DNS тоже")
+    finally:
+        dnsfilter.DnsFilter._forward = old_fwd
+        up.close()
         if e:
             e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)

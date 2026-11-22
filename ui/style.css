@@ -903,3 +903,17 @@ textarea.input { height: auto; }
 .nw-steps summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .nw-steps ul { margin: 6px 0 0; padding-left: 18px; color: var(--soft); font-size: 13px; }
 @media (max-width: 380px) { .nw-row { grid-template-columns: 1fr; } }
+
+/* 1.19: проверка блокировки рекламы и «Монстр» */
+.chk-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
+.chk-head .list-text { flex: 1 1 auto; min-width: 0; }
+.chk-list { display: flex; flex-direction: column; }
+.chk-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--line); }
+.chk-row > .i { width: 18px; height: 18px; flex: none; margin-top: 2px; color: var(--muted); }
+.chk-row.ok > .i { color: var(--good); } .chk-row.warn > .i { color: var(--warn); } .chk-row.error > .i { color: var(--bad); }
+.chk-row .list-text { flex: 1 1 auto; min-width: 0; }
+.chk-row .btn { flex: none; }
+.monster-card { display: flex; align-items: center; gap: 12px; }
+.monster-card .list-text { flex: 1 1 auto; min-width: 0; }
+.feat-row.sub-head { background: var(--panel-2); }
+.dns-ip { display: inline-flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--text); font-weight: 600; }

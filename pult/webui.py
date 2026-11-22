@@ -493,7 +493,8 @@ class UIServer:
                 vpn_task("Применяю маршрут", e.reconnect)
             return True
         if action == "ads_set":
-            changes = {k: a[k] for k in ("enabled", "without_vpn", "level", "lists", "custom", "allow") if k in a}
+            changes = {k: a[k] for k in ("enabled", "without_vpn", "level", "lists", "custom", "allow", "dns_system",
+                                         "dns_home") if k in a}
             need_download, need_apply = e.set_ads(**changes)
             if need_download and e.settings.get("block_ads"):
                 task("Скачиваю списки рекламы", e.update_adblock, True, "level" in changes or "lists" in changes)
@@ -923,6 +924,20 @@ class UIServer:
             e.fuses_clear()
             e.notify("settings")
             return True
+        if action == "ads_check":
+            return task("Проверяю блокировку рекламы", e.ads_check)
+        if action == "ads_apply":
+            return vpn_task("Применяю блокировку рекламы", e.apply_ads)
+        if action == "monster_open":
+            # «Монстр» лежит рядом с программой (extras/monster-adblock), если его положили в архив
+            folder = os.path.join(e.paths.app_dir, "extras", "monster-adblock")
+            found = os.path.isfile(os.path.join(folder, "manifest.json"))
+            if found and a.get("show"):
+                if sys.platform == "win32":
+                    os.startfile(folder)  # type: ignore[attr-defined]
+                else:
+                    subprocess.Popen(["xdg-open", folder])
+            return {"found": found, "path": folder if found else ""}
         if action == "open_folder":
             if sys.platform == "win32":
                 os.startfile(e.paths.app_dir)  # type: ignore[attr-defined]

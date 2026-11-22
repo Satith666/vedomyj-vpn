@@ -1,0 +1,4 @@
+||a.example^\n||b.example^$third-party\n||c.example^$important,popup\n||d.example^$script\n@@||e.example^\n@@||f.example^$generichide\n##.ad\n||g.example/path\n||10.1.2.3^$document
+! *** easylist:easylist/easylist_adservers.txt ***\n||h.example^$third-party\n||i.example^$3p,popup\n||j.example^$third-party,domain=x.com\n! *** easylist:easylist/easylist_specific_block.txt ***\n||k.example^$third-party
+[Adblock Plus 2.0]\n! Title: test\n||UPPER.Example^\n@@||ok.example^$document,third-party\n||bad_.example^\nexample#?#.x\n||l.example^$all
+! *** easylist:easyprivacy/easyprivacy_trackingservers_general.txt ***\n||m.example^$~third-party\n||n.example^$third-party,important\n@@||o.example^$~third-party

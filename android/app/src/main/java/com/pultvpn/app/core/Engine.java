@@ -7337,6 +7337,18 @@ public final class Engine {
         if ("threats".equals(id)) {
             return Text.t("опасные сайты", "dangerous sites");
         }
+        switch (id) {
+            case "easylist": return "EasyList";
+            case "ubo": return "uBlock filters";
+            case "ruadlist": return "RU AdList";
+            case "easyprivacy": return "EasyPrivacy";
+            case "ubo_privacy": return "uBlock Privacy";
+            case "pgl": return "Peter Lowe";
+            case "ru_counters": return Text.t("RU AdList: счётчики", "RU AdList: counters");
+            case "urlhaus": return "URLhaus";
+            case "ubo_badware": return "uBlock Badware";
+            default: break;
+        }
         return "ru".equals(id) ? Text.t("российская реклама", "Russian ads") : id;
     }
 
@@ -7410,7 +7422,7 @@ public final class Engine {
             ids.add(id);
             names.add(adsListName(id));
         }
-        boolean threat = ids.size() == 1 && "threats".equals(ids.get(0));
+        boolean threat = AdBlock.onlyThreats(ids);
         StringBuilder where = new StringBuilder();
         for (Object n : names) {
             where.append(where.length() == 0 ? "" : ", ").append('«').append(n).append('»');
@@ -7686,8 +7698,8 @@ public final class Engine {
                     ok = m != null;
                     if (ok) {
                         Map<String, Object> clean = new LinkedHashMap<String, Object>();
-                        for (String id : AdBlock.EXTRA) {
-                            clean.put(id, Json.bool(m, id, false));
+                        for (String id : AdBlock.TOGGLES) {
+                            clean.put(id, Json.bool(m, id, AdBlock.listOn(Json.map(settings, "ads_lists"), id)));
                         }
                         v = clean;
                     }
@@ -7755,14 +7767,7 @@ public final class Engine {
 
     void updateAdblockFlow(boolean onlyMissing) {
         String level = Json.str(settings, "ads_level", AdBlock.DEFAULT_LEVEL);
-        List<String> ids = new ArrayList<String>();
-        ids.add("main");
-        Map<String, Object> lists = Json.map(settings, "ads_lists");
-        for (String id : AdBlock.EXTRA) {
-            if (lists != null && Json.bool(lists, id, false)) {
-                ids.add(id);
-            }
-        }
+        List<String> ids = AdBlock.listIds(Json.map(settings, "ads_lists"));
         List<String> failed = new ArrayList<String>();
         for (final String id : ids) {
             checkStop();
@@ -7957,14 +7962,153 @@ public final class Engine {
         }
     }
 
+    // ---------- «Проверить блокировку рекламы» (как adscheck.py) ----------
+
+    static final String[] AD_PROBES = {"pagead2.googlesyndication.com", "ad.doubleclick.net", "www.googleadservices.com",
+            "www.google-analytics.com", "mc.yandex.ru", "an.yandex.ru", "ad.mail.ru", "top-fwz1.mail.ru", "ads.adfox.ru",
+            "googletagmanager.com"};
+    public static final int AD_LIVE = 4;
+
+    /** Открывается ли адрес через вход ядра (в самопроверке подменяется). */
+    public interface AdProbe {
+        boolean opens(String host, int port);
+    }
+
+    public static AdProbe AD_PROBE = new AdProbe() {
+        @Override
+        public boolean opens(String host, int port) {
+            try {
+                Http.Response r = Http.probe("https://" + host + "/", null, 6000, port, 2048);
+                return r.status > 0;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    };
+
+    private volatile Map<String, Object> adsCheckLast;
+
+    public boolean adsCheck() {
+        return runTask(Text.t("Проверяю блокировку рекламы", "Checking ad blocking"), "ads_check", new Runnable() {
+            @Override
+            public void run() {
+                adsCheckLast = adsCheckNow();
+                changed();
+            }
+        });
+    }
+
+    public Map<String, Object> adsCheckNow() {
+        List<Object> items = new ArrayList<Object>();
+        if (!Json.bool(settings, "block_ads", false)) {
+            adsItem(items, "error", "Блокировка рекламы выключена", "Ad blocking is off",
+                    "Включи её — приложение будет закрывать рекламу и слежку во всех приложениях.",
+                    "Turn it on — the app will block ads and tracking in every app.", "ads_on");
+            return adsCheckDone(items);
+        }
+        if (adsPaused()) {
+            String until = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(Json.num(settings, "ads_pause_until", 0)));
+            adsItem(items, "warn", "Блокировка на паузе до " + until, "Blocking is paused until " + until, "", "", "ads_resume");
+        }
+        String level = Json.str(settings, "ads_level", AdBlock.DEFAULT_LEVEL);
+        List<String> ids = AdBlock.listIds(Json.map(settings, "ads_lists"));
+        List<String> missing = new ArrayList<String>();
+        StringBuilder names = new StringBuilder();
+        for (String id : ids) {
+            if (!AdBlock.cached(id, level, adsDir())) {
+                missing.add(id);
+                names.append(names.length() == 0 ? "" : ", ").append('«').append(adsListName(id)).append('»');
+            }
+        }
+        Map<String, Object> info = Json.map(settings, "ads_info");
+        if (!missing.isEmpty()) {
+            boolean few = missing.size() <= 3;
+            adsItem(items, missing.contains("main") ? "error" : "warn",
+                    few ? "Не скачались списки: " + names : "Не скачались списки: " + missing.size() + " из " + ids.size(),
+                    few ? "Lists didn't download: " + names : "Lists didn't download: " + missing.size() + " of " + ids.size(),
+                    "Без них часть рекламы проходит. Приложение скачает их снова (через VPN, если напрямую не выходит)."
+                            + (few ? "" : " Не скачались: " + names + "."),
+                    "Without them some ads get through. The app will download them again (via VPN if direct fails)."
+                            + (few ? "" : " Not downloaded: " + names + "."), "ads_update");
+        } else if (info != null && Json.num(info, "total", 0) > 0) {
+            long total = Json.num(info, "total", 0);
+            adsItem(items, "ok", "Списки скачаны: блокируется " + total + " адресов", "Lists are downloaded: " + total + " addresses are blocked",
+                    "Списков: " + ids.size() + ".", "Lists: " + ids.size() + ".", "");
+        }
+        long upd = Json.num(settings, "ads_updated_at", 0);
+        long days = (System.currentTimeMillis() - upd) / 86_400_000L;
+        if (upd > 0 && days > 7) {
+            adsItem(items, "warn", "Списки не обновлялись " + days + " дн.", "Lists haven't been updated for " + days + " days",
+                    "Новые рекламные адреса появляются каждый день.", "New ad addresses appear every day.", "ads_update");
+        }
+        boolean on = isOn();
+        boolean running = on || filterOn();
+        if (!running) {
+            if (Json.bool(settings, "ads_without_vpn", true)) {
+                adsItem(items, "error", "Приложение сейчас не фильтрует рекламу", "The app isn't filtering ads right now",
+                        "VPN выключен, а защита без VPN не запущена.", "The VPN is off and protection without VPN isn't running.",
+                        "ads_apply");
+            } else {
+                adsItem(items, "error", "VPN выключен — реклама сейчас не блокируется", "The VPN is off — ads aren't blocked right now",
+                        "Включи «Без VPN тоже»: реклама будет закрываться, а остальное пойдёт напрямую.",
+                        "Turn on “Without VPN too”: ads will be blocked and everything else goes directly.", "ads_without_vpn");
+            }
+        } else {
+            adsItem(items, "ok", "Все приложения идут через фильтр", "All apps go through the filter", "", "", "");
+        }
+        int ex = excludedApps().size();
+        if (ex > 0) {
+            adsItem(items, "info", "Приложения без VPN идут мимо блокировки: " + ex, "Apps without VPN bypass the blocking: " + ex,
+                    "Их список — «Настройки → Приложения без VPN».", "Their list is in “Settings → Apps without VPN”.", "apps");
+        }
+        if (on && !adsPaused() && appPort > 0) {
+            List<String> opened = new ArrayList<String>();
+            for (int i = 0; i < AD_LIVE; i++) {
+                checkStop();
+                if (AD_PROBE.opens(AD_PROBES[i], appPort)) {
+                    opened.add(AD_PROBES[i]);
+                }
+            }
+            if (!opened.isEmpty()) {
+                String list = String.join(", ", opened);
+                adsItem(items, "error", "Рекламные адреса открываются через приложение", "Ad addresses open through the app",
+                        "Блокировка не применилась: " + list + ".", "Blocking didn't apply: " + list + ".", "ads_apply");
+            } else {
+                adsItem(items, "ok", "Рекламные адреса закрыты", "Ad addresses are blocked",
+                        "Проверил " + AD_LIVE + " адреса через приложение.", "Checked " + AD_LIVE + " addresses through the app.", "");
+            }
+        }
+        adsItem(items, "info", "Реклама в приложении YouTube и внутри страниц", "Ads in the YouTube app and inside pages",
+                "Она приходит с того же адреса, что и сам сайт, — по адресам её не отличить.",
+                "They come from the same address as the site itself — they can't be told apart by address.", "");
+        return adsCheckDone(items);
+    }
+
+    private static void adsItem(List<Object> items, String level, String ru, String en, String dru, String den, String fix) {
+        items.add(Json.obj("level", level, "title", Text.t(ru, en), "detail", Text.t(dru, den), "fix", fix));
+    }
+
+    private Map<String, Object> adsCheckDone(List<Object> items) {
+        long errors = 0, warnings = 0;
+        for (Object o : items) {
+            String lv = Json.str(Json.map(o), "level");
+            errors += "error".equals(lv) ? 1 : 0;
+            warnings += "warn".equals(lv) ? 1 : 0;
+        }
+        log(errors + warnings == 0 ? "Проверка блокировки рекламы: всё в порядке." : "Проверка блокировки рекламы: ошибок " + errors
+                        + ", предупреждений " + warnings + ".",
+                errors + warnings == 0 ? "Ad blocking check: all good." : "Ad blocking check: " + errors + " errors, " + warnings + " warnings.");
+        return Json.obj("items", items, "errors", errors, "warnings", warnings, "at", System.currentTimeMillis());
+    }
+
     @SuppressWarnings("unchecked")
     public Map<String, Object> adsState() {
         synchronized (lock) {
             Map<String, Object> info = Json.map(settings, "ads_info");
             Map<String, Object> lists = Json.map(settings, "ads_lists");
             Map<String, Object> on = new LinkedHashMap<String, Object>();
-            for (String id : AdBlock.EXTRA) {
-                on.put(id, lists != null && Json.bool(lists, id, false));
+            for (String id : AdBlock.TOGGLES) {
+                on.put(id, AdBlock.listOn(lists, id));
             }
             List<Map.Entry<String, Object>> top = new ArrayList<Map.Entry<String, Object>>(((Map<String, Object>) adsStats.get("top")).entrySet());
             Collections.sort(top, new Comparator<Map.Entry<String, Object>>() {
@@ -7991,7 +8135,7 @@ public final class Engine {
                     "custom", Json.str(settings, "ads_custom"), "allow", Json.str(settings, "ads_allow"),
                     "today", today.equals(adsStats.get("day")) ? Json.num(adsStats, "today", 0) : 0L,
                     "top", topOut, "recent", new ArrayList<Object>((List<Object>) adsStats.get("recent")),
-                    "suspects", new ArrayList<Object>(adsSuspects));
+                    "suspects", new ArrayList<Object>(adsSuspects), "check", adsCheckLast);
         }
     }
 

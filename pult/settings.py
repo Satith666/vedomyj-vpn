@@ -64,6 +64,8 @@ DEFAULTS: dict = {
     "background_hint_shown": False,
     "hotspot_ssid": "", "hotspot_pass": "",  # раздача VPN по Wi-Fi
     "whitelist_auto": True,  # сам замечать белые списки и переходить на подходящий сервер
+    "ads_dns_system": False,  # реклама «через DNS» во всех программах (DNS компьютера → наш фильтр)
+    "ads_dns_home": False,    # фильтр DNS и для домашней сети (телевизор, приставка, роутер)
     "wl_priority": False,    # галочка «Белые списки» на главном: сначала серверы для их обхода
     "wl_muted": "",          # галочку сняли, когда списки замечены сами: в этой сети (хеш) сама не включается
     # свои маршруты: "svc:<сервис>" или "site:<домен>" → {"via": "server"|"custom"|"dpi"|"proxy"|"direct"|"block", …}

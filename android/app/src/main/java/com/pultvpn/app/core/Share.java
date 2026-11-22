@@ -123,8 +123,10 @@ public final class Share {
                     Map<String, Object> m = Json.map(v);
                     if (m != null) {
                         Map<String, Object> clean = new LinkedHashMap<String, Object>();
-                        for (String id : AdBlock.EXTRA) {
-                            clean.put(id, Json.bool(m, id, false));
+                        for (String id : AdBlock.TOGGLES) {
+                            if (m.get(id) instanceof Boolean) { // нет в файле — значение по умолчанию
+                                clean.put(id, m.get(id));
+                            }
                         }
                         settings.put(k, clean);
                     } else {

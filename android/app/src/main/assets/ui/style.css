@@ -453,7 +453,7 @@ details.card-pad .btns { margin-top: 10px; }
 .wl-box .i { width: 13px; height: 13px; stroke-width: 3; }
 .wl-cell.on { border-color: var(--accent); background: var(--accent-soft); }
 .wl-cell.on .wl-box { border-color: var(--accent); background: var(--accent); color: var(--bg); }
-.seg.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.seg.three { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); }
 .seg.three button { padding: 10px 4px; font-size: 13px; }
 .nw-opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .nw-opt { border: 1px solid var(--line); background: var(--panel-2); color: var(--text); border-radius: 999px; padding: 7px 13px; font: inherit; font-size: 13.5px; }

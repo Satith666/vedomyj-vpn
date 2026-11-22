@@ -201,6 +201,22 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   await page.locator("#nwBox [data-close]").first().click();
   ok(/Telegram/.test(nwText) && nwSite === 1, "«Не работает»: сервис проверяется всеми путями, есть вкладка «Сайт»", nwText.slice(0, 90));
 
+  // 5г. реклама: «Проверить блокировку» с «Исправить», списки «Монстра», окно «Монстр»
+  await page.evaluate(() => go("ads"));
+  await page.waitForSelector('[data-act="ads_check_run"]');
+  await page.waitForSelector('[data-act="ads_check_run"]:not([disabled])', { timeout: 60000 });
+  await page.click('[data-act="ads_check_run"]');
+  await page.waitForSelector("#adsCheck .chk-row", { timeout: 60000 });
+  const chk = await page.$$eval("#adsCheck .chk-row", (els) => els.map((e) => e.textContent.replace(/\s+/g, " ").trim()));
+  const monsterRows = await page.locator('[data-act="ads_list"][data-id^="m_"]').count();
+  await page.click('.monster-card [data-act="monster"]');
+  await page.waitForSelector(".modal h2");
+  const monsterTitle = await page.textContent(".modal h2");
+  await page.locator(".modal [data-close]").first().click();
+  ok(chk.length >= 1 && monsterRows === 3 && /Монстр/.test(monsterTitle),
+    "Реклама: «Проверить блокировку», списки «Монстра», как установить «Монстра»", `${chk.length} ${monsterRows} ${chk[0] ? chk[0].slice(0, 50) : ""}`);
+  await page.evaluate(() => go("home"));
+
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
   const PAGES = ["home", "status", "more", "features", "zapret", "byedpi", "services", "routes", "traffic", "updates", "settings",

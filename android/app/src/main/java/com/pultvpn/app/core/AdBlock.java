@@ -45,8 +45,85 @@ public final class AdBlock {
     /** Сила основного списка: HaGeZi Light / Normal / Pro / Pro++. */
     public static final Map<String, String> LEVELS = levels();
     public static final String DEFAULT_LEVEL = "normal";
-    /** Дополнительные списки: всплывающие окна, мошенничество, российские рекламные сети. */
-    public static final List<String> EXTRA = Collections.unmodifiableList(Arrays.asList("popups", "threats", "ru"));
+    /** Дополнительные списки: всплывающие окна, мошенничество, российские рекламные сети и списки «Монстра»
+     *  (как adblock.py: EasyList, uBlock, RU AdList, EasyPrivacy, Peter Lowe, URLhaus). */
+    public static final List<String> EXTRA = Collections.unmodifiableList(Arrays.asList("popups", "threats", "ru",
+            "easylist", "ubo", "ruadlist", "easyprivacy", "ubo_privacy", "pgl", "ru_counters", "urlhaus", "ubo_badware"));
+    /** Группы «Монстра»: одна галочка — несколько списков. */
+    public static final Map<String, List<String>> GROUPS = groups();
+    /** Галочки в окне и их значения по умолчанию (новые списки работают сразу). */
+    public static final List<String> TOGGLES = Collections.unmodifiableList(Arrays.asList("popups", "threats", "ru",
+            "m_ads", "m_privacy", "m_malware"));
+    static final List<String> THREATS = Arrays.asList("threats", "urlhaus", "ubo_badware", "m_malware");
+
+    static final String[] UBO = {"https://ublockorigin.github.io/uAssetsCDN/%s", "https://ublockorigin.pages.dev/%s",
+            "https://cdn.jsdelivr.net/gh/uBlockOrigin/uAssetsCDN@main/%s", "https://cdn.statically.io/gh/uBlockOrigin/uAssetsCDN/main/%s"};
+    static final String[] RUAD = {"https://raw.githubusercontent.com/easylist/ruadlist/master/%s",
+            "https://cdn.jsdelivr.net/gh/easylist/ruadlist@master/%s"};
+
+    private static Map<String, List<String>> groups() {
+        Map<String, List<String>> m = new LinkedHashMap<String, List<String>>();
+        m.put("m_ads", Arrays.asList("easylist", "ubo", "ruadlist"));
+        m.put("m_privacy", Arrays.asList("easyprivacy", "ubo_privacy", "pgl", "ru_counters"));
+        m.put("m_malware", Arrays.asList("urlhaus", "ubo_badware"));
+        return Collections.unmodifiableMap(m);
+    }
+
+    static boolean grouped(String id) {
+        for (List<String> ids : GROUPS.values()) {
+            if (ids.contains(id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Включена ли галочка (ключа нет — по умолчанию: всё, кроме слежки Windows, включено). */
+    public static boolean listOn(Map<String, Object> lists, String key) {
+        Object v = lists == null ? null : lists.get(key);
+        return v instanceof Boolean ? (Boolean) v : TOGGLES.contains(key);
+    }
+
+    /** Какие списки качать и собирать: основной, отдельные и списки включённых групп. */
+    public static List<String> listIds(Map<String, Object> lists) {
+        List<String> out = new ArrayList<String>();
+        out.add("main");
+        for (String k : EXTRA) {
+            if (!grouped(k) && listOn(lists, k)) {
+                out.add(k);
+            }
+        }
+        for (Map.Entry<String, List<String>> g : GROUPS.entrySet()) {
+            if (listOn(lists, g.getKey())) {
+                out.addAll(g.getValue());
+            }
+        }
+        return out;
+    }
+
+    /** Адрес только в списках опасных сайтов — сам не разрешаем. */
+    public static boolean onlyThreats(List<String> ids) {
+        if (ids.isEmpty()) {
+            return false;
+        }
+        for (String i : ids) {
+            if (!THREATS.contains(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static List<String> mirrors(String[] bases, String path, String official) {
+        List<String> out = new ArrayList<String>();
+        for (String b : bases) {
+            out.add(String.format(b, path));
+        }
+        if (official != null) {
+            out.add(official);
+        }
+        return out;
+    }
 
     /** Адреса списков (в самопроверке подменяются на локальные). */
     public interface Urls {
@@ -60,6 +137,21 @@ public final class AdBlock {
             if (listId.equals("ru")) {
                 out.addAll(Arrays.asList(ADGUARD_RU));
                 return out;
+            }
+            switch (listId) {
+                case "easylist": return mirrors(UBO, "thirdparties/easylist.txt", "https://easylist.to/easylist/easylist.txt");
+                case "ubo": return mirrors(UBO, "filters/filters.min.txt", null);
+                case "ruadlist": return mirrors(RUAD, "RuAdList-uBO.txt", null);
+                case "easyprivacy": return mirrors(UBO, "thirdparties/easyprivacy.txt", "https://easylist.to/easylist/easyprivacy.txt");
+                case "ubo_privacy": return mirrors(UBO, "filters/privacy.min.txt", null);
+                case "pgl": return Arrays.asList("https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext",
+                        "https://ublockorigin.github.io/uAssets/thirdparties/pgl.yoyo.org/as/serverlist");
+                case "ru_counters": return mirrors(RUAD, "cntblock.txt", null);
+                case "urlhaus": return Arrays.asList("https://malware-filter.gitlab.io/urlhaus-filter/urlhaus-filter-online.txt",
+                        "https://curbengh.github.io/urlhaus-filter/urlhaus-filter-online.txt",
+                        "https://malware-filter.pages.dev/urlhaus-filter-online.txt");
+                case "ubo_badware": return mirrors(UBO, "filters/badware.min.txt", null);
+                default: break;
             }
             String name = listId.equals("main") ? levelName(level) : listId.equals("popups") ? "popupads" : "tif.mini";
             for (String u : HAGEZI) {
@@ -87,13 +179,83 @@ public final class AdBlock {
         return listId.equals("main") ? "main-" + levelName(level) + ".txt" : listId + ".txt";
     }
 
-    static String format(String listId) {
-        return listId.equals("ru") ? "adblock" : "domains";
+    public static String format(String listId) {
+        if (listId.equals("ru")) {
+            return "adblock";
+        }
+        return grouped(listId) && !listId.equals("pgl") ? "abp" : "domains";
     }
 
     private static final Pattern DOMAIN = Pattern.compile(
             "^(?=.{4,253}$)([a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?\\.)+[a-z0-9-]{2,63}$");
     private static final Pattern ADBLOCK = Pattern.compile("^\\|\\|([a-z0-9._-]+)\\^(\\$important)?$");
+    private static final Pattern IPV4 = Pattern.compile("^\\d{1,3}(\\.\\d{1,3}){3}$");
+    private static final Pattern ABP = Pattern.compile("^(@@)?\\|\\|([a-z0-9._-]+)\\^(?:\\$(.*))?$");
+    static final Set<String> ABP_WIDE = new HashSet<String>(Arrays.asList("important", "all", "document", "doc", "popup"));
+    static final Set<String> ABP_THIRD = new HashSet<String>(Arrays.asList("third-party", "3p"));
+    static final Set<String> ABP_EXC = new HashSet<String>(Arrays.asList("important", "all", "document", "doc", "third-party",
+            "3p", "~third-party", "1p", "first-party"));
+
+    /** Разбор списков фильтров по строке: помнит раздел сборного списка (как parse_abp в adblock.py). */
+    static final class Abp {
+        boolean thirdOk;
+
+        /** → {"b"|"a", домен} или null. b — блокировать, a — исключение из самого списка. */
+        String[] line(String raw) {
+            String line = raw.trim();
+            if (line.isEmpty()) {
+                return null;
+            }
+            if (line.charAt(0) == '!') {
+                if (line.startsWith("! *** ")) {
+                    String name = line.toLowerCase();
+                    thirdOk = name.contains("adservers") || name.contains("trackingservers");
+                }
+                return null;
+            }
+            if (line.charAt(0) == '[' || line.indexOf('#') >= 0) {
+                return null;
+            }
+            Matcher m = ABP.matcher(line.toLowerCase());
+            if (!m.matches()) {
+                return null;
+            }
+            String d = clean(m.group(2));
+            if (d.isEmpty() || IPV4.matcher(d).matches()) {
+                return null;
+            }
+            Set<String> opts = new HashSet<String>();
+            if (m.group(3) != null) {
+                for (String o : m.group(3).split(",")) {
+                    opts.add(o.trim());
+                }
+            }
+            if (m.group(1) != null) {
+                return ABP_EXC.containsAll(opts) ? new String[]{"a", d} : null;
+            }
+            boolean wide = ABP_WIDE.containsAll(opts);
+            if (!wide && thirdOk) {
+                Set<String> rest = new HashSet<String>(opts);
+                rest.removeAll(ABP_WIDE);
+                wide = ABP_THIRD.containsAll(rest);
+            }
+            return wide ? new String[]{"b", d} : null;
+        }
+    }
+
+    /** Список фильтров → [адреса, исключения]. */
+    public static List<Set<String>> parseAbp(String text) {
+        Set<String> block = new HashSet<String>();
+        Set<String> allow = new HashSet<String>();
+        Abp st = new Abp();
+        for (String l : text.split("\\r?\\n")) {
+            String[] r = st.line(l);
+            if (r != null) {
+                (r[0].equals("b") ? block : allow).add(r[1]);
+            }
+        }
+        return Arrays.asList(block, allow);
+    }
 
     static String clean(String value) {
         String v = value.trim().toLowerCase();
@@ -130,6 +292,9 @@ public final class AdBlock {
     /** Текст списка → домены. domains — по одному в строке (можно «0.0.0.0 домен» и «*.домен»),
      *  adblock — только правила вида ||домен^ без условий. */
     public static Set<String> parse(String text, String fmt) {
+        if (fmt.equals("abp")) {
+            return parseAbp(text).get(0);
+        }
         Set<String> out = new HashSet<String>();
         for (String line : text.split("\\r?\\n")) {
             String d = parseLine(line, fmt);
@@ -141,10 +306,25 @@ public final class AdBlock {
     }
 
     static void parseFile(File f, String fmt, Set<String> out) throws IOException {
+        parseFile(f, fmt, out, null);
+    }
+
+    /** allow — куда сложить исключения самого списка (только для списков фильтров), null — не нужно. */
+    static void parseFile(File f, String fmt, Set<String> out, Set<String> allow) throws IOException {
         BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8), 65536);
+        Abp st = fmt.equals("abp") ? new Abp() : null;
         try {
             String line;
             while ((line = r.readLine()) != null) {
+                if (st != null) {
+                    String[] x = st.line(line);
+                    if (x != null && x[0].equals("b")) {
+                        out.add(x[1]);
+                    } else if (x != null && allow != null) {
+                        allow.add(x[1]);
+                    }
+                    continue;
+                }
                 String d = parseLine(line, fmt);
                 if (!d.isEmpty()) {
                     out.add(d);
@@ -468,6 +648,12 @@ public final class AdBlock {
         cacheDir.mkdirs();
         File dest = new File(cacheDir, cacheName(listId, level));
         File tmp = new File(cacheDir, dest.getName() + ".new");
+        int prev = 0;
+        if (dest.isFile()) {
+            Set<String> old = new HashSet<String>();
+            parseFile(dest, format(listId), old);
+            prev = old.size();
+        }
         IOException last = null;
         for (String url : URLS.of(listId, level)) {
             try {
@@ -476,6 +662,10 @@ public final class AdBlock {
                 parseFile(tmp, format(listId), got);
                 if (got.size() < 50) {
                     throw new IOException(Text.t("в скачанном списке почти нет адресов", "the downloaded list is almost empty"));
+                }
+                if (prev >= 1000 && got.size() < prev * 0.4) { // обрезанный ответ или подмена: старая копия лучше
+                    throw new IOException(Text.t("список скачался не целиком (" + got.size() + " адресов вместо " + prev + ")",
+                            "the list didn't download fully (" + got.size() + " addresses instead of " + prev + ")"));
                 }
                 dest.delete();
                 if (!tmp.renameTo(dest)) {
@@ -504,23 +694,23 @@ public final class AdBlock {
         cand.add(h);
         cand.addAll(parents(h));
         List<Object> found = new ArrayList<Object>();
-        List<String> ids = new ArrayList<String>();
-        ids.add("main");
-        for (String k : EXTRA) {
-            if (lists != null && Json.bool(lists, k, false)) {
-                ids.add(k);
-            }
-        }
-        for (String id : ids) {
+        for (String id : listIds(lists)) {
             File f = cacheFile(id, level, cacheDir);
             if (!f.isFile()) {
                 continue;
             }
+            Abp st = format(id).equals("abp") ? new Abp() : null;
             BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8), 65536);
             try {
                 String line;
                 while ((line = r.readLine()) != null) {
-                    String d = parseLine(line, format(id));
+                    String d;
+                    if (st != null) {
+                        String[] x = st.line(line);
+                        d = x != null && x[0].equals("b") ? x[1] : "";
+                    } else {
+                        d = parseLine(line, format(id));
+                    }
                     if (!d.isEmpty() && cand.contains(d)) {
                         found.add(Json.obj("id", id, "match", d));
                         break;
@@ -569,18 +759,12 @@ public final class AdBlock {
         Map<String, Object> counts = new LinkedHashMap<String, Object>();
         List<Object> missing = new ArrayList<Object>();
         Set<String> domains = new HashSet<String>();
-        List<String> ids = new ArrayList<String>();
-        ids.add("main");
-        for (String k : EXTRA) {
-            if (lists != null && Json.bool(lists, k, false)) {
-                ids.add(k);
-            }
-        }
-        for (String id : ids) {
+        Set<String> excepts = new HashSet<String>();
+        for (String id : listIds(lists)) {
             File f = cacheFile(id, level, cacheDir);
             Set<String> got = new HashSet<String>();
             if (f.isFile()) {
-                parseFile(f, format(id), got);
+                parseFile(f, format(id), got, excepts);
             }
             if (got.isEmpty()) {
                 missing.add(id);
@@ -588,8 +772,20 @@ public final class AdBlock {
             counts.put(id, (long) got.size());
             domains.addAll(got);
         }
-        domains = protect(domains); // свои сайты из «Блокировать» главнее встроенной защиты
+        for (Map.Entry<String, List<String>> g : GROUPS.entrySet()) { // число адресов группы — для окна
+            if (listOn(lists, g.getKey())) {
+                long n = 0;
+                for (String id : g.getValue()) {
+                    Object c = counts.get(id);
+                    n += c instanceof Long ? (Long) c : 0L;
+                }
+                counts.put(g.getKey(), n);
+            }
+        }
         Set<String> own = parseUser(custom);
+        excepts.removeAll(own);
+        domains = applyAllow(domains, excepts); // исключения самих списков (@@||…^), кроме своих сайтов
+        domains = protect(domains); // свои сайты из «Блокировать» главнее встроенной защиты
         counts.put("custom", (long) own.size());
         domains.addAll(own);
         List<String> fin = minimize(applyAllow(domains, parseUser(allow)));

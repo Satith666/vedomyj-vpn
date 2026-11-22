@@ -14,7 +14,7 @@ for m in links routing; do
   python3 dump.py $m < $m.txt > "$OUT/p_$m.txt"
   if cmp -s "$OUT/j_$m.txt" "$OUT/p_$m.txt"; then echo "[OK]   Сверка с Windows: $m"; else echo "[FAIL] Сверка с Windows: $m"; diff "$OUT/p_$m.txt" "$OUT/j_$m.txt" | head -20; fail=1; fi
 done
-for m in proxies siteentry adsline adsite; do
+for m in proxies siteentry adsline adsite adsabp; do
   $J Dump $m < $m.txt > "$OUT/j_$m.txt"
   python3 dump.py $m < $m.txt > "$OUT/p_$m.txt"
   if cmp -s "$OUT/j_$m.txt" "$OUT/p_$m.txt"; then echo "[OK]   Сверка с Windows: $m"; else echo "[FAIL] Сверка с Windows: $m"; diff "$OUT/p_$m.txt" "$OUT/j_$m.txt" | head -20; fail=1; fi

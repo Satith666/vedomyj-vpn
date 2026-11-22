@@ -581,9 +581,14 @@ public class CoreTest {
         http.createContext("/ads/", ex -> {
             String name = ex.getRequestURI().getPath().substring(5);
             StringBuilder b = new StringBuilder("# список\n");
+            String base = name.replaceFirst("^broken-", "");
             if (name.equals("ru")) {
                 for (int i = 0; i < 61; i++) b.append("||ru").append(i).append(".adnet.example^\n");
                 b.append("||site.example^$third-party\n");
+            } else if (AdBlock.format(base).equals("abp")) { // списки «Монстра» — правила фильтров
+                b.append("! *** easylist:easylist/easylist_adservers.txt ***\n");
+                for (int i = 0; i < 60; i++) b.append("||").append(base).append(i).append(".abp.example^$third-party\n");
+                b.append("##.banner\n||").append(base).append("-path.example/ads/*\n@@||").append(base).append("0.abp.example^\n");
             } else {
                 for (int i = 0; i < 64; i++) b.append(name).append(i).append(".ads.example\n");
                 b.append("doubleclick.net\nad.doubleclick.net\n0.0.0.0 hosts.example\n");
@@ -2030,6 +2035,54 @@ public class CoreTest {
                 Engine.STALL = old;
             }
             en.shutdown();
+        });
+
+        test("Реклама: списки «Монстра» и «Почему реклама проходит?» с «Исправить»", () -> {
+            Fake fm = new Fake(tmpDir());
+            Engine em = engine(fm);
+            em.addServers(link("fast1.example.com", "Быстрый"));
+            waitIdle(em);
+            em.connect();
+            waitIdle(em);
+            Map<String, Object> c = em.adsCheckNow();
+            check(Json.num(c, "errors", 0) == 1 && "ads_on".equals(Json.str(Json.map(Json.list(c, "items").get(0)), "fix")),
+                    "блокировка выключена — так и сказать: " + Json.write(c));
+            em.setAds(Json.obj("block_ads", true));
+            waitIdle(em);
+            Map<String, Object> st = em.adsState();
+            Map<String, Object> counts = Json.map(st, "counts");
+            check(Json.bool(Json.map(st, "lists"), "m_ads", false) && Json.num(counts, "easylist", 0) == 60
+                    && Json.num(counts, "m_ads", 0) == 180 && Json.list(st, "missing").isEmpty(),
+                    "списки «Монстра» включены сразу и собраны: " + Json.write(counts));
+            List<String> inDat = AdBlock.decodeGeosite(Files.readAllBytes(new File(new File(fm.dir, "assets"), AdBlock.DAT).toPath())).get("ADS");
+            check(inDat.contains("easylist5.abp.example") && !inDat.contains("easylist0.abp.example") && !inDat.contains("easylist-path.example"),
+                    "из правил фильтров — адреса целиком, исключения списка соблюдаются");
+            Engine.AdProbe oldProbe = Engine.AD_PROBE;
+            final List<Integer> ports = new ArrayList<Integer>();
+            Engine.AD_PROBE = (h, port) -> { ports.add(port); return false; };
+            try {
+                c = em.adsCheckNow();
+                String w = Json.write(c);
+                check(w.contains("Списки скачаны") && w.contains("Все приложения идут через фильтр") && w.contains("Рекламные адреса закрыты")
+                        && Json.num(c, "errors", 1) == 0 && ports.size() == Engine.AD_LIVE, "всё в порядке: " + w);
+                Engine.AD_PROBE = (h, port) -> true;
+                c = em.adsCheckNow();
+                check(Json.write(c).contains("\"fix\":\"ads_apply\"") && Json.num(c, "errors", 0) == 1, "реклама проходит — «Исправить»: " + Json.write(c));
+            } finally {
+                Engine.AD_PROBE = oldProbe;
+            }
+            em.setSettings(Json.obj("excluded_apps", Json.arr("com.example.game")));
+            waitIdle(em);
+            check(Json.write(em.adsCheckNow()).contains("\"fix\":\"apps\""), "приложения без VPN идут мимо — подсказка");
+            em.setAds(Json.obj("ads_lists", Json.obj("m_ads", false)));
+            waitIdle(em);
+            check(!Json.bool(Json.map(em.adsState(), "lists"), "m_ads", true) && !Json.map(em.adsState(), "counts").containsKey("easylist"),
+                    "группа «Монстра» выключается одной галочкой");
+            check(Json.bool(Json.map(em.adsState(), "lists"), "m_privacy", false), "остальные группы не тронуты");
+            Api.call(em, "ads_check", Json.obj());
+            waitIdle(em);
+            check(Json.map(em.adsState(), "check") != null, "итог проверки виден в окне");
+            em.shutdown();
         });
 
         test("Журнал ошибок в движке: сбои задач, секреты серверов, действия интерфейса", () -> {

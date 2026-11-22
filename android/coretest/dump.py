@@ -42,6 +42,10 @@ elif mode == "adsline":
     for line in (data[:-1] if data.endswith("\n") else data).split("\n"):
         text = line.replace("\\n", "\n")
         print(canon(sorted(adblock.parse(text, "adblock" if line.startswith("||") else "domains"))))
+elif mode == "adsabp":
+    for line in (data[:-1] if data.endswith("\n") else data).split("\n"):
+        b, a = adblock.parse_abp(line.replace("\\n", "\n"))
+        print(canon([sorted(b), sorted(a)]))
 elif mode == "adsite":
     for line in (data[:-1] if data.endswith("\n") else data).split("\n"):
         print(canon([adblock.protected(line), adblock.site_name(line), adblock.looks_like_ads(line)]))

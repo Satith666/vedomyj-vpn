@@ -72,6 +72,50 @@ def awg_exe() -> str:
     return ""
 
 
+IFINDEX = re.compile(r"^\d{1,6}$")
+
+
+def _ip(value: str) -> bool:
+    """Обычный IPv4-адрес (для DNS адаптера), без лишних символов."""
+    import ipaddress
+    try:
+        return isinstance(value, str) and str(ipaddress.IPv4Address(value)) == value
+    except ValueError:
+        return False
+
+
+def netsh_exe() -> str:
+    """netsh — только из System32 Windows, путь не берётся извне."""
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    return os.path.join(root, "System32", "netsh.exe")
+
+
+def dns_commands(args: list) -> list[list[str]] | None:
+    """DNS адаптера (блокировка рекламы «через DNS»). Разрешено только:
+    ["filter", индекс, запасной DNS?] — первым 127.0.0.1 (наш фильтр), вторым прежний DNS;
+    ["static", индекс, DNS1, DNS2?] — вернуть прежние адреса; ["dhcp", индекс] — вернуть «автоматически».
+    → команды netsh (без exe) или None, если что-то не так."""
+    if len(args) < 2 or not all(isinstance(a, str) for a in args) or not IFINDEX.match(args[1]):
+        return None
+    mode, idx, rest = args[0], args[1], args[2:]
+    base = ["interface", "ipv4"]
+    if mode == "dhcp" and not rest:
+        return [base + ["set", "dnsservers", f"name={idx}", "source=dhcp"]]
+    if mode == "filter" and len(rest) <= 1:
+        servers = ["127.0.0.1"] + rest
+    elif mode == "static" and 1 <= len(rest) <= 2:
+        servers = rest
+    else:
+        return None
+    if not all(_ip(x) for x in servers):
+        return None
+    cmds = [base + ["set", "dnsservers", f"name={idx}", "source=static", f"address={servers[0]}", "register=primary",
+                    "validate=no"]]
+    for n, extra in enumerate(servers[1:], start=2):
+        cmds.append(base + ["add", "dnsservers", f"name={idx}", f"address={extra}", f"index={n}", "validate=no"])
+    return cmds
+
+
 T2P_FLAGS_WITH_VALUE = {"--proxy", "--dns", "--tun", "--bypass", "--verbosity", "-v"}
 T2P_FLAGS = {"--setup", "--ipv6-enabled", "--exit-on-fatal-error"}
 
@@ -137,7 +181,10 @@ class Helper:
         return "запрещённая программа"
 
     def _check_run(self, kind: str, args: list) -> str:
-        """Разовые команды: только клиент AmneziaWG и только «включить наш конфиг» или «выключить туннель»."""
+        """Разовые команды: клиент AmneziaWG («включить наш конфиг» или «выключить туннель») и DNS адаптера
+        (только наш фильтр 127.0.0.1 или прежние адреса — см. dns_commands)."""
+        if kind == "dns":
+            return "" if dns_commands(list(args)) else "неверные параметры"
         if kind != "awg":
             return "запрещённая программа"
         if len(args) != 2 or not all(isinstance(a, str) for a in args):
@@ -167,6 +214,8 @@ class Helper:
         error = self._check_run(kind, list(args))
         if error:
             return {"ok": False, "error": error}
+        if kind == "dns":
+            return self._run_dns(list(args), timeout)
         exe = self.awg_exe()
         if not exe:
             return {"ok": False, "error": "клиент AmneziaWG не установлен"}
@@ -179,6 +228,20 @@ class Helper:
         out = (r.stdout + r.stderr).decode("utf-8", "replace").strip()[-400:]
         return {"ok": r.returncode == 0, "code": r.returncode,
                 "error": "" if r.returncode == 0 else (out or f"код выхода {r.returncode}")}
+
+    def _run_dns(self, args: list, timeout: float) -> dict:
+        exe = netsh_exe()
+        if not IS_WINDOWS or not os.path.isfile(exe):
+            return {"ok": False, "error": "netsh не найден"}
+        for cmd in dns_commands(args) or []:
+            try:
+                r = self._exec([exe] + cmd, timeout)
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                return {"ok": False, "error": str(exc)}
+            if r.returncode != 0:
+                out = (r.stdout + r.stderr).decode("cp866", "replace").strip()[-300:]
+                return {"ok": False, "code": r.returncode, "error": out or f"код выхода {r.returncode}"}
+        return {"ok": True}
 
     @staticmethod
     def _exec(cmd: list, timeout: float) -> subprocess.CompletedProcess:
