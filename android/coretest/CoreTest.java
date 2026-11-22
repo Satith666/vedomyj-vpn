@@ -29,6 +29,10 @@ public class CoreTest {
     }
 
     static void test(String name, Case c) {
+        String only = System.getenv("CORETEST_ONLY"); // отладка: только тесты, в названии которых есть эти слова
+        if (only != null && !only.isEmpty() && !name.contains(only)) {
+            return;
+        }
         long t = System.currentTimeMillis();
         try {
             c.run();
@@ -477,6 +481,7 @@ public class CoreTest {
         e.settings.put("geo_updated", System.currentTimeMillis());
         e.settings.put("stall_check", false); // «16 КБ» — только в своём тесте
         e.settings.put("warp_fallback", false); // запасной WARP (регистрация у Cloudflare) — только в своём тесте
+        e.famDhtAuto = false; // «Семья» через сеть торрентов — только в своём тесте (без настоящей сети)
         return e;
     }
 
@@ -2668,6 +2673,105 @@ public class CoreTest {
                 ew.shutdown();
             } finally {
                 Engine.WARP_PROBE = null;
+            }
+        });
+
+        test("Семья, шаг 2: сеть торрентов — bencode, ed25519 (RFC 8032, BEP 44), ящики, части, «доставлена»", () -> {
+            check(Dht.decode(Dht.encode(Json.obj("a", Arrays.asList((Object) 1L, "x"), "z", ""))) instanceof Map, "bencode туда и обратно");
+            for (String bad : new String[]{"i01e", "i-0e", "5:abc", "d1:ai1e", "i1ex", "di1ei2ee"}) {
+                boolean threw = false;
+                try {
+                    Dht.decode(bad.getBytes(StandardCharsets.US_ASCII));
+                } catch (IllegalArgumentException ex) {
+                    threw = true;
+                }
+                check(threw, "bencode принят: " + bad);
+            }
+            byte[] ex1 = Dht.edExpand(Warp.hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"));
+            byte[] pk1 = Dht.edPublic(ex1);
+            byte[] sg1 = Dht.edSign(ex1, new byte[0], null);
+            check(Warp.toHex(pk1, 0, 32).equals("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+                    && Warp.toHex(sg1, 0, 64).equals("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+                    && Dht.edVerify(pk1, new byte[0], sg1) && !Dht.edVerify(pk1, new byte[]{1}, sg1), "ed25519: RFC 8032");
+            byte[] priv = Warp.hex("e06d3183d14159228433ed599221b80bd0a5ce8352e4bdf0262f76786ef1c74db7e7a9fea2c0eb269d61e3b38e450a22e754941ac78479d6c54e1faf6037881d");
+            byte[] hw = Dht.encode("Hello World!".getBytes(StandardCharsets.US_ASCII));
+            check(Warp.toHex(Dht.edSign(priv, Dht.signBuf("foobar".getBytes(StandardCharsets.US_ASCII), 1, hw), null), 0, 64)
+                    .equals("6834284b6b24c3204eb2fea824d82f88883a3d95e8b4a21b8c0ded553d17d17ddf9a8a7104b1258f30bed3787e6cb896fca78c58f8e03b5f18f14951a87d9a08"),
+                    "BEP 44: подпись с солью");
+            Dht.LOCAL_OK = true;
+            List<Dht.LocalNode> nodes = new ArrayList<Dht.LocalNode>();
+            Engine h = null, d = null;
+            try {
+                for (int i = 0; i < 20; i++) nodes.add(new Dht.LocalNode());
+                for (int i = 0; i < nodes.size(); i++) {
+                    for (int j = 1; j <= 10; j++) {
+                        Dht.LocalNode m = nodes.get((i + j) % nodes.size());
+                        nodes.get(i).peers.add(new Object[]{m.nid, m.addr});
+                    }
+                }
+                Engine.DHT_BOOT = Arrays.asList(nodes.get(0).addr);
+                byte[] seed = new byte[32];
+                new java.security.SecureRandom().nextBytes(seed);
+                Dht.Keys keys = new Dht.Keys(seed);
+                byte[] salt = "t".getBytes(StandardCharsets.US_ASCII);
+                check(new Dht.Client(Engine.DHT_BOOT, 4000).put(keys.item(salt, 2, "two".getBytes(StandardCharsets.US_ASCII))) >= 6, "запись легла");
+                Object[] got = new Dht.Client(Engine.DHT_BOOT, 4000).get(keys.pub, salt);
+                check(got != null && (Long) got[0] == 2 && "two".equals(new String((byte[]) got[1], StandardCharsets.US_ASCII)), "запись читается");
+                Dht.Keys other = new Dht.Keys(new byte[32]);
+                Map<String, Object> forged = other.item(salt, 9, "evil".getBytes(StandardCharsets.US_ASCII));
+                forged.put("k", keys.pub);
+                check(new Dht.Client(Engine.DHT_BOOT, 4000).put(forged) == 0, "подделку узлы не принимают");
+                byte[] raw = new byte[2500];
+                new java.security.SecureRandom().nextBytes(raw);
+                Dht.Keys fk = Family.dhtKeys(seed);
+                List<Map<String, Object>> items = Family.dhtItems(fk, Family.TO_HELPER, 7, raw);
+                for (Map<String, Object> it : items) new Dht.Client(Engine.DHT_BOOT, 4000).put(it);
+                Family.ClientFor cf = () -> new Dht.Client(Engine.DHT_BOOT, 4000);
+                check(items.size() == 3 && Arrays.equals(Family.dhtFetch(cf, fk, Family.TO_HELPER, 6), raw), "посылка из трёх частей собирается");
+                check(Family.dhtFetch(cf, fk, Family.TO_HELPER, 7) == null, "уже полученная — не скачивается снова");
+                // два телефона: приглашение → ответ сам; посылка → «Установить?» сама → «доставлена»
+                h = engine(new Fake(tmpDir()));
+                d = engine(new Fake(tmpDir()));
+                Api.call(h, "family_me", Json.obj("name", "Сын"));
+                @SuppressWarnings("unchecked")
+                Map<String, Object> inv = (Map<String, Object>) Api.call(h, "family_invite", Json.obj("device", "Мама — телефон"));
+                String pair = Json.str(inv, "pair");
+                Api.call(d, "family_accept", Json.obj("text", Json.str(inv, "text"), "mode", "ask"));
+                d.familyDhtTick();
+                check("online".equals(Json.str(Json.map(Json.map(Json.list(Json.map(d.state(), "family"), "helpers").get(0)), "mail"), "state")),
+                        "ответ мамы лёг в сеть");
+                check(h.familyDhtTick() == 1 && Json.map(Json.map(Json.list(Json.map(h.state(), "family"), "devices").get(0)), "snap") != null,
+                        "сын увидел мамин телефон без мессенджера");
+                Api.call(h, "family_send", Json.obj("pair", pair, "ops", Json.arr(Json.obj("op", "set", "values", Json.obj("dns_encrypted", true)))));
+                h.familyDhtTick();
+                d.familyDhtNow();
+                check(d.familyDhtTick() == 1 && Json.map(Json.map(Json.list(Json.map(d.state(), "family"), "helpers").get(0)), "pending") != null,
+                        "у мамы — «Установить?»");
+                d.familyApply(pair);
+                waitIdle(d);
+                d.familyDhtTick();
+                h.familyDhtNow();
+                h.familyDhtTick();
+                Map<String, Object> dev = Json.map(Json.list(Json.map(h.state(), "family"), "devices").get(0));
+                List<Object> sentL = Json.list(dev, "sent");
+                check("applied".equals(Json.str(Json.map(sentL.get(sentL.size() - 1)), "state"))
+                        && "delivered".equals(Json.str(Json.map(dev, "mail"), "state")), "у сына — «установлено», «доставлена»: " + Json.write(Json.map(dev, "mail")));
+                int puts = 0;
+                for (Dht.LocalNode n : nodes) puts += n.puts;
+                h.familyDhtTick();
+                int puts2 = 0;
+                for (Dht.LocalNode n : nodes) puts2 += n.puts;
+                check(puts == puts2, "доставленную посылку больше в сеть не кладём");
+                Api.call(h, "family_dht", Json.obj("on", false));
+                check(h.familyDhtTick() == 0 && !Json.bool(Json.map(Json.map(h.state(), "family"), "dht"), "on", true), "доставку можно выключить");
+                String logs = String.join("\n", h.logLines()) + String.join("\n", d.logLines());
+                check(!logs.contains(Family.PACKET) && logs.contains("пришла сама"), "посылки не попадают в журнал");
+            } finally {
+                Dht.LOCAL_OK = false;
+                Engine.DHT_BOOT = null;
+                for (Dht.LocalNode n : nodes) n.close();
+                if (h != null) h.shutdown();
+                if (d != null) d.shutdown();
             }
         });
 

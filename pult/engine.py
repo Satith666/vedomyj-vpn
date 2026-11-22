@@ -124,6 +124,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._nw_init()             # «Не работает» (notworking.py)
         self._dns_init()            # реклама «через DNS» во всех программах и для всего дома (dnsmode.py)
         self._warpauto_init()       # WARP во встроенном ядре: запасной путь и «WARP после VPN» (warpauto.py)
+        self._fam_dht_init()        # «Семья»: посылки доставляются сами через сеть торрентов (family.py, dht.py)
         self._monitor = threading.Thread(target=self._monitor_loop, daemon=True)
         self._closing = False
         # обход замедлений: zapret и ByeDPI

@@ -2984,6 +2984,7 @@ function renderFamily(full) {
     $("#page").innerHTML = `<div id="famPage" class="stack">
       <p class="page-intro">${t("fam_intro")}</p>
       <div id="famPending" class="stack"></div>
+      <section class="card card-pad stack" id="famMail" style="gap:8px"></section>
       <section class="card card-pad stack" style="gap:10px">
         <b>${t("fam_paste_title")}</b>
         <span class="hint">${t("fam_paste_hint")}</span>
@@ -3003,13 +3004,22 @@ function renderFamily(full) {
       <div class="toolbar"><button class="btn btn-primary" data-act="fam_apply" data-pair="${esc(h.pair)}">${icon("check")}${t("fam_install")}</button>
         <button class="btn" data-act="fam_decline" data-pair="${esc(h.pair)}">${t("fam_decline")}</button></div>
     </section>`).join("");
+  const M = F.dht || { on: true };
+  const mailNow = M.error ? t("fam_mail_err") : M.ok_at ? t("fam_mail_ok", { a: ago(M.ok_at, "ago") }) : t("fam_mail_wait");
+  $("#famMail").innerHTML = `<div class="feat-row" style="padding:0">
+      <div class="feat-text"><b>${t("fam_mail_title")}</b><div class="desc">${esc(t("fam_mail_desc"))}</div>
+        ${M.on && (F.devices.length || F.helpers.length) ? `<div class="net-now"><span class="hint">${esc(mailNow)}</span>
+          <button class="btn btn-small btn-ghost" data-act="fam_check">${t("fam_mail_check")}</button></div>` : ""}</div>
+      ${sw(!!M.on, `data-act="fam_dht" aria-label="${esc(t("fam_mail_title"))}"`)}</div>`;
+  const mailText = mm => !mm || !M.on ? "" : t(`fam_mail_${mm.state}`);
   const devRows = F.devices.map(d => {
     const sn = d.snap;
     const state = !sn ? t("fam_dev_wait")
       : [sn.status === "on" ? t("fam_st_on", { s: sn.server || "" }) : sn.status === "awg" ? t("fam_st_awg", { s: sn.server || "" }) : t("fam_st_off"),
         `${t(FAM_METHODS[sn.method] || "m_auto")}`, `v${sn.ver || "?"}`, ago(d.snap_at, "ago")].join(" · ");
     const last = d.sent && d.sent.length ? d.sent[d.sent.length - 1] : null;
-    const lastText = last ? t(`fam_sent_${last.state}`) + " · " + ago(last.at, "ago") : "";
+    const mailLine = last && last.state === "sent" ? mailText(d.mail) : "";
+    const lastText = last ? t(`fam_sent_${last.state}`) + (mailLine ? " · " + mailLine : "") + " · " + ago(last.at, "ago") : "";
     const probs = sn && sn.problems && sn.problems.length ? `<span class="hint warn">${esc(t("fam_dev_problems", { p: sn.problems.join("; ") }))}</span>` : "";
     return `<div class="fam-row">
       <span class="fam-text"><b>${esc(d.name)}</b><small>${esc(state)}</small>${lastText ? `<small>${esc(t("fam_last", { s: lastText }))}</small>` : ""}${probs}</span>
@@ -3097,7 +3107,7 @@ function modalFamAccept(info, text) {
     m.querySelector("#mOk").addEventListener("click", async () => {
       const r = await act("family_accept", { text, mode: m.querySelector("#mFamMode").value }, { quiet: true });
       if (!r.ok) return showModalError(r.error);
-      modalFamText(t("fam_accepted_title"), t("fam_reply_hint", { n: info.helper }), r.result.reply, r.result.svg);
+      modalFamText(t("fam_accepted_title"), t((S.family.dht || {}).on ? "fam_reply_hint_dht" : "fam_reply_hint", { n: info.helper }), r.result.reply, r.result.svg);
       scheduleRefresh(50);
     });
   });
@@ -3171,7 +3181,7 @@ function modalFamDevice(pair) {
       if (!ops.length) ops.push({ op: "report" });
       const r = await act("family_send", { pair, ops }, { quiet: true });
       if (!r.ok) return showModalError(r.error);
-      modalFamText(t("fam_sent_title", { n: d.name }), t("fam_sent_hint", { n: d.name }), r.result.text, r.result.svg);
+      modalFamText(t("fam_sent_title", { n: d.name }), t((S.family.dht || {}).on ? "fam_sent_hint_dht" : "fam_sent_hint", { n: d.name }), r.result.text, r.result.svg);
       scheduleRefresh(50);
     });
   });
@@ -3734,6 +3744,8 @@ const ACTIONS = {
   },
   fam_device: el => modalFamDevice(el.dataset.pair),
   fam_apply: el => act("family_apply", { pair: el.dataset.pair }).then(r => r.ok && toast(t("fam_installing"), "info", 4000)),
+  fam_dht: el => act("family_dht", { on: el.getAttribute("aria-checked") !== "true" }).then(() => scheduleRefresh(50)),
+  fam_check: () => act("family_check", {}).then(r => r.ok && toast(t("fam_mail_checking"), "info", 3000)),
   fam_decline: async el => {
     const h = ((S.family || {}).helpers || []).find(x => x.pair === el.dataset.pair);
     const r = await act("family_decline", { pair: el.dataset.pair });

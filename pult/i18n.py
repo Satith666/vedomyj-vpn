@@ -32,6 +32,33 @@ def _names(text: str) -> str:
 # (регулярное выражение по-русски, замена по-английски)
 RULES: list[tuple[str, str]] = [
 
+    # «Семья», шаг 2: сеть торрентов (dht.py, family.py, 1.22)
+    (r"^bencode: (.+)$", lambda m: "bencode: " + {"неизвестный тип": "unknown type", "лишние байты": "extra bytes",
+                                                   "слишком глубоко": "too deep", "обрыв": "truncated",
+                                                   "неверное число": "bad number", "обрыв строки": "truncated string",
+                                                   "ключ не строка": "key is not a string"}.get(m.group(1), m.group(1))),
+    (r"^ed25519: (.+)$", lambda m: "ed25519: " + {"неверная длина точки": "bad point length", "неверная точка": "bad point",
+                                                   "точки нет на кривой": "point not on the curve"}.get(m.group(1), m.group(1))),
+    (r"^нужен секрет 32 байта$", "a 32-byte secret is needed"),
+    (r"^запись слишком большая$", "the item is too big"),
+    (r"^в сети уже есть запись новее$", "the network already has a newer item"),
+    (r"^ни один узел сети не принял запись$", "no network node accepted the item"),
+    (r"^Здесь нет посылки «Семьи»\.$", "There is no Family package here."),
+    (r"^Посылка слишком большая для доставки самой — отправь её текстом\.$",
+     "The package is too big to deliver by itself — send it as text."),
+    (r"^Посылка в сети повреждена\.$", "The package in the network is damaged."),
+    (r"^Посылка в сети собралась с ошибкой\.$", "The package from the network was assembled with an error."),
+    (r"^Часть посылки (\d+) из (\d+) пока не нашлась в сети\.$", r"Part \1 of \2 of the package is not in the network yet."),
+    (r"^Семья: сеть торрентов сейчас недоступна \((.*)\) — посылки можно отправить текстом\.$",
+     lambda m: f"Family: the torrent network is unreachable now ({tr(m.group(1))}) — packages can be sent as text."),
+    (r"^Семья: посылки доставляются сами \(через сеть торрентов\)\.$", "Family: packages deliver themselves (through the torrent network)."),
+    (r"^Семья: доставка сама выключена — посылки только текстом\.$", "Family: self-delivery is off — packages only as text."),
+    (r"^Семья: посылка от «(.+)» пришла сама \(через сеть торрентов\)\.$",
+     r"Family: a package from “\1” arrived by itself (through the torrent network)."),
+    (r"^«(.+)» прислал\(а\) настройки — открой «Семью», чтобы установить\.$",
+     r"“\1” sent settings — open “Family” to install them."),
+    (r"^«(.+)» прислал\(а\) настройки для VPN — открой «Семью»\.$", r"“\1” sent VPN settings — open “Family”."),
+
     # WARP во встроенном ядре (warpauto.py, 1.21)
     (r"^WARP во встроенном ядре: данные идут \(обманки «(.*?)», вариант (\d+)\)\.$",
      r"WARP in the built-in core: data flows (decoys “\1”, variant \2)."),

@@ -3559,6 +3559,182 @@ public final class Engine {
         return out;
     }
 
+    // ---------- «Семья»: доставка сама через сеть торрентов (как FamilyMixin.family_dht_tick) ----------
+
+    static final long DHT_REPUB_S = 45 * 60;
+    static final long DHT_POLL_DEVICE_S = 5 * 60;
+    static final long DHT_POLL_WAIT_S = 3 * 60;
+    static final long DHT_POLL_IDLE_S = 30 * 60;
+    static final long DHT_REPLY_KEEP_S = 3 * 86400;
+    static final long DHT_TICK_MS = 30_000;
+    /** Самопроверка: свои узлы сети вместо настоящих. */
+    public static List<java.net.InetSocketAddress> DHT_BOOT = null;
+    /** Самопроверка выключает фоновую доставку и зовёт familyDhtTick сама. */
+    public volatile boolean famDhtAuto = true;
+    private final Map<String, Long> famPoll = new java.util.concurrent.ConcurrentHashMap<String, Long>();
+    private final Map<String, Long> famPub = new java.util.concurrent.ConcurrentHashMap<String, Long>();
+    private volatile long famDhtOkAt;
+    private volatile String famDhtError = "";
+    private volatile long famDhtErrorLogged;
+    private volatile long famDhtAt;
+    private volatile boolean famDhtBusy;
+
+    Dht.Client dhtClient() {
+        return DHT_BOOT != null ? new Dht.Client(DHT_BOOT, 4000) : new Dht.Client(Dht.BOOTSTRAP, Dht.LOOKUP_MS);
+    }
+
+    private void famOutbox(Map<String, Object> ent, int direction, long seq, String text) {
+        synchronized (lock) {
+            ent.put("out", Json.obj("dir", (long) direction, "seq", seq, "text", text, "at", System.currentTimeMillis() / 1000,
+                    "nodes", 0L, "acked", false));
+        }
+        famPub.remove(Json.str(ent, "pair"));
+        famDhtAt = 0; // разбудить доставку
+    }
+
+    /** Из монитора: раз в 30 секунд (или сразу после новой посылки) — в фоне. */
+    private void famDhtMaybe() {
+        if (!famDhtAuto || famDhtBusy || !Json.bool(settings, "family_dht", true)
+                || System.currentTimeMillis() - famDhtAt < DHT_TICK_MS) {
+            return;
+        }
+        synchronized (lock) {
+            if (famList("helpers").isEmpty() && famList("devices").isEmpty()) {
+                return;
+            }
+        }
+        famDhtAt = System.currentTimeMillis();
+        famDhtBusy = true;
+        pool.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    familyDhtTick();
+                } catch (Exception e) {
+                    famDhtFail(e);
+                } finally {
+                    famDhtBusy = false;
+                }
+            }
+        });
+    }
+
+    private void famDhtFail(Exception e) {
+        famDhtError = e.getMessage() == null ? e.toString() : Text.shorten(e.getMessage(), 200);
+        if (System.currentTimeMillis() - famDhtErrorLogged > 3600_000L) {
+            famDhtErrorLogged = System.currentTimeMillis();
+            log("Семья: сеть торрентов сейчас недоступна (" + famDhtError + ") — посылки можно отправить текстом.",
+                    "Family: the torrent network is unreachable now (" + famDhtError + ") — packages can be sent as text.");
+        }
+    }
+
+    /** Положить свои посылки и заглянуть в ящики. → сколько новых посылок пришло. */
+    public int familyDhtTick() throws java.io.IOException {
+        if (!Json.bool(settings, "family_dht", true)) {
+            return 0;
+        }
+        long now = System.currentTimeMillis() / 1000;
+        int got = 0;
+        List<Object[]> work = new ArrayList<Object[]>();
+        synchronized (lock) {
+            for (Map<String, Object> h : famList("helpers")) {
+                work.add(new Object[]{"helpers", h});
+            }
+            for (Map<String, Object> d : famList("devices")) {
+                work.add(new Object[]{"devices", d});
+            }
+        }
+        for (Object[] w : work) {
+            String role = (String) w[0];
+            @SuppressWarnings("unchecked")
+            Map<String, Object> ent = (Map<String, Object>) w[1];
+            String pair = Json.str(ent, "pair");
+            Dht.Keys keys = Family.dhtKeys(Family.unb64u(Json.str(ent, "secret")));
+            Map<String, Object> out = Json.map(ent, "out");
+            long keep = "devices".equals(role) ? Family.TTL : DHT_REPLY_KEEP_S;
+            Long pubAt = famPub.get(pair);
+            if (out != null && !Json.bool(out, "acked", false) && now - Json.num(out, "at", 0) < keep
+                    && (pubAt == null || now - pubAt >= DHT_REPUB_S)) {
+                int n = Integer.MAX_VALUE;
+                for (Map<String, Object> item : Family.dhtItems(keys, (int) Json.num(out, "dir", 0), Json.num(out, "seq", 0),
+                        Family.rawOf(Json.str(out, "text")))) {
+                    n = Math.min(n, dhtClient().put(item));
+                }
+                famPub.put(pair, now);
+                if (n > 0) {
+                    synchronized (lock) {
+                        out.put("nodes", (long) n);
+                    }
+                    famDhtOkAt = System.currentTimeMillis() / 1000;
+                    famDhtError = "";
+                    saveSettings();
+                    changed();
+                } else {
+                    famPub.put(pair, now - DHT_REPUB_S + 300); // не положилось — снова через 5 минут
+                    throw new Dht.DhtError(Text.t("ни один узел сети не принял запись", "no network node accepted the item"));
+                }
+            }
+            long every;
+            if ("helpers".equals(role)) {
+                every = DHT_POLL_DEVICE_S;
+            } else {
+                boolean waiting = out != null && !Json.bool(out, "acked", false) && now - Json.num(out, "at", 0) < 86400;
+                every = waiting || ent.get("snap") == null ? DHT_POLL_WAIT_S : DHT_POLL_IDLE_S;
+            }
+            Long pollAt = famPoll.get(pair);
+            if (pollAt != null && now - pollAt < every) {
+                continue;
+            }
+            famPoll.put(pair, now);
+            byte[] raw = Family.dhtFetch(new Family.ClientFor() {
+                @Override
+                public Dht.Client make() {
+                    return dhtClient();
+                }
+            }, keys, "helpers".equals(role) ? Family.TO_DEVICE : Family.TO_HELPER, Json.num(ent, "seq_in", 0));
+            famDhtOkAt = System.currentTimeMillis() / 1000;
+            famDhtError = "";
+            if (raw != null) {
+                got++;
+                Map<String, Object> res = familyReceive(Family.PACKET + Family.b64u(raw));
+                String name = Json.str(ent, "name");
+                log("Семья: посылка от «" + name + "» пришла сама (через сеть торрентов).",
+                        "Family: a package from “" + name + "” arrived by itself (through the torrent network).");
+                if ("packet".equals(Json.str(res, "kind")) && !Json.bool(res, "auto", false)) {
+                    say(Text.t("«" + name + "» прислал(а) настройки — открой «Семью», чтобы установить.",
+                            "“" + name + "” sent settings — open “Family” to install them."), "info");
+                }
+            }
+        }
+        return got;
+    }
+
+    /** «Проверить сейчас». */
+    public void familyDhtNow() {
+        famPoll.clear();
+        famDhtAt = 0;
+    }
+
+    public void familySetDht(boolean on) {
+        settings.put("family_dht", on);
+        saveSettings();
+        log(on ? "Семья: посылки доставляются сами (через сеть торрентов)." : "Семья: доставка сама выключена — посылки только текстом.",
+                on ? "Family: packages deliver themselves (through the torrent network)." : "Family: self-delivery is off — packages only as text.");
+        if (on) {
+            familyDhtNow();
+        }
+        changed();
+    }
+
+    private static Map<String, Object> famMail(Map<String, Object> ent) {
+        Map<String, Object> out = Json.map(ent, "out");
+        if (out == null) {
+            return null;
+        }
+        String state = Json.bool(out, "acked", false) ? "delivered" : Json.num(out, "nodes", 0) > 0 ? "online" : "queued";
+        return Json.obj("state", state, "nodes", Json.num(out, "nodes", 0), "at", Json.num(out, "at", 0), "seq", Json.num(out, "seq", 0));
+    }
+
     /** Для окна — без секретов. */
     public Map<String, Object> familyState() {
         synchronized (lock) {
@@ -3566,7 +3742,7 @@ public final class Engine {
             for (Map<String, Object> h : famList("helpers")) {
                 Map<String, Object> pend = Json.map(h, "pending");
                 helpers.add(Json.obj("pair", Json.str(h, "pair"), "name", Json.str(h, "name"), "mode", Json.str(h, "mode", "ask"),
-                        "since", Json.num(h, "since", 0), "reply", Json.str(h, "reply"),
+                        "since", Json.num(h, "since", 0), "reply", Json.str(h, "reply"), "mail", famMail(h),
                         "pending", pend == null ? null : Json.obj("summary", Family.summary(opsOf(pend.get("ops"))), "at", Json.num(pend, "at", 0))));
             }
             List<Object> devices = new ArrayList<Object>();
@@ -3583,10 +3759,11 @@ public final class Engine {
                 }
                 Object snap = d.get("snap");
                 devices.add(Json.obj("pair", Json.str(d, "pair"), "name", Json.str(d, "name"), "since", Json.num(d, "since", 0),
-                        "snap", snap, "snap_at", Json.num(d, "snap_at", 0), "sent", last,
+                        "snap", snap, "snap_at", Json.num(d, "snap_at", 0), "sent", last, "mail", famMail(d),
                         "invite", snap == null ? Json.str(d, "invite") : ""));
             }
-            return Json.obj("me", Json.str(fam(), "me"), "helpers", helpers, "devices", devices);
+            return Json.obj("me", Json.str(fam(), "me"), "helpers", helpers, "devices", devices,
+                    "dht", Json.obj("on", Json.bool(settings, "family_dht", true), "ok_at", famDhtOkAt, "error", famDhtError));
         }
     }
 
@@ -3761,6 +3938,7 @@ public final class Engine {
             while (sent.size() > 20) {
                 sent.remove(0);
             }
+            famOutbox(ent, Family.TO_DEVICE, seq, text);
         }
         saveSettings();
         log("Семья: посылка для «" + Json.str(ent, "name") + "» готова — изменений: " + ops.size() + ".",
@@ -3999,9 +4177,11 @@ public final class Engine {
             seq = Json.num(ent, "seq_out", 0) + 1;
             ent.put("seq_out", seq);
         }
-        return Family.seal(Family.unb64u(Json.str(ent, "secret")), Family.TO_HELPER, seq,
+        String text = Family.seal(Family.unb64u(Json.str(ent, "secret")), Family.TO_HELPER, seq,
                 Json.obj("t", "report", "at", now, "exp", now + Family.TTL, "snap", famSnapshot(), "results", results,
                         "applied", Json.num(ent, "applied_seq", 0), "declined", declined, "device", Json.str(ent, "device")), null);
+        famOutbox(ent, Family.TO_HELPER, seq, text);
+        return text;
     }
 
     private Map<String, Object> famReport(Map<String, Object> ent, Map<String, Object> payload) {
@@ -4013,6 +4193,10 @@ public final class Engine {
                 ent.put("invite", "");
             }
             List<Object> results = Json.list(payload, "results");
+            Map<String, Object> out = Json.map(ent, "out");
+            if (out != null && (Json.num(payload, "applied", 0) >= Json.num(out, "seq", 0) || Json.bool(payload, "declined", false))) {
+                out.put("acked", true); // устройство получило посылку — больше её в сеть не кладём
+            }
             List<Object> sent = Json.list(ent, "sent");
             boolean hello = false;
             if (results != null) {
@@ -5071,6 +5255,7 @@ public final class Engine {
         guardTick();
         collectTick();
         warpReviveTick();
+        famDhtMaybe();
         if (tick == SAFE_OK_MS / TICK_MS) {
             safeStartOk();
         }

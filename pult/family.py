@@ -25,7 +25,7 @@ import threading
 import time
 import zlib
 
-from . import APP_VERSION, i18n, warp
+from . import APP_VERSION, dht, i18n, warp
 
 INVITE = "vedomyj-family://i/"
 PACKET = "vedomyj-family://p/"
@@ -48,6 +48,57 @@ OP_NAMES = {"sub_add": "добавить подписку", "sub_remove": "уд�
 
 class FamilyError(RuntimeError):
     pass
+
+
+# ---------- доставка сама: почтовый ящик в сети торрентов (dht.py, шаг 2) ----------
+
+DHT_SALT = (b"vf1/d0", b"vf1/d1")   # ящик «помощник → устройство» и «устройство → помощник»
+PART = 900                          # байт посылки в одной записи (запись — не больше 1000 байт)
+MAX_PARTS = 16
+
+
+def dht_keys(secret: bytes) -> "dht.Keys":
+    """Ключ записей пары — из её секрета: у помощника и устройства он один и тот же."""
+    return dht.Keys(_h(secret, b"vedomyj-family dht"))
+
+
+def raw_of(text: str) -> bytes:
+    pk = peek(text)
+    if not pk:
+        raise FamilyError("Здесь нет посылки «Семьи».")
+    return pk[3]
+
+
+def dht_items(keys: "dht.Keys", direction: int, seq: int, raw: bytes) -> list[dict]:
+    """Посылка → записи: главная (номер = номер посылки, хеш, число частей, первая часть) и остальные части."""
+    parts = [raw[i:i + PART] for i in range(0, len(raw), PART)] or [b""]
+    if len(parts) > MAX_PARTS:
+        raise FamilyError("Посылка слишком большая для доставки самой — отправь её текстом.")
+    salt = DHT_SALT[direction]
+    head = keys.item(salt, seq, {"h": hashlib.sha256(raw).digest()[:16], "n": len(parts), "p": parts[0]})
+    return [head] + [keys.item(salt + b"/%d/%d" % (seq, i), 1, parts[i]) for i in range(1, len(parts))]
+
+
+def dht_fetch(client_for, keys: "dht.Keys", direction: int, after_seq: int) -> bytes | None:
+    """Новая посылка из ящика (номер больше after_seq) → сырые байты или None. client_for() — новый клиент сети."""
+    salt = DHT_SALT[direction]
+    head = client_for().get(keys.public, salt)
+    if not head or head[0] <= after_seq:
+        return None
+    seq, v = head
+    if not isinstance(v, dict) or not isinstance(v.get(b"p"), bytes) or not isinstance(v.get(b"n"), int) \
+            or not 1 <= v[b"n"] <= MAX_PARTS or not isinstance(v.get(b"h"), bytes):
+        raise FamilyError("Посылка в сети повреждена.")
+    parts = [v[b"p"]]
+    for i in range(1, v[b"n"]):
+        got = client_for().get(keys.public, salt + b"/%d/%d" % (seq, i))
+        if not got or not isinstance(got[1], bytes):
+            raise FamilyError(f"Часть посылки {i + 1} из {v[b'n']} пока не нашлась в сети.")
+        parts.append(got[1])
+    raw = b"".join(parts)
+    if hashlib.sha256(raw).digest()[:16] != v[b"h"]:
+        raise FamilyError("Посылка в сети собралась с ошибкой.")
+    return raw
 
 
 # ---------- формат ----------
@@ -192,7 +243,125 @@ def server_id(link: str) -> str:
 # ---------- часть движка ----------
 
 class FamilyMixin:
-    """Часть Engine: приглашения, посылки, применение изменений, снимок программы."""
+    """Часть Engine: приглашения, посылки, применение изменений, снимок программы, доставка сама (сеть торрентов)."""
+
+    # ---------- доставка сама ----------
+    DHT_REPUB = 45 * 60          # запись в сети живёт ~2 часа — перекладываем раньше
+    DHT_POLL_DEVICE = 5 * 60     # устройство заглядывает в ящик помощника
+    DHT_POLL_WAIT = 3 * 60       # помощник ждёт ответа на свою посылку (первые сутки)
+    DHT_POLL_IDLE = 30 * 60      # помощник просто обновляет снимок
+    DHT_REPLY_KEEP = 3 * 86400   # ответ устройства лежит в сети три дня
+    DHT_TICK = 30
+
+    def _fam_dht_init(self) -> None:
+        self._fam_dht_wake = threading.Event()
+        self._fam_dht_boot = None            # самопроверка подставляет свои узлы сети
+        self._fam_dht_last = {"ok_at": 0.0, "error": "", "error_logged": 0.0}
+        self._fam_poll: dict = {}            # пара → когда заглядывали в ящик
+        self._fam_pub: dict = {}             # пара → когда клали посылку
+        self._fam_dht_loop_on = True         # самопроверка выключает фоновый поток и зовёт family_dht_tick сама
+        threading.Thread(target=self._fam_dht_loop, daemon=True).start()
+
+    def _fam_dht_on(self) -> bool:
+        return bool(self.settings.get("family_dht", True))
+
+    def _dht_client(self) -> "dht.Client":
+        return dht.Client(self._fam_dht_boot or dht.BOOTSTRAP)
+
+    def _fam_outbox(self, ent: dict, direction: int, seq: int, text: str) -> None:
+        ent["out"] = {"dir": direction, "seq": seq, "text": text, "at": int(time.time()), "nodes": 0, "acked": False}
+        self._fam_pub.pop(ent["pair"], None)
+        self._fam_dht_wake.set()
+
+    def _fam_dht_loop(self) -> None:
+        while not getattr(self, "_closing", False):
+            self._fam_dht_wake.wait(self.DHT_TICK)
+            self._fam_dht_wake.clear()
+            if getattr(self, "_closing", False):
+                return
+            if not self._fam_dht_loop_on:
+                continue
+            try:
+                self.family_dht_tick()
+            except Exception as exc:  # сеть торрентов — дополнительный путь: текстом посылки ходят всегда
+                self._fam_dht_fail(exc)
+
+    def _fam_dht_fail(self, exc: Exception) -> None:
+        last = self._fam_dht_last
+        last["error"] = str(exc)[:200] or exc.__class__.__name__
+        if time.time() - last["error_logged"] > 3600:
+            last["error_logged"] = time.time()
+            self.log(f"Семья: сеть торрентов сейчас недоступна ({last['error']}) — посылки можно отправить текстом.")
+
+    def family_dht_tick(self) -> int:
+        """Положить свои посылки и заглянуть в ящики. → сколько новых посылок пришло."""
+        if not self._fam_dht_on():
+            return 0
+        f = self._fam()
+        now = time.time()
+        got = 0
+        for role in ("helpers", "devices"):
+            for ent in list(f[role]):
+                if self._closing:
+                    return got
+                pair = ent.get("pair", "")
+                keys = dht_keys(unb64u(ent["secret"]))
+                out = ent.get("out")
+                keep = TTL if role == "devices" else self.DHT_REPLY_KEEP
+                if out and not out.get("acked") and now - out.get("at", 0) < keep \
+                        and now - self._fam_pub.get(pair, 0) >= self.DHT_REPUB:
+                    n = min(self._dht_client().put(item) for item in dht_items(keys, out["dir"], out["seq"], raw_of(out["text"])))
+                    self._fam_pub[pair] = now
+                    if n:
+                        out["nodes"] = n
+                        self._fam_dht_last.update(ok_at=now, error="")
+                        self.save()
+                        self.notify("family")
+                    else:
+                        self._fam_pub[pair] = now - self.DHT_REPUB + 300  # не положилось — снова через 5 минут
+                        raise dht.DhtError("ни один узел сети не принял запись")
+                if role == "helpers":
+                    every = self.DHT_POLL_DEVICE
+                else:
+                    waiting = out and not out.get("acked") and now - out.get("at", 0) < 86400
+                    every = self.DHT_POLL_WAIT if waiting or not ent.get("snap") else self.DHT_POLL_IDLE
+                if now - self._fam_poll.get(pair, 0) < every:
+                    continue
+                self._fam_poll[pair] = now
+                raw = dht_fetch(self._dht_client, keys, TO_DEVICE if role == "helpers" else TO_HELPER,
+                                int(ent.get("seq_in", 0)))
+                self._fam_dht_last.update(ok_at=now, error="")
+                if raw:
+                    got += 1
+                    res = self.family_receive(PACKET + b64u(raw))
+                    self.log(f"Семья: посылка от «{ent['name']}» пришла сама (через сеть торрентов).")
+                    if res.get("kind") == "packet" and not res.get("auto"):
+                        self.notify("info", text=f"«{ent['name']}» прислал(а) настройки — открой «Семью», чтобы установить.")
+                        tell = getattr(self, "tell", None)
+                        if tell:
+                            tell(f"«{ent['name']}» прислал(а) настройки для VPN — открой «Семью».")
+        return got
+
+    def family_dht_now(self) -> None:
+        """Кнопка «Проверить сейчас»: заглянуть в ящики, не дожидаясь расписания."""
+        self._fam_poll.clear()
+        self._fam_dht_wake.set()
+
+    def family_set_dht(self, on: bool) -> None:
+        self.settings["family_dht"] = bool(on)
+        self.save()
+        self.log("Семья: посылки доставляются сами (через сеть торрентов)." if on
+                 else "Семья: доставка сама выключена — посылки только текстом.")
+        if on:
+            self.family_dht_now()
+        self.notify("family")
+
+    def _fam_mail(self, ent: dict, role: str) -> dict | None:
+        out = ent.get("out")
+        if not out:
+            return None
+        state = "delivered" if out.get("acked") else "online" if out.get("nodes") else "queued"
+        return {"state": state, "nodes": int(out.get("nodes", 0)), "at": int(out.get("at", 0)), "seq": int(out.get("seq", 0))}
 
     def _fam(self) -> dict:
         f = self.settings.get("family")
@@ -215,13 +384,17 @@ class FamilyMixin:
     def family_state(self) -> dict:
         """Для окна — без секретов."""
         f = self._fam()
+        last = getattr(self, "_fam_dht_last", {}) or {}
         return {
             "me": f["me"],
+            "dht": {"on": self._fam_dht_on(), "ok_at": int(last.get("ok_at", 0)), "error": i18n.tr(last.get("error", ""))},
             "helpers": [{"pair": h["pair"], "name": h["name"], "mode": h.get("mode", "ask"), "since": h.get("since", 0),
+                         "mail": self._fam_mail(h, "helpers"),
                          "pending": {"summary": [i18n.tr(x) for x in summary(h["pending"]["ops"])],
                                      "at": h["pending"].get("at", 0)}
                          if h.get("pending") else None, "reply": h.get("reply", "")} for h in f["helpers"]],
             "devices": [{"pair": d["pair"], "name": d["name"], "since": d.get("since", 0), "snap": d.get("snap"),
+                         "mail": self._fam_mail(d, "devices"),
                          "snap_at": d.get("snap_at", 0), "invite": "" if d.get("snap") else d.get("invite", ""),
                          "sent": [dict(x, summary=[i18n.tr(y) for y in x.get("summary", [])]) for x in d.get("sent", [])[-10:]]}
                         for d in f["devices"]],
@@ -336,6 +509,7 @@ class FamilyMixin:
         sent = ent.setdefault("sent", [])
         sent.append({"seq": ent["seq_out"], "at": now, "summary": summary(ops), "state": "sent"})
         del sent[:-20]
+        self._fam_outbox(ent, TO_DEVICE, ent["seq_out"], text)
         self.save()
         self.log(f"Семья: посылка для «{ent['name']}» готова — изменений: {len(ops)}.")
         self.notify("family")
@@ -481,7 +655,9 @@ class FamilyMixin:
         now = int(time.time())
         payload = {"t": "report", "at": now, "exp": now + TTL, "snap": self._fam_snapshot(), "results": results,
                    "applied": int(ent.get("applied_seq", 0)), "declined": declined, "device": ent.get("device", "")}
-        return seal(unb64u(ent["secret"]), TO_HELPER, ent["seq_out"], payload)
+        text = seal(unb64u(ent["secret"]), TO_HELPER, ent["seq_out"], payload)
+        self._fam_outbox(ent, TO_HELPER, ent["seq_out"], text)
+        return text
 
     def _fam_report(self, ent: dict, payload: dict) -> dict:
         snap = payload.get("snap") if isinstance(payload.get("snap"), dict) else None
@@ -490,6 +666,9 @@ class FamilyMixin:
             ent["snap_at"] = int(payload.get("at", time.time()))
             ent["invite"] = ""  # устройство подключилось — приглашение больше не нужно
         results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        out = ent.get("out")
+        if out and (int(payload.get("applied", 0) or 0) >= int(out.get("seq", 0)) or payload.get("declined")):
+            out["acked"] = True  # устройство получило посылку — больше её в сеть не кладём
         sent = ent.get("sent", [])
         if sent and results and not any(r.get("op") == "hello" for r in results if isinstance(r, dict)):
             last = sent[-1]

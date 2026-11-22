@@ -28,6 +28,7 @@ def main() -> None:
     open(os.path.join(app, "bin", "xray.exe" if sys.platform == "win32" else "xray"), "w").close()
     ui = UIServer(os.path.join(ROOT, "ui"), "tok")
     e = Engine(app, ui.notify)
+    e._fam_dht_loop_on = False  # «Семья» через сеть торрентов — без настоящей сети
     ui.engine = e
     e.settings.update(ping_host=f"127.0.0.1:{st.WEB}", socks_port=netutil.find_free_ports(1, 35000)[0],
                       http_port=netutil.find_free_ports(1, 35100)[0], system_proxy=False, autopilot=True, mode="vpn")

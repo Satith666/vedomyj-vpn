@@ -624,6 +624,34 @@ def check_warp_xray(paths: xray.Paths, acct: dict | None) -> None:
                T(f"через цепочку: {res[True]}, цепочка в никуда: {res[False]}", f"via chain: {res[True]}, chain to nowhere: {res[False]}")))
 
 
+def check_dht() -> None:
+    """1.22: «Семья» через настоящую сеть торрентов — запись BEP 44 кладётся и читается другим клиентом."""
+    from pult import dht
+    keys = dht.Keys(os.urandom(32))
+    salt = b"vedomyj-check/" + os.urandom(6).hex().encode()
+    value = {"t": int(time.time()), "x": os.urandom(32)}
+    t0 = time.time()
+    try:
+        n = dht.Client().put(keys.item(salt, 1, value))
+    except (OSError, dht.DhtError) as exc:
+        add("warn", T("Сеть торрентов: запись не легла", "Torrent network: the item was not stored"), str(exc)[:200])
+        return
+    if not n:
+        add("warn", T("Сеть торрентов: ни один узел не принял запись (UDP закрыт?)",
+                      "Torrent network: no node accepted the item (UDP closed?)"))
+        return
+    took = time.time() - t0
+    got = None
+    for _ in range(3):
+        got = dht.Client().get(keys.public, salt)
+        if got:
+            break
+        time.sleep(3)
+    ok = bool(got and got[0] == 1 and got[1] == dht.bdecode(dht.bencode(value)))
+    add("ok" if ok else "error", T(f"Сеть торрентов: запись легла на {n} узлов за {took:.1f} с и " + ("читается" if ok else "НЕ читается"),
+                                   f"Torrent network: the item went to {n} nodes in {took:.1f} s and " + ("reads back" if ok else "does NOT read back")))
+
+
 def download_cores(paths: xray.Paths) -> None:
     """Для проверки на GitHub: ядра скачиваются тем же кодом, что и в программе."""
     if not paths.xray_exists():
@@ -1026,6 +1054,7 @@ def main() -> None:
         guard("AmneziaWG", lambda: check_awg(paths, live=CI))
     guard("WARP", lambda: check_warp_xray(paths, check_warp(paths, live=CI and IS_WINDOWS)) if paths.xray_exists()
           else check_warp(paths, live=CI and IS_WINDOWS))
+    guard(T("Семья: сеть торрентов", "Family: torrent network"), check_dht)
 
     section(T("Windows", "Windows"))
     guard("DPAPI", check_dpapi)

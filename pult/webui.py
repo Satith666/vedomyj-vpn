@@ -997,6 +997,12 @@ class UIServer:
         if action == "family_remove":
             e.family_remove(pair)
             return True
+        if action == "family_dht":
+            e.family_set_dht(bool(a.get("on", True)))
+            return True
+        if action == "family_check":
+            e.family_dht_now()
+            return True
         if action == "family_qr":
             text = str(a.get("text", ""))
             if not text.startswith((family.INVITE, family.PACKET)):

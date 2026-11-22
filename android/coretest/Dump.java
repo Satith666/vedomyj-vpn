@@ -155,6 +155,38 @@ public class Dump {
             out.print(Warp.shareConf("# комментарий\n" + conf));
             out.println(Json.canonical(Warp.xrayOutbound(big, "proxy", true, rnd)));
         }
+        if (mode.equals("dht")) {
+            Map<String, Object> inner = new LinkedHashMap<String, Object>();
+            inner.put("b", -3L);
+            Map<String, Object> v = new LinkedHashMap<String, Object>();
+            v.put("z", "");
+            v.put("m", "ж");
+            v.put("a", Arrays.asList((Object) 1L, "x", inner));
+            byte[] b = Dht.encode(v);
+            out.println(Warp.toHex(b, 0, b.length));
+            byte[] seed = new byte[32];
+            for (int i = 0; i < 32; i++) seed[i] = (byte) i;
+            Dht.Keys keys = new Dht.Keys(seed);
+            out.println(Warp.toHex(keys.pub, 0, 32));
+            Map<String, Object> head = new LinkedHashMap<String, Object>();
+            head.put("p", "abc".getBytes(StandardCharsets.US_ASCII));
+            head.put("n", 2L);
+            head.put("h", new byte[16]);
+            byte[] sig = (byte[]) keys.item("vf1/d0".getBytes(StandardCharsets.US_ASCII), 5, head).get("sig");
+            out.println(Warp.toHex(sig, 0, 64));
+            byte[] tg = Dht.target(keys.pub, "foobar".getBytes(StandardCharsets.US_ASCII));
+            out.println(Warp.toHex(tg, 0, 20));
+            byte[] raw = new byte[2000];
+            for (int i = 0; i < raw.length; i++) raw[i] = (byte) (i % 251);
+            for (Map<String, Object> it : Family.dhtItems(Family.dhtKeys(seed), 1, 7, raw)) {
+                byte[] vb = Dht.encode(it.get("v"));
+                byte[] sg = (byte[]) it.get("sig");
+                out.println(new String((byte[]) it.get("salt"), StandardCharsets.US_ASCII) + " " + it.get("seq") + " "
+                        + Warp.toHex(Dht.sha("SHA-1", vb), 0, 20) + " " + Warp.toHex(sg, 0, 64));
+            }
+            Object back = Dht.decode(b);
+            out.println(Warp.toHex(Dht.encode(back), 0, Dht.encode(back).length).equals(Warp.toHex(b, 0, b.length)));
+        }
         if (mode.equals("familyseal")) {
             byte[] sec = new byte[32], iv = new byte[16];
             for (int i = 0; i < 32; i++) sec[i] = (byte) i;

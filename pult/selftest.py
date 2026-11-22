@@ -493,6 +493,7 @@ def make_engine(tmp: str):
                       stall_check=False,   # фоновая проверка «16 КБ» включается только в своём тесте
                       warp_fallback=False)  # запасной WARP (регистрация у Cloudflare) — только в своём тесте
     e.events = events
+    e._fam_dht_loop_on = False  # «Семья» через сеть торрентов — без настоящей сети (свой тест зовёт family_dht_tick сам)
     return e
 
 
@@ -5221,6 +5222,127 @@ def t_warp_xray():
         if e:
             e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@case("Семья, шаг 2: посылки сами через сеть торрентов — bencode, ed25519 (RFC 8032, BEP 44), ящики, части, «доставлена»")
+def t_family_dht():
+    from pult import dht, family
+    # bencode — строгий
+    v = {"a": [1, b"x", {"b": -3}], "z": b"", "m": "ж"}
+    check(dht.bdecode(dht.bencode(v)) == {b"a": [1, b"x", {b"b": -3}], b"z": b"", b"m": "ж".encode()}, "bencode туда и обратно")
+    check(dht.bencode({"b": 1, "a": 2}) == b"d1:ai2e1:bi1ee", "ключи словаря по порядку")
+    for bad in (b"i01e", b"i-0e", b"5:abc", b"d1:ai1e", b"i1ex", b"l" * 40 + b"e" * 40, b"di1ei2ee"):
+        try:
+            dht.bdecode(bad)
+            check(False, f"bencode принят: {bad[:20]}")
+        except ValueError:
+            pass
+    # ed25519 — RFC 8032 (7.1, тесты 1 и 2)
+    for sk, pk, msg, sig in (
+            ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "",
+             "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+            ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+             "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", "72",
+             "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00")):
+        ex = dht.ed_expand(bytes.fromhex(sk))
+        check(dht.ed_public(ex).hex() == pk and dht.ed_sign(ex, bytes.fromhex(msg)).hex() == sig, "ed25519: RFC 8032")
+        check(dht.ed_verify(bytes.fromhex(pk), bytes.fromhex(msg), bytes.fromhex(sig))
+              and not dht.ed_verify(bytes.fromhex(pk), b"x" + bytes.fromhex(msg), bytes.fromhex(sig)), "ed25519: проверка подписи")
+    # BEP 44: что подписывается, подписи и адреса записей (тестовые значения из BEP 44)
+    pk = bytes.fromhex("77ff84905a91936367c01360803104f92432fcd904a43511876df5cdf3e7e548")
+    priv = bytes.fromhex("e06d3183d14159228433ed599221b80bd0a5ce8352e4bdf0262f76786ef1c74d"
+                         "b7e7a9fea2c0eb269d61e3b38e450a22e754941ac78479d6c54e1faf6037881d")
+    hw = dht.bencode(b"Hello World!")
+    check(dht.sign_buf(b"foobar", 1, hw) == b"4:salt6:foobar3:seqi1e1:v12:Hello World!", "BEP 44: буфер подписи с солью")
+    check(dht.ed_sign(priv, dht.sign_buf(b"", 1, hw)).hex() == "305ac8aeb6c9c151fa120f120ea2cfb923564e11552d06a5d856091e5e853cff"
+          "1260d3f39e4999684aa92eb73ffd136e6f4f3ecbfda0ce53a1608ecd7ae21f01", "BEP 44: подпись (тест 1)")
+    check(dht.ed_sign(priv, dht.sign_buf(b"foobar", 1, hw)).hex() == "6834284b6b24c3204eb2fea824d82f88883a3d95e8b4a21b8c0ded553d17d17d"
+          "df9a8a7104b1258f30bed3787e6cb896fca78c58f8e03b5f18f14951a87d9a08", "BEP 44: подпись с солью (тест 2)")
+    check(dht.target(pk).hex() == "4a533d47ec9c7d95b1ad75f576cffc641853b750"
+          and dht.target(pk, b"foobar").hex() == "411eba73b6f087ca51a3795d9c8c938d365e32c1", "BEP 44: адреса записей")
+    # маленькая сеть на этом компьютере: поиск в несколько шагов, запись, чтение, подделка, старый номер
+    old_local = dht._LOCAL_OK
+    dht._LOCAL_OK = True
+    nodes = [dht.LocalNode() for _ in range(24)]
+    t1, t2 = tempfile.mkdtemp(prefix="pult-selftest-"), tempfile.mkdtemp(prefix="pult-selftest-")
+    h = d = None
+    try:
+        for i, n in enumerate(nodes):
+            n.peers = [(m.nid, m.addr) for m in nodes[i + 1:] + nodes[:i]][:10]
+        boot = [nodes[0].addr]
+        keys = dht.Keys(secrets.token_bytes(32))
+        cl = lambda: dht.Client(boot, timeout=4)  # noqa: E731
+        check(cl().put(keys.item(b"t", 2, b"two")) >= 6, "запись легла на ближайшие узлы")
+        check(cl().get(keys.public, b"t") == (2, b"two"), "запись читается")
+        try:
+            cl().put(keys.item(b"t", 1, b"one"))
+            check(False, "старая запись поверх новой")
+        except dht.DhtError:
+            pass
+        other = dht.Keys(secrets.token_bytes(32))
+        forged = other.item(b"t", 9, b"evil")
+        forged["k"] = keys.public  # чужая подпись под нашим ключом
+        check(cl().put(forged) == 0 and cl().get(keys.public, b"t") == (2, b"two"), "подделку узлы не принимают")
+        check(dht.check_item(keys.public, b"t", {b"k": keys.public, b"seq": 9, b"v": b"evil", b"sig": forged["sig"]}) is None,
+              "подделку не принимает и программа")
+        try:
+            keys.item(b"t", 3, b"x" * 1000)
+            check(False, "запись больше 1000 байт")
+        except dht.DhtError:
+            pass
+        # посылка на 3 части
+        raw = secrets.token_bytes(2500)
+        fk = family.dht_keys(secrets.token_bytes(32))
+        items = family.dht_items(fk, family.TO_HELPER, 7, raw)
+        for it in items:
+            cl().put(it)
+        check(len(items) == 3 and family.dht_fetch(cl, fk, family.TO_HELPER, 6) == raw, "посылка из трёх частей собирается")
+        check(family.dht_fetch(cl, fk, family.TO_HELPER, 7) is None, "уже полученная — не скачивается снова")
+        # две программы: приглашение → ответ сам; посылка → «Установить?» сама; итог — «доставлена»
+        h, d = make_engine(t1), make_engine(t2)
+        for x in (h, d):
+            x._monitor_tick = lambda tick: None
+            x._fam_dht_loop_on = False
+            x._fam_dht_boot = boot
+            x.startup()
+        h.family_set_me("Сын")
+        inv = h.family_invite("Мама — компьютер")
+        pair = inv["pair"]
+        d.family_accept(inv["text"], "ask")
+        d.family_dht_tick()
+        check(d.state()["family"]["helpers"][0]["mail"]["state"] == "online", "ответ мамы лёг в сеть")
+        check(h.family_dht_tick() == 1 and h.state()["family"]["devices"][0]["snap"], "сын увидел мамину программу без мессенджера")
+        h.family_send(pair, [{"op": "set", "values": {"dns_encrypted": True}}])
+        h.family_dht_tick()
+        st = h.state()["family"]
+        check(st["devices"][0]["mail"]["state"] == "online" and st["dht"]["on"] and st["dht"]["ok_at"], f"посылка в сети: {st['dht']}")
+        d.family_dht_now()
+        check(d.family_dht_tick() == 1 and d.state()["family"]["helpers"][0]["pending"], "у мамы — «Установить?»")
+        check(any("прислал(а) настройки" in (m or "") for m in MESSAGES), "мама видит сообщение")
+        d.family_apply(pair)
+        wait_idle(d)
+        d.family_dht_tick()
+        h.family_dht_now()
+        h.family_dht_tick()
+        dev = h.state()["family"]["devices"][0]
+        check(dev["sent"][-1]["state"] == "applied" and dev["mail"]["state"] == "delivered", f"у сына — «установлено», «доставлена»: {dev['mail']}")
+        puts = sum(n.puts for n in nodes)
+        h.family_dht_tick()
+        check(sum(n.puts for n in nodes) == puts, "доставленную посылку больше в сеть не кладём")
+        h.family_set_dht(False)
+        check(h.family_dht_tick() == 0 and not h.state()["family"]["dht"]["on"], "доставку можно выключить")
+        text = "\n".join(h.logs + d.logs)
+        check(family.PACKET not in text and inv["text"] not in text and "пришла сама" in text, "посылки и секреты не попадают в журнал")
+    finally:
+        dht._LOCAL_OK = old_local
+        for n in nodes:
+            n.close()
+        for x in (h, d):
+            if x:
+                x.shutdown()
+        shutil.rmtree(t1, ignore_errors=True)
+        shutil.rmtree(t2, ignore_errors=True)
 
 
 @case("Семья: приглашение, «Разрешить», посылки с изменениями, «Установить?», ответ со снимком, защита")

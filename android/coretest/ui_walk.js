@@ -110,6 +110,8 @@ const out = process.argv[3];
   // «Семья»: кнопка на главном → приглашение → посылка для устройства
   await page.click("#familyBtn");
   await page.waitForTimeout(400);
+  const famSw = await page.getAttribute('#famMail [data-act="fam-dht"]', "aria-checked");
+  if (famSw !== "true") throw new Error("family self-delivery switch: " + famSw);
   await shot("05c-family");
   await page.click('[data-act="fam-invite"]');
   await page.waitForTimeout(300);

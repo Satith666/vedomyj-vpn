@@ -36,6 +36,7 @@ public class UiServer {
         // «замирание» в проверке программы — без настоящей сети, чтобы проход по экранам не зависел от интернета
         Engine.STALL = (h, p) -> Json.obj("state", "ok", "bytes", 65536L, "ms", 120L);
         engine = new Engine(fake);
+        engine.famDhtAuto = false; // «Семья» через сеть торрентов — без настоящей сети
         engine.settings.put("geo_updated", System.currentTimeMillis());
         engine.start();
         HttpServer http = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);

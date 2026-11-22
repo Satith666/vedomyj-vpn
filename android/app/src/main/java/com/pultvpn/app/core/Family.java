@@ -353,4 +353,90 @@ public final class Family {
     public static String serverId(String link) {
         return Text.sha1hex(link == null ? "" : link).substring(0, 12);
     }
+
+    // ---------- доставка сама: почтовый ящик в сети торрентов (Dht.java, шаг 2; как family.py) ----------
+
+    public static final byte[][] DHT_SALT = {"vf1/d0".getBytes(StandardCharsets.US_ASCII), "vf1/d1".getBytes(StandardCharsets.US_ASCII)};
+    public static final int PART = 900;
+    public static final int MAX_PARTS = 16;
+
+    /** Ключ записей пары — из её секрета: у помощника и устройства он один и тот же. */
+    public static Dht.Keys dhtKeys(byte[] secret) {
+        return new Dht.Keys(hmac(secret, "vedomyj-family dht".getBytes(StandardCharsets.US_ASCII)));
+    }
+
+    public static byte[] rawOf(String text) {
+        Map<String, Object> pk = peek(text);
+        if (pk == null) {
+            throw new FamilyError(Text.t("Здесь нет посылки «Семьи».", "There is no Family package here."));
+        }
+        return (byte[]) pk.get("raw");
+    }
+
+    static byte[] partSalt(int direction, long seq, int i) {
+        return concat(DHT_SALT[direction], ("/" + seq + "/" + i).getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /** Посылка → записи: главная (номер = номер посылки, хеш, число частей, первая часть) и остальные части. */
+    public static List<Map<String, Object>> dhtItems(Dht.Keys keys, int direction, long seq, byte[] raw) {
+        List<byte[]> parts = new ArrayList<byte[]>();
+        for (int i = 0; i < raw.length; i += PART) {
+            parts.add(Arrays.copyOfRange(raw, i, Math.min(raw.length, i + PART)));
+        }
+        if (parts.isEmpty()) {
+            parts.add(new byte[0]);
+        }
+        if (parts.size() > MAX_PARTS) {
+            throw new FamilyError(Text.t("Посылка слишком большая для доставки самой — отправь её текстом.",
+                    "The package is too big to deliver by itself — send it as text."));
+        }
+        Map<String, Object> head = new LinkedHashMap<String, Object>();
+        head.put("h", Arrays.copyOf(Dht.sha("SHA-256", raw), 16));
+        head.put("n", (long) parts.size());
+        head.put("p", parts.get(0));
+        List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+        out.add(keys.item(DHT_SALT[direction], seq, head));
+        for (int i = 1; i < parts.size(); i++) {
+            out.add(keys.item(partSalt(direction, seq, i), 1, parts.get(i)));
+        }
+        return out;
+    }
+
+    /** Новый клиент сети на каждый поиск. */
+    public interface ClientFor {
+        Dht.Client make();
+    }
+
+    /** Новая посылка из ящика (номер больше afterSeq) → байты или null. */
+    @SuppressWarnings("unchecked")
+    public static byte[] dhtFetch(ClientFor cf, Dht.Keys keys, int direction, long afterSeq) throws java.io.IOException {
+        Object[] head = cf.make().get(keys.pub, DHT_SALT[direction]);
+        if (head == null || (Long) head[0] <= afterSeq) {
+            return null;
+        }
+        long seq = (Long) head[0];
+        Map<String, Object> v = head[1] instanceof Map ? (Map<String, Object>) head[1] : null;
+        if (v == null || !(v.get("p") instanceof byte[]) || !(v.get("n") instanceof Long) || !(v.get("h") instanceof byte[])
+                || (Long) v.get("n") < 1 || (Long) v.get("n") > MAX_PARTS) {
+            throw new FamilyError(Text.t("Посылка в сети повреждена.", "The package in the network is damaged."));
+        }
+        int n = (int) (long) (Long) v.get("n");
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] first = (byte[]) v.get("p");
+        out.write(first, 0, first.length);
+        for (int i = 1; i < n; i++) {
+            Object[] got = cf.make().get(keys.pub, partSalt(direction, seq, i));
+            if (got == null || !(got[1] instanceof byte[])) {
+                throw new FamilyError(Text.t("Часть посылки " + (i + 1) + " из " + n + " пока не нашлась в сети.",
+                        "Part " + (i + 1) + " of " + n + " of the package is not in the network yet."));
+            }
+            byte[] b = (byte[]) got[1];
+            out.write(b, 0, b.length);
+        }
+        byte[] raw = out.toByteArray();
+        if (!Arrays.equals(Arrays.copyOf(Dht.sha("SHA-256", raw), 16), (byte[]) v.get("h"))) {
+            throw new FamilyError(Text.t("Посылка в сети собралась с ошибкой.", "The package from the network was assembled with an error."));
+        }
+        return raw;
+    }
 }

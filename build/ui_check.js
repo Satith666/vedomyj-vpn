@@ -226,6 +226,12 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   const warpSw = await page.$('[data-pset="warp_fallback"]');
   ok(warpOpt >= 1 && !!warpSw, "WARP: «Через VPN и WARP» в маршрутах, «Запасной WARP» в профессиональных", `${warpOpt} ${!!warpSw}`);
   await page.evaluate(() => go("home"));
+  // 5е. «Семья»: посылки доставляются сами — переключатель на месте
+  await page.evaluate(() => go("family"));
+  await page.waitForTimeout(400);
+  const famSw = await page.$eval('#famMail [data-act="fam_dht"]', (el) => el.getAttribute("aria-checked")).catch(() => "");
+  ok(famSw === "true", "Семья: «Посылки доставляются сами» включено по умолчанию", famSw);
+  await page.evaluate(() => go("home"));
 
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");

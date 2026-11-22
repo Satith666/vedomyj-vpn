@@ -112,6 +112,19 @@ elif mode == "warp":
     sys.stdout.write(warp.share_conf(big))
     sys.stdout.write(warp.share_conf("# комментарий\n" + conf))
     print(canon(warp.xray_outbound(big, "proxy", True, rnd)))
+elif mode == "dht":
+    from pult import dht, family
+    b = dht.bencode({"z": "", "m": "ж", "a": [1, "x", {"b": -3}]})
+    print(b.hex())
+    keys = dht.Keys(bytes(range(32)))
+    print(keys.public.hex())
+    print(keys.item(b"vf1/d0", 5, {"p": b"abc", "n": 2, "h": bytes(16)})["sig"].hex())
+    print(dht.target(keys.public, b"foobar").hex())
+    raw = bytes(i % 251 for i in range(2000))
+    import hashlib
+    for it in family.dht_items(family.dht_keys(bytes(range(32))), 1, 7, raw):
+        print(it["salt"].decode(), it["seq"], hashlib.sha1(dht.bencode(it["v"])).hexdigest(), it["sig"].hex())
+    print("true" if dht.bencode(dht.bdecode(b)) == b else "false")
 elif mode == "familyseal":
     from pult import family
     sec = bytes(range(32))

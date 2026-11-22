@@ -25,6 +25,12 @@ public final class Api {
             case "warp_route": // «Через VPN и WARP», своего WARP ещё нет: создать (в фоне) и поставить маршрут
                 return Json.str(a, "name").isEmpty() ? e.warpRouteTask("site", Json.str(a, "host"))
                         : e.warpRouteTask("svc", Json.str(a, "name"));
+            case "family_dht":
+                e.familySetDht(Json.bool(a, "on", true));
+                return true;
+            case "family_check":
+                e.familyDhtNow();
+                return true;
             case "warp_share":
                 return e.warpShareText();
             case "add_proxy": {

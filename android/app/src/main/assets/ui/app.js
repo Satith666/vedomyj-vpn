@@ -859,6 +859,7 @@
     title: "fam_title",
     render() {
       return `<div class="stack"><p class="hint pad">${esc(t("fam_intro"))}</p><div id="famPending" class="stack"></div>
+        <section class="card" id="famMail"></section>
         <section class="card pad-card"><h2>${esc(t("fam_paste_title"))}</h2><p class="hint">${esc(t("fam_paste_hint"))}</p>
           <div class="btns"><button class="btn primary" data-act="fam-paste">${icon("paste")}${esc(t("paste"))}</button>
             <button class="btn" data-act="scan">${icon("scan")}${esc(t("scan"))}</button>
@@ -871,13 +872,19 @@
           <h2>${esc(t("fam_pending_title", { n: h.name }))}</h2><ul class="fam-list">${h.pending.summary.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
           <div class="btns"><button class="btn primary" data-act="fam-apply" data-pair="${esc(h.pair)}">${icon("check")}${esc(t("fam_install"))}</button>
             <button class="btn" data-act="fam-decline" data-pair="${esc(h.pair)}">${esc(t("fam_decline"))}</button></div></section>`).join(""));
+      const M = F.dht || { on: true };
+      const mailNow = M.error ? t("fam_mail_err") : M.ok_at ? t("fam_mail_ok", { a: ago(M.ok_at * 1000) }) : t("fam_mail_wait");
+      setHtml("#famMail", swRow("fam-dht", !!M.on, t("fam_mail_title"), t("fam_mail_desc"))
+        + (M.on && (F.devices.length || F.helpers.length) ? `<div class="switch-row sub"><div class="main"><span>${esc(mailNow)}</span></div>
+          <button class="link-btn" data-act="fam-check">${esc(t("fam_mail_check"))}</button></div>` : ""));
+      const mailText = (mm) => !mm || !M.on ? "" : " · " + t("fam_mail_" + mm.state);
       const devs = F.devices.map((d) => {
         const sn = d.snap;
         const st = !sn ? t("fam_dev_wait") : [sn.status === "on" ? t("fam_st_on", { s: sn.server || "" }) : sn.status === "awg"
           ? t("fam_st_awg", { s: sn.server || "" }) : t("fam_st_off"), t("m_" + (sn.method || "auto")), "v" + (sn.ver || "?"), ago(d.snap_at * 1000)].join(" · ");
         const last = d.sent && d.sent.length ? d.sent[d.sent.length - 1] : null;
         return `<button class="row" data-act="fam-device" data-pair="${esc(d.pair)}">${icon("phone")}<span class="main"><span class="title"><span>${esc(d.name)}</span></span>
-          <span class="meta">${esc(st)}</span>${last ? `<span class="meta">${esc(t("fam_last", { s: t("fam_sent_" + last.state) + " · " + ago(last.at * 1000) }))}</span>` : ""}</span>${icon("chev", "chev")}</button>`;
+          <span class="meta">${esc(st)}</span>${last ? `<span class="meta">${esc(t("fam_last", { s: t("fam_sent_" + last.state) + (last.state === "sent" ? mailText(d.mail) : "") + " · " + ago(last.at * 1000) }))}</span>` : ""}</span>${icon("chev", "chev")}</button>`;
       }).join("");
       setHtml("#famDevices", `<div class="card-head"><h2>${esc(t("fam_devices_title"))}</h2></div>${devs || `<p class="hint pad">${esc(t("fam_devices_empty"))}</p>`}
         <div class="pad"><button class="btn wide" data-act="fam-invite">${icon("plus")}${esc(t("fam_invite_btn"))}</button></div>`);
@@ -890,6 +897,8 @@
       setHtml("#famHelpers", `<div class="card-head"><h2>${esc(t("fam_helpers_title"))}</h2></div>${helps || `<p class="hint pad">${esc(t("fam_helpers_empty"))}</p>`}`);
     },
   };
+
+  function famDhtOn() { return ((S.family || {}).dht || {}).on !== false; }
 
   /* Приглашение или посылка: отправить в мессенджер, скопировать, сохранить файлом, QR-код. */
   let famTextCur = "";
@@ -1555,6 +1564,8 @@
       const r = act("family_invite", { device: dev });
       if (r) { famTextSheet(t("fam_invite_ready", { n: dev }), t("fam_invite_send"), r.text); poll(); }
     },
+    "fam-dht"(el) { act("family_dht", { on: el.getAttribute("aria-checked") !== "true" }); poll(); },
+    "fam-check"() { if (act("family_check") !== undefined) toast(t("fam_mail_checking"), "info"); poll(); },
     "fam-invite-again"() { if (famDev && famDev.invite) famTextSheet(t("fam_invite_ready", { n: famDev.name }), t("fam_invite_send"), famDev.invite); },
     "fam-share"() { act("share_text", { text: famTextCur }); },
     "fam-copy"() { act("copy", { text: famTextCur }); toast(t("fam_copied"), "ok"); },
@@ -1566,7 +1577,7 @@
     "fam-allow"() {
       const mode = ($('#famAccMode [aria-pressed="true"]') || {}).dataset ? $('#famAccMode [aria-pressed="true"]').dataset.v : "ask";
       const r = act("family_accept", { text: famAcceptText, mode });
-      if (r) { famTextSheet(t("fam_accepted_title"), t("fam_reply_hint", { n: "" }), r.reply); poll(); }
+      if (r) { famTextSheet(t("fam_accepted_title"), t(famDhtOn() ? "fam_reply_hint_dht" : "fam_reply_hint", { n: "" }), r.reply); poll(); }
     },
     "fam-apply"(el) { if (act("family_apply", { pair: el.dataset.pair }) !== undefined) toast(t("fam_installing"), "info"); poll(); },
     "fam-decline"(el) { const r = act("family_decline", { pair: el.dataset.pair }); if (r) famTextSheet(t("fam_declined_title"), t("fam_reply_hint", { n: "" }), r.text); poll(); },
@@ -1601,7 +1612,7 @@
       if ($("#famRe").checked) ops.push({ op: "reconnect" });
       if (!ops.length) ops.push({ op: "report" });
       const r = act("family_send", { pair: famDev.pair, ops });
-      if (r) { famTextSheet(t("fam_sent_title", { n: famDev.name }), t("fam_sent_hint", { n: famDev.name }), r.text); poll(); }
+      if (r) { famTextSheet(t("fam_sent_title", { n: famDev.name }), t(famDhtOn() ? "fam_sent_hint_dht" : "fam_sent_hint", { n: famDev.name }), r.text); poll(); }
     },
     "warp-create"() {
       closeSheet();
