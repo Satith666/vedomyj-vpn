@@ -30,6 +30,8 @@ public final class Vps {
             case "config": return Text.t("Записываю настройки сервера", "Writing server settings");
             case "tune": return Text.t("Включаю ускорение BBR и открываю порты", "Enabling BBR and opening ports");
             case "start": return Text.t("Запускаю Xray на сервере", "Starting Xray on the server");
+            case "awg": return Text.t("Ставлю AmneziaWG на сервер", "Installing AmneziaWG on the server");
+            case "peer": return Text.t("Добавляю устройство на сервер", "Adding a device to the server");
             default: return key;
         }
     }
@@ -46,6 +48,20 @@ public final class Vps {
             case "port": return Text.t("порт " + PORT_TCP + " на сервере занят другой программой (например, сайтом)",
                     "port " + PORT_TCP + " on the server is used by another program (for example, a website)");
             case "config": return Text.t("Xray не принял настройки", "Xray rejected the settings");
+            case "awg_os": return Text.t("AmneziaWG программа ставит только на Ubuntu (22.04 или новее)",
+                    "the app installs AmneziaWG only on Ubuntu (22.04 or newer)");
+            case "awg_install": return Text.t("не удалось установить AmneziaWG — у сервера нет доступа к репозиторию Amnezia или закончилось место",
+                    "could not install AmneziaWG — the server can't reach the Amnezia repository or is out of space");
+            case "awg_repo": return Text.t("сервер не смог подключить репозиторий Amnezia (launchpad.net) — проверь, что у сервера есть интернет, и попробуй снова",
+                    "the server could not add the Amnezia repository (launchpad.net) — check that the server has internet and try again");
+            case "awg_build": return Text.t("модуль AmneziaWG не собрался для ядра сервера — обнови систему сервера (apt upgrade), перезагрузи его и попробуй снова",
+                    "the AmneziaWG module did not build for the server kernel — update the server system (apt upgrade), reboot it and try again");
+            case "awg_module": return Text.t("модуль AmneziaWG не загрузился — обнови систему сервера, перезагрузи его и попробуй снова",
+                    "the AmneziaWG module did not load — update the server system, reboot it and try again");
+            case "awg_service": return Text.t("AmneziaWG на сервере не запустился", "AmneziaWG did not start on the server");
+            case "noawg": return Text.t("на сервере нет AmneziaWG, установленного программой — сначала нажми «AmneziaWG 2.0»",
+                    "the server has no AmneziaWG installed by the app — press “AmneziaWG 2.0” first");
+            case "awg_full": return Text.t("на сервере уже 248 устройств — больше не поместится", "the server already has 248 devices — no more fit");
             case "service": return Text.t("Xray на сервере не запустился", "Xray did not start on the server");
             case "noxray": return Text.t("на сервере нет Xray, установленного программой — сначала настрой сервер мастером",
                     "the server has no Xray installed by the program — set up the server with the wizard first");
@@ -439,5 +455,226 @@ public final class Vps {
         String body = SCRIPT.substring(0, start) + cfg + SCRIPT.substring(end);
         return body.replace("__PORT_TCP__", String.valueOf(PORT_TCP)).replace("__PORT_XHTTP__", String.valueOf(PORT_XHTTP))
                 .replace("__SNI__", sni).replace("(VLESS + Reality and XHTTP + Reality)", "(bridge: VLESS + Reality → main server)");
+    }
+
+    // ---------- AmneziaWG 2.0 на своём сервере и устройства (как pult/vps.py, 1.24) ----------
+
+    public static final String AWG_NET = "10.66.66";
+    static final String RX_WGKEY = "[A-Za-z0-9+/]{42,43}=";
+    static final String[] AWG_KEYS = {"Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4"};
+
+    /** Набор маскировки AmneziaWG 2.0 (порядок случайных чисел — как в awg_params, для сверки). */
+    public static java.util.Map<String, Object> awgParams(final Warp.Rnd rnd) {
+        class R {
+            long r(long lo, long hi) {
+                return lo + rnd.next((int) (hi - lo + 1));
+            }
+        }
+        R g = new R();
+        long jmin = g.r(20, 60);
+        long s1 = g.r(15, 150);
+        long s2 = g.r(15, 150);
+        while (s2 == s1 + 56) {
+            s2 = g.r(15, 150);
+        }
+        String[] hs = new String[4];
+        long lo = g.r(100_000, 10_000_000);
+        for (int i = 0; i < 4; i++) {
+            long width = g.r(100_000, 50_000_000);
+            hs[i] = lo + "-" + (lo + width);
+            lo = lo + width + g.r(1_000, 100_000_000);
+        }
+        int[] order = {0, 1, 2, 3};
+        for (int i = 3; i > 0; i--) {
+            int j = rnd.next(i + 1);
+            int t = order[i];
+            order[i] = order[j];
+            order[j] = t;
+        }
+        java.util.Map<String, Object> p = new java.util.LinkedHashMap<String, Object>();
+        p.put("Jc", g.r(3, 8));
+        p.put("Jmin", jmin);
+        p.put("Jmax", jmin + g.r(20, 300));
+        p.put("S1", s1);
+        p.put("S2", s2);
+        p.put("S3", g.r(8, 55));
+        p.put("S4", g.r(4, 27));
+        for (int i = 0; i < 4; i++) {
+            p.put("H" + (i + 1), hs[order[i]]);
+        }
+        return p;
+    }
+
+    /** Параметры идут в скрипт для сервера — только числа и диапазоны чисел. */
+    public static java.util.Map<String, Object> checkAwgParams(java.util.Map<String, Object> p) throws VpsError {
+        VpsError bad = new VpsError(Text.t("неверные параметры AmneziaWG", "bad AmneziaWG parameters"));
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<String, Object>();
+        for (String k : new String[]{"Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4"}) {
+            String v = String.valueOf(p.get(k));
+            if (!v.matches("[0-9]{1,4}") || Long.parseLong(v) > 1280) {
+                throw bad;
+            }
+            out.put(k, Long.parseLong(v));
+        }
+        long[][] rng = new long[4][];
+        for (int i = 0; i < 4; i++) {
+            String k = "H" + (i + 1);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("([0-9]{1,10})-([0-9]{1,10})").matcher(String.valueOf(p.get(k)));
+            if (!m.matches()) {
+                throw bad;
+            }
+            long a = Long.parseLong(m.group(1)), b = Long.parseLong(m.group(2));
+            if (a < 5 || a > b || b > 4294967295L) {
+                throw bad;
+            }
+            out.put(k, a + "-" + b);
+            rng[i] = new long[]{a, b};
+        }
+        java.util.Arrays.sort(rng, new java.util.Comparator<long[]>() {
+            @Override
+            public int compare(long[] x, long[] y) {
+                return x[0] != y[0] ? Long.compare(x[0], y[0]) : Long.compare(x[1], y[1]);
+            }
+        });
+        for (int i = 0; i < 3; i++) {
+            if (rng[i][1] >= rng[i + 1][0]) {
+                throw bad;
+            }
+        }
+        if ((Long) out.get("Jmin") > (Long) out.get("Jmax")) {
+            throw bad;
+        }
+        return out;
+    }
+
+    static String awgLines(java.util.Map<String, Object> p) throws VpsError {
+        java.util.Map<String, Object> c = checkAwgParams(p);
+        StringBuilder b = new StringBuilder();
+        for (String k : AWG_KEYS) {
+            b.append(b.length() == 0 ? "" : "\n").append(k).append(" = ").append(c.get(k));
+        }
+        return b.toString();
+    }
+
+    static final String AWG_SCRIPT = "#!/bin/bash\n"
+            + "# VEDOMYJ VPN: installs AmneziaWG 2.0 (kernel module from ppa:amnezia/ppa) next to Xray.\n"
+            + "LOG=/var/log/vedomyj-awg.log\n"
+            + "say()  { echo \"PULT_STEP:$1\"; echo \"== $1\" >> \"$LOG\"; }\n"
+            + "fail() { tail -n 25 \"$LOG\" 2>/dev/null | sed 's/^/PULT_LOG:/'; echo \"PULT_ERROR:$1\"; exit 1; }\n"
+            + "[ \"$(id -u)\" = \"0\" ] || { echo \"PULT_ERROR:root\"; exit 1; }\n"
+            + ": > \"$LOG\"\n"
+            + ". /etc/os-release 2>/dev/null\n"
+            + "[ \"$ID\" = \"ubuntu\" ] || fail awg_os\n"
+            + "export DEBIAN_FRONTEND=noninteractive\n"
+            + "APT=\"apt-get -y -q -o DPkg::Lock::Timeout=300\"\n"
+            + "say packages\n"
+            + "$APT update >> \"$LOG\" 2>&1\n"
+            + "$APT install software-properties-common gnupg iptables >> \"$LOG\" 2>&1 || fail awg_install\n"
+            + "$APT install python3-launchpadlib >> \"$LOG\" 2>&1 || true\n"
+            + "$APT install \"linux-headers-$(uname -r)\" >> \"$LOG\" 2>&1 || true\n"
+            + "say awg\n"
+            + "add-apt-repository -y ppa:amnezia/ppa >> \"$LOG\" 2>&1 || fail awg_repo\n"
+            + "$APT update >> \"$LOG\" 2>&1\n"
+            + "$APT install amneziawg-tools >> \"$LOG\" 2>&1 || fail awg_install\n"
+            + "command -v awg >/dev/null 2>&1 || fail awg_install\n"
+            + "$APT install amneziawg >> \"$LOG\" 2>&1 || fail awg_build\n"
+            + "modprobe amneziawg >> \"$LOG\" 2>&1 || fail awg_module\n"
+            + "say keys\n"
+            + "umask 077\n"
+            + "mkdir -p /etc/amnezia/amneziawg\n"
+            + "SPRIV=$(awg genkey)\n"
+            + "SPUB=$(echo \"$SPRIV\" | awg pubkey)\n"
+            + "[ -n \"$SPUB\" ] || fail keys\n"
+            + "IFACE=$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')\n"
+            + "[ -n \"$IFACE\" ] || IFACE=eth0\n"
+            + "say config\n"
+            + "systemctl stop awg-quick@awg0 >/dev/null 2>&1 || true\n"
+            + "cat > /etc/amnezia/amneziawg/awg0.conf <<CONF\n"
+            + "[Interface]\n"
+            + "PrivateKey = $SPRIV\n"
+            + "Address = __NET__.1/24\n"
+            + "ListenPort = __PORT__\n"
+            + "__PARAMS__\n"
+            + "PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -t nat -A POSTROUTING -s __NET__.0/24 -o $IFACE -j MASQUERADE; iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT\n"
+            + "PostDown = iptables -t nat -D POSTROUTING -s __NET__.0/24 -o $IFACE -j MASQUERADE; iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT\n"
+            + "\n"
+            + "[Peer]\n"
+            + "PublicKey = __CPUB__\n"
+            + "AllowedIPs = __NET__.2/32\n"
+            + "CONF\n"
+            + "say tune\n"
+            + "if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then\n"
+            + "  ufw allow __PORT__/udp >/dev/null 2>&1\n"
+            + "fi\n"
+            + "if command -v firewall-cmd >/dev/null 2>&1; then\n"
+            + "  firewall-cmd --permanent --add-port=__PORT__/udp >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 || true\n"
+            + "fi\n"
+            + "say start\n"
+            + "systemctl enable awg-quick@awg0 >/dev/null 2>&1 || true\n"
+            + "systemctl restart awg-quick@awg0 >/dev/null 2>&1\n"
+            + "sleep 2\n"
+            + "awg show awg0 >/dev/null 2>&1 || fail awg_service\n"
+            + "echo \"PULT_RESULT:$SPUB|__PORT__\"\n";
+
+    static final String AWG_PEER_SCRIPT = "#!/bin/bash\n"
+            + "fail() { echo \"PULT_ERROR:$1\"; exit 1; }\n"
+            + "echo \"PULT_STEP:peer\"\n"
+            + "[ \"$(id -u)\" = \"0\" ] || fail root\n"
+            + "CONF=/etc/amnezia/amneziawg/awg0.conf\n"
+            + "[ -f \"$CONF\" ] && command -v awg >/dev/null 2>&1 || fail noawg\n"
+            + "N=\"\"\n"
+            + "for i in $(seq 3 250); do\n"
+            + "  grep -q \"__NET__.$i/32\" \"$CONF\" || { N=$i; break; }\n"
+            + "done\n"
+            + "[ -n \"$N\" ] || fail awg_full\n"
+            + "printf '\\n[Peer]\\nPublicKey = %s\\nAllowedIPs = __NET__.%s/32\\n' \"__CPUB__\" \"$N\" >> \"$CONF\"\n"
+            + "awg set awg0 peer \"__CPUB__\" allowed-ips \"__NET__.$N/32\" >/dev/null 2>&1 || fail awg_service\n"
+            + "SPUB=$(awg show awg0 public-key)\n"
+            + "PORT=$(awg show awg0 listen-port)\n"
+            + "echo \"PULT_RESULT:$SPUB|$PORT|$N\"\n";
+
+    public static String awgScript(String clientPub, int port, java.util.Map<String, Object> params) throws VpsError {
+        if (clientPub == null || !clientPub.matches(RX_WGKEY) || port < 1024 || port > 65535) {
+            throw new VpsError(Text.t("неверный ключ или порт AmneziaWG", "bad AmneziaWG key or port"));
+        }
+        return AWG_SCRIPT.replace("__PARAMS__", awgLines(params)).replace("__CPUB__", clientPub)
+                .replace("__PORT__", String.valueOf(port)).replace("__NET__", AWG_NET);
+    }
+
+    public static String awgPeerScript(String clientPub) throws VpsError {
+        if (clientPub == null || !clientPub.matches(RX_WGKEY)) {
+            throw new VpsError(Text.t("неверный ключ AmneziaWG", "bad AmneziaWG key"));
+        }
+        return AWG_PEER_SCRIPT.replace("__CPUB__", clientPub).replace("__NET__", AWG_NET);
+    }
+
+    /** «ключ сервера|порт[|номер устройства]» → {ключ, порт, номер}. */
+    public static Object[] parseAwgResult(String result) throws VpsError {
+        VpsError bad = new VpsError(Text.t("сервер прислал непонятный ответ", "the server sent an unclear answer"));
+        String[] parts = (result == null ? "" : result).split("\\|", -1);
+        if ((parts.length != 2 && parts.length != 3) || !parts[0].matches(RX_WGKEY) || !parts[1].matches("[0-9]{4,5}")
+                || (parts.length == 3 && !parts[2].matches("[0-9]{1,3}"))) {
+            throw bad;
+        }
+        int port = Integer.parseInt(parts[1]);
+        int n = parts.length == 3 ? Integer.parseInt(parts[2]) : 2;
+        if (port < 1024 || port > 65535 || n < 2 || n > 250) {
+            throw bad;
+        }
+        return new Object[]{parts[0], port, n};
+    }
+
+    public static String awgClientConf(String host, int port, String serverPub, String clientPriv, int n,
+                                       java.util.Map<String, Object> params, String i1) throws VpsError {
+        String hp = host.contains(":") ? "[" + host + "]" : host;
+        StringBuilder b = new StringBuilder();
+        b.append("[Interface]\nPrivateKey = ").append(clientPriv).append("\nAddress = ").append(AWG_NET).append('.').append(n)
+                .append("/32\nDNS = 1.1.1.1, 1.0.0.1\n").append(awgLines(params)).append('\n');
+        if (i1 != null && !i1.isEmpty()) {
+            b.append("I1 = ").append(i1).append('\n');
+        }
+        b.append("\n[Peer]\nPublicKey = ").append(serverPub).append("\nEndpoint = ").append(hp).append(':').append(port)
+                .append("\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n");
+        return b.toString();
     }
 }

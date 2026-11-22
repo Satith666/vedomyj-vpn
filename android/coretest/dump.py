@@ -65,6 +65,33 @@ elif mode == "services":
     print(canon([[[s["name"], s["domains"], bool(s.get("russian"))] for s in services.SERVICES], dpi.YOUTUBE_DOMAINS, dpi.DISCORD_DOMAINS]))
 elif mode == "vps":
     sys.stdout.write(vps.script())
+elif mode == "vpsawg":
+    from pult import warp
+    cnt = [0]
+
+    def rnd(n):
+        cnt[0] += 1
+        return ((cnt[0] - 1) * 7919) % n
+    pub = "qgIEo+uU039puNbXT/0Dp83v1gKwmUMtxRlqB1VdrX4="
+    for _ in range(3):
+        p = vps.awg_params(rnd)
+        print(canon(p))
+        print(canon(vps.check_awg_params(p)))
+    p = vps.awg_params(rnd)
+    sys.stdout.write(vps.awg_script(pub, 45123, p))
+    sys.stdout.write(vps.awg_peer_script(pub))
+    for r in (pub + "|45123", pub + "|45123|7", "x|45123", pub + "|80", pub + "|45123|999"):
+        try:
+            x = vps.parse_awg_result(r)
+            print(f"{x[0]} {x[1]} {x[2]}")
+        except vps.VpsError:
+            print("bad")
+    sys.stdout.write(vps.awg_client_conf("203.0.113.10", 45123, pub, "0DwJdaudL51JBFBTWtyQF+QPxOBERLhw0ye1fXBLjEQ=", 3, p, warp.DNS_YANDEX_I1))
+    try:
+        vps.check_awg_params(dict(p, H2=p["H1"]))
+        print("accepted")
+    except vps.VpsError:
+        print("bad")
 elif mode == "vpsbridge":
     good = ("vless://3f1c2a9e-1b2c-4d5e-8f90-1234567890ab@203.0.113.10:443?type=tcp&security=reality"
             "&pbk=cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4&fp=chrome&sni=www.microsoft.com&sid=0123456789abcdef&flow=xtls-rprx-vision#x")

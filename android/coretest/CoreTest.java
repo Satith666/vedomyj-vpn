@@ -372,6 +372,7 @@ public class CoreTest {
 
         String lastScript = "";
         static final String FRIEND = "7e57f00d-1b2c-4d5e-8f90-1234567890ab";
+        static final String AWG_SPUB = "qgIEo+uU039puNbXT/0Dp83v1gKwmUMtxRlqB1VdrX4=";
 
         public void sshRun(String host, int port, String user, String password, String script, Engine.LineSink out,
                            Engine.Stop stop) throws Exception {
@@ -380,6 +381,15 @@ public class CoreTest {
             lastScript = script;
             if (script.contains("/proc/loadavg")) {
                 out.line("PULT_RESULT:90061|0.15 0.10 0.05|310/1987|3.1G/25G|123456|654321|active|4|1");
+                return;
+            }
+            if (script.contains("ppa:amnezia/ppa")) { // AmneziaWG 2.0 на своём сервере
+                out.line("PULT_STEP:awg");
+                out.line("PULT_RESULT:" + AWG_SPUB + "|45123");
+                return;
+            }
+            if (script.contains("awg set awg0 peer")) {
+                out.line("PULT_RESULT:" + AWG_SPUB + "|45123|3");
                 return;
             }
             if (script.contains("ACTION=\"add\"") || script.contains("ACTION=\"remove\"")) {
@@ -1159,6 +1169,42 @@ public class CoreTest {
             check(!Json.write(e.settings).contains("secret"), "пароль не сохранён");
             e.vpsForget(id);
             check(Json.list(e.state(), "vps").isEmpty(), "сервер убирается из приложения");
+        });
+
+        test("Свой сервер: AmneziaWG 2.0 (ключ телефона не уходит на сервер) и устройство для роутера", () -> {
+            e.vpsSetup("vps3.example.net", "22", "root", "secret", "Third");
+            waitIdle(e);
+            String id = "";
+            for (Object o : Json.list(e.state(), "vps")) {
+                if ("vps3.example.net".equals(Json.str(Json.map(o), "host"))) id = Json.str(Json.map(o), "id");
+            }
+            e.vpsAwg(id, "secret");
+            waitIdle(e);
+            String sent = fake.lastScript;
+            check(sent.contains("ppa:amnezia/ppa") && sent.contains("ListenPort = "), "на сервер уходит установка AmneziaWG");
+            Map<String, Object> srv = serverByName(e, "Third · AmneziaWG");
+            check(srv != null, "конфиг этого телефона — в своих серверах");
+            String conf = Json.str(e.awgInfo(Json.str(srv, "key")), "conf");
+            java.util.regex.Matcher pk = java.util.regex.Pattern.compile("PrivateKey = (\\S+)").matcher(conf);
+            check(pk.find() && !sent.contains(pk.group(1)) && sent.contains(Warp.publicOf(pk.group(1)))
+                    && conf.contains("Endpoint = vps3.example.net:45123") && conf.contains("PublicKey = " + Fake.AWG_SPUB),
+                    "на сервер ушёл только открытый ключ телефона");
+            for (String k : new String[]{"S3", "S4", "H1", "H4"}) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?m)^" + k + " = (\\S+)$").matcher(conf);
+                check(m.find() && sent.contains(k + " = " + m.group(1)), "маскировка у сервера и телефона одна: " + k);
+            }
+            e.vpsAwgDevice(id, "secret", "Router");
+            waitIdle(e);
+            Map<String, Object> mine = null;
+            for (Object o : Json.list(e.state(), "vps")) {
+                if (id.equals(Json.str(Json.map(o), "id"))) mine = Json.map(o);
+            }
+            List<Object> devs = Json.list(mine, "awg_devices");
+            check(Json.bool(mine, "awg", false) && devs.size() == 1 && !Json.map(devs.get(0)).containsKey("conf"), "устройство в окне — без ключа");
+            String dconf = e.vpsAwgConf(Json.str(Json.map(devs.get(0)), "id"));
+            check(dconf.contains("Address = 10.66.66.3/32") && fake.lastScript.contains("awg set awg0 peer"), "устройство для роутера — свой ключ и адрес");
+            check(!String.join("\n", e.logLines()).contains("PrivateKey") && !Json.write(e.settings).contains("secret"), "ключи и пароль не в журнале");
+            e.vpsForget(id);
         });
 
         test("Свой сервер: мост через российский сервер (vk.com, белые списки)", () -> {

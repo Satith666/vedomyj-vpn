@@ -101,6 +101,10 @@ def awg_check() -> None:
     err = next((ln[11:] for ln in out.stdout.splitlines() if ln.startswith("PULT_ERROR:")), "")
     ok(bool(res), "AmneziaWG 2.0 установлен скриптом программы", vps.ERRORS.get(err, err) or out.stderr[-300:])
     if not res:
+        print(f"       ядро: {os.uname().release}, шаг: {err or '?'}")
+        for ln in out.stdout.splitlines():
+            if ln.startswith("PULT_LOG:"):
+                print("       | " + ln[9:][:200])
         return
     spub, port, n = vps.parse_awg_result(res)
     conf = vps.awg_client_conf("203.0.113.1", port, spub, priv, n, params, warp.DNS_YANDEX_I1)

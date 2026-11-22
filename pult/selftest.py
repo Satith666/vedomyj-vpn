@@ -470,7 +470,8 @@ FAKE_OLD_CORE: dict = {}
 STATSQUERY: dict = {"n": 0}  # сколько раз скорость читали запуском «xray api statsquery»  # {"on": True} — ядро без страницы метрик (старая версия)
 
 
-_ENGINE_PORT = [34000]
+# ниже 32768: Linux раздаёт порты от 32768 исходящим соединениям — порт могли занять между выбором и запуском
+_ENGINE_PORT = [27000]
 
 
 def make_engine(tmp: str):
@@ -487,7 +488,7 @@ def make_engine(tmp: str):
     # каждому движку — свои, ещё не выдававшиеся порты: фоновый поток движка из прошлой проверки
     # (переподключение, автоподбор) не займёт порт, который только что отдали новому движку
     socks, http = netutil.find_free_ports(2, _ENGINE_PORT[0])
-    _ENGINE_PORT[0] = http + 1 if http < 34800 else 34000
+    _ENGINE_PORT[0] = http + 1 if http < 27800 else 27000
     e.settings.update(ping_host=f"127.0.0.1:{WEB}", socks_port=socks,
                       http_port=http, system_proxy=False, autopilot=False,
                       stall_check=False,   # фоновая проверка «16 КБ» включается только в своём тесте
@@ -3602,6 +3603,12 @@ def t_vps_awg():
     body = vps.awg_script(pub, 45123, params)
     check(pub in body and priv not in body and "ListenPort = 45123" in body and f"H1 = {params['H1']}" in body
           and "ppa:amnezia/ppa" in body and "PULT_RESULT:$SPUB|45123" in body, "скрипт AmneziaWG для сервера")
+    codes = set(re.findall(r"fail (\w+)", vps.AWG_SCRIPT + vps.AWG_PEER_SCRIPT))
+    check(codes and all(c in vps.ERRORS for c in codes), f"у каждой ошибки скрипта AmneziaWG есть понятный текст: {codes - set(vps.ERRORS)}")
+    log_path = os.path.join(tempfile.mkdtemp(prefix="pult-selftest-"), "out.log")
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("PULT_STEP:awg\nPULT_LOG:E: Unable to locate package amneziawg\nPULT_ERROR:awg_build\n")
+    check(vps.read_progress(log_path) == ("awg", "awg_build", ""), "строки журнала установки не мешают разбору ответа")
     for bad in (("$(reboot)aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=", 45123), (pub, 80), (pub, 70000)):
         try:
             vps.awg_script(bad[0], bad[1], params)

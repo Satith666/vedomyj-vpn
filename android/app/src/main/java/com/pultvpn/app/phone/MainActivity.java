@@ -770,6 +770,14 @@ public final class MainActivity extends Activity {
                 e.vpsSetup(Json.str(a, "host"), Json.str(a, "port"), Json.str(a, "user"), Json.str(a, "password"),
                         Json.str(a, "name"));
                 return true;
+            case "vps_awg":
+                e.vpsAwg(Json.str(a, "id"), Json.str(a, "password"));
+                return true;
+            case "vps_awg_device":
+                e.vpsAwgDevice(Json.str(a, "id"), Json.str(a, "password"), Json.str(a, "name"));
+                return true;
+            case "vps_awg_conf":
+                return e.vpsAwgConf(Json.str(a, "id"));
             case "vps_bridge":
                 e.vpsBridge(Json.str(a, "host"), Json.str(a, "port"), Json.str(a, "user"), Json.str(a, "password"),
                         Json.str(a, "via"), Json.str(a, "name"));

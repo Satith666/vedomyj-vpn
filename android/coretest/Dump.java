@@ -90,6 +90,36 @@ public class Dump {
         if (mode.equals("vps")) {
             out.print(Vps.script());
         }
+        if (mode.equals("vpsawg")) {
+            final int[] c = {0};
+            Warp.Rnd rnd = n -> (int) ((c[0]++ * 7919L) % n);
+            String pub = "qgIEo+uU039puNbXT/0Dp83v1gKwmUMtxRlqB1VdrX4=";
+            for (int k = 0; k < 3; k++) {
+                Map<String, Object> p = Vps.awgParams(rnd);
+                out.println(Json.canonical(p));
+                out.println(Json.canonical(Vps.checkAwgParams(p)));
+            }
+            Map<String, Object> p = Vps.awgParams(rnd);
+            out.print(Vps.awgScript(pub, 45123, p));
+            out.print(Vps.awgPeerScript(pub));
+            for (String rr : new String[]{pub + "|45123", pub + "|45123|7", "x|45123", pub + "|80", pub + "|45123|999"}) {
+                try {
+                    Object[] x = Vps.parseAwgResult(rr);
+                    out.println(x[0] + " " + x[1] + " " + x[2]);
+                } catch (Vps.VpsError e) {
+                    out.println("bad");
+                }
+            }
+            out.print(Vps.awgClientConf("203.0.113.10", 45123, pub, "0DwJdaudL51JBFBTWtyQF+QPxOBERLhw0ye1fXBLjEQ=", 3, p, Warp.DNS_YANDEX_I1));
+            Map<String, Object> bad = new LinkedHashMap<String, Object>(p);
+            bad.put("H2", p.get("H1"));
+            try {
+                Vps.checkAwgParams(bad);
+                out.println("accepted");
+            } catch (Vps.VpsError e) {
+                out.println("bad");
+            }
+        }
         if (mode.equals("vpsbridge")) {
             String good = "vless://3f1c2a9e-1b2c-4d5e-8f90-1234567890ab@203.0.113.10:443?type=tcp&security=reality"
                     + "&pbk=cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4&fp=chrome&sni=www.microsoft.com&sid=0123456789abcdef&flow=xtls-rprx-vision#x";

@@ -28,6 +28,8 @@ done
 python3 dump.py updatevector < /dev/null > "$OUT/vec.json"
 a=$($J Dump updateverify < "$OUT/vec.json")
 if [ "$a" = "ok 99.0.0 Тест <b>&</b> «кавычки» | forged rejected" ]; then echo "[OK]   Сверка с Windows: подпись выпуска"; else echo "[FAIL] подпись выпуска: $a"; fail=1; fi
+$J Dump vpsawg < /dev/null > "$OUT/j_vpsa.sh"; python3 dump.py vpsawg < /dev/null > "$OUT/p_vpsa.sh"
+if cmp -s "$OUT/j_vpsa.sh" "$OUT/p_vpsa.sh"; then echo "[OK]   Сверка с Windows: AmneziaWG 2.0 на своём сервере"; else echo "[FAIL] AmneziaWG 2.0 на своём сервере"; diff "$OUT/p_vpsa.sh" "$OUT/j_vpsa.sh" | head; fail=1; fi
 $J Dump vpsbridge < /dev/null > "$OUT/j_vpsb.sh"; python3 dump.py vpsbridge < /dev/null > "$OUT/p_vpsb.sh"
 if cmp -s "$OUT/j_vpsb.sh" "$OUT/p_vpsb.sh"; then echo "[OK]   Сверка с Windows: мост через российский сервер"; else echo "[FAIL] мост через российский сервер"; diff "$OUT/p_vpsb.sh" "$OUT/j_vpsb.sh" | head; fail=1; fi
 $J Dump vps < /dev/null > "$OUT/j_vps.sh"; python3 dump.py vps < /dev/null > "$OUT/p_vps.sh"

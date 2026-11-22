@@ -6005,7 +6005,8 @@ public final class Engine {
                 }
                 Map<String, Object> st = Json.map(h, "status");
                 out.add(Json.obj("id", Json.str(h, "id"), "name", Json.str(h, "name"), "host", Json.str(h, "host"),
-                        "status", st == null ? new LinkedHashMap<String, Object>() : st, "friends", fr, "bridge_of", Json.str(h, "bridge_of")));
+                        "status", st == null ? new LinkedHashMap<String, Object>() : st, "friends", fr, "bridge_of", Json.str(h, "bridge_of"),
+                        "awg", Json.map(h, "awg") != null, "awg_devices", awgDevs(h)));
             }
         }
         return out;
@@ -6175,6 +6176,126 @@ public final class Engine {
                 say(Text.t("Ключ для «" + name + "» готов — покажи другу QR-код.", "The key for “" + name + "” is ready — show your friend the QR code."), "ok");
             }
         });
+    }
+
+    // ---------- AmneziaWG 2.0 на своём сервере и устройства (как vps_awg / vps_awg_device) ----------
+
+    static final int VPS_AWG_DEVICES_MAX = 20;
+
+    @SuppressWarnings("unchecked")
+    private void vpsAwgSave(Map<String, Object> h, String key, Object value) {
+        synchronized (lock) {
+            h.put(key, value);
+        }
+    }
+
+    /** Ставит AmneziaWG 2.0 на свой сервер и добавляет конфиг этого телефона в свои серверы. */
+    public void vpsAwg(final String id, final String password) throws Vps.VpsError {
+        final Map<String, Object> h = vpsFind(id);
+        needPassword(password);
+        final String[] kp = Warp.keypair(null);
+        final Map<String, Object> params = Vps.awgParams(Warp.SECURE);
+        final String body = Vps.awgScript(kp[1], 30000 + new java.security.SecureRandom().nextInt(30000), params);
+        vpsTask("Свой сервер: AmneziaWG 2.0", "Own server: AmneziaWG 2.0", new Runnable() {
+            @Override
+            public void run() {
+                String result = vpsRun(h, password, body, "AmneziaWG не установился", "AmneziaWG was not installed");
+                Object[] r;
+                String conf;
+                try {
+                    r = Vps.parseAwgResult(result);
+                    conf = Vps.awgClientConf(Json.str(h, "host"), (Integer) r[1], (String) r[0], kp[0], (Integer) r[2], params, Warp.DNS_YANDEX_I1);
+                } catch (Vps.VpsError e) {
+                    throw new UserError(Text.t("AmneziaWG не установился: ", "AmneziaWG was not installed: ") + e.getMessage());
+                }
+                String srv = Json.str(h, "name");
+                String name = (srv.isEmpty() ? "VPS" : srv) + " · AmneziaWG";
+                vpsAwgSave(h, "awg", Json.obj("port", (long) (Integer) r[1], "pub", r[0], "params", params));
+                vpsAwgSave(h, "awg_peers", new ArrayList<Object>());
+                saveSettings();
+                try {
+                    addServers(Links.awgLink(conf, name));
+                } catch (Links.LinkError e) {
+                    throw new UserError(e.getMessage());
+                }
+                log("Свой сервер «" + srv + "»: AmneziaWG 2.0 установлен, конфиг этого телефона добавлен в свои серверы.",
+                        "Own server “" + srv + "”: AmneziaWG 2.0 is installed, this phone's config is added to your servers.");
+                say(Text.t("AmneziaWG 2.0 на своём сервере готов.", "AmneziaWG 2.0 on your server is ready."), "ok");
+            }
+        });
+    }
+
+    /** Ещё одно устройство в AmneziaWG своего сервера (роутер, телевизор): свой ключ. */
+    public void vpsAwgDevice(final String id, final String password, final String devName) throws Vps.VpsError {
+        final Map<String, Object> h = vpsFind(id);
+        needPassword(password);
+        final Map<String, Object> awg = Json.map(h, "awg");
+        if (awg == null || Json.str(awg, "pub").isEmpty()) {
+            throw new Vps.VpsError(Text.t("Сначала установи AmneziaWG 2.0 на этот сервер.", "Install AmneziaWG 2.0 on this server first."));
+        }
+        if (vlist(h, "awg_peers").size() >= VPS_AWG_DEVICES_MAX) {
+            throw new Vps.VpsError(Text.t("Слишком много устройств — сначала удали ненужные.", "Too many devices — remove the ones you don't need first."));
+        }
+        String n0 = devName == null ? "" : devName.trim();
+        final String name = n0.isEmpty() ? Text.t("Роутер", "Router") : Text.shorten(n0, 30);
+        final String[] kp = Warp.keypair(null);
+        final String body = Vps.awgPeerScript(kp[1]);
+        vpsTask("Свой сервер: устройство AmneziaWG", "Own server: AmneziaWG device", new Runnable() {
+            @Override
+            public void run() {
+                String result = vpsRun(h, password, body, "Устройство не добавлено", "The device was not added");
+                String conf;
+                Object[] r;
+                try {
+                    r = Vps.parseAwgResult(result);
+                    conf = Vps.awgClientConf(Json.str(h, "host"), (Integer) r[1], (String) r[0], kp[0], (Integer) r[2],
+                            Json.map(awg, "params"), Warp.DNS_YANDEX_I1);
+                } catch (Vps.VpsError e) {
+                    throw new UserError(Text.t("Устройство не добавлено: ", "The device was not added: ") + e.getMessage());
+                }
+                String did = Text.sha1hex(kp[1]).substring(0, 8);
+                synchronized (lock) {
+                    Object pl = h.get("awg_peers");
+                    if (!(pl instanceof List)) {
+                        pl = new ArrayList<Object>();
+                        h.put("awg_peers", pl);
+                    }
+                    @SuppressWarnings("unchecked")
+                    List<Object> peers = (List<Object>) pl;
+                    peers.add(Json.obj("id", did, "name", name, "n", (long) (Integer) r[2], "ts", System.currentTimeMillis() / 1000, "conf", conf));
+                }
+                saveSettings();
+                lastVpsAwgDev = Json.obj("id", did, "name", name);
+                log("Свой сервер «" + Json.str(h, "name") + "»: добавлено устройство AmneziaWG «" + name + "».",
+                        "Own server “" + Json.str(h, "name") + "”: AmneziaWG device “" + name + "” was added.");
+                say(Text.t("Конфиг для «" + name + "» готов.", "The config for “" + name + "” is ready."), "ok");
+            }
+        });
+    }
+
+    public volatile Map<String, Object> lastVpsAwgDev;
+
+    private static List<Object> awgDevs(Map<String, Object> h) {
+        List<Object> out = new ArrayList<Object>();
+        for (Object d : vlist(h, "awg_peers")) {
+            Map<String, Object> m = Json.map(d);
+            out.add(Json.obj("id", Json.str(m, "id"), "name", Json.str(m, "name"), "ts", Json.num(m, "ts", 0)));
+        }
+        return out;
+    }
+
+    /** Конфиг устройства AmneziaWG (для роутера: файл или QR-код). */
+    public String vpsAwgConf(String devId) {
+        synchronized (lock) {
+            for (Object o : vpsHosts()) {
+                for (Object d : vlist(Json.map(o), "awg_peers")) {
+                    if (devId.equals(Json.str(Json.map(d), "id"))) {
+                        return Json.str(Json.map(d), "conf");
+                    }
+                }
+            }
+        }
+        throw new UserError(Text.t("Устройство не найдено.", "Device not found."));
     }
 
     public void vpsFriendRemove(final String id, final String password, final String friendId) throws Vps.VpsError {
@@ -6416,6 +6537,7 @@ public final class Engine {
             st.put("vps", vpsView());
             st.put("vpn_until", vpnUntil);
             st.put("vps_friend_new", lastVpsFriend);
+            st.put("vps_awg_new", lastVpsAwgDev);
             st.put("net_public", netPublic);
             st.put("leaks", lastLeaks);
             st.put("certs", lastCerts);

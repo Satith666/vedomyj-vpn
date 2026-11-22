@@ -783,9 +783,28 @@
         vpsFriendShown = nf.id;
         vpsFriendQr(nf.id, nf.name);
       }
+      const na = S.vps_awg_new;
+      if (na && na.id && na.id !== vpsAwgShown) {
+        vpsAwgShown = na.id;
+        awgDevSheet(na.id, na.name);
+      }
     },
   };
-  let vpsFriendShown = "";
+  let vpsFriendShown = "", vpsAwgShown = "";
+  /* Конфиг устройства AmneziaWG (роутер): QR-код, файл и как поставить. */
+  let awgDevConf = "", awgDevName = "";
+  function awgDevSheet(id, name) {
+    let conf;
+    try { conf = call("vps_awg_conf", { id }); } catch (e) { toast(e.message, "error"); return; }
+    awgDevConf = conf; awgDevName = name;
+    let qr = "";
+    try { qr = call("qr", { text: conf }); } catch (e) { qr = ""; }
+    openSheet(`<h2>${esc(t("vps_awg_router_title", { name }))}</h2>${qr ? `<div class="qr"><img alt="" src="${esc(qr)}"></div>` : ""}
+      <ol class="steps"><li>${esc(t("vps_awg_router_1"))}</li><li>${esc(t("vps_awg_router_2"))}</li><li>${esc(t("vps_awg_router_3"))}</li></ol>
+      <p class="hint">${esc(t("vps_awg_router_warn"))}</p>
+      <div class="menu"><button class="row" data-act="awgdev-save">${icon("file")}<span class="main"><span class="title"><span>${esc(t("vps_awg_router_save"))}</span></span></span></button>
+        <button class="row" data-act="awgdev-share">${icon("send")}<span class="main"><span class="title"><span>${esc(t("fam_share"))}</span></span></span></button></div>`);
+  }
   function bytesText(n) {
     const u = [t("u_b"), t("u_kb"), t("u_mb"), t("u_gb"), t("u_tb")];
     let i = 0;
@@ -820,6 +839,10 @@
         <div class="btns"><button class="btn" data-act="vps-check" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("refresh")}${esc(t("vps_check"))}</button>
           <button class="btn" data-act="vps-friend" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_friend_add"))}</button></div>
         ${h.bridge_of ? `<p class="hint">${esc(t("vps_is_bridge"))}</p>` : `<button class="btn wide" data-act="vps-bridge" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("server")}${esc(t("vps_bridge_short"))}</button>`}
+        ${h.awg ? `<button class="btn wide" data-act="vps-awgdev" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_awg_dev_btn"))}</button>`
+          : `<button class="btn wide" data-act="vps-awg" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("shield")}${esc(t("vps_awg_btn"))}</button>`}
+        ${(h.awg_devices || []).map((d) => `<button class="row" data-act="awgdev-open" data-id="${esc(d.id)}" data-n="${esc(d.name)}">${icon("qr")}<span class="main"><span class="title"><span>${esc(d.name)}</span></span>
+          <span class="meta">${esc(t("vps_awg_dev_made_s"))}</span></span></button>`).join("")}
         ${fr ? `<div class="vps-friends">${fr}</div>` : ""}</div>`;
     }).join("");
     return html + `<p class="hint">${esc(t("vps_pass_note"))}</p></div></section>`;
@@ -1833,6 +1856,19 @@
         (pw, sh) => act("vps_bridge", { host: $("#vbHost", sh).value, port: $("#vbPort", sh).value, user: $("#vbUser", sh).value,
           password: pw, via, name: $("#vbName", sh).value }));
     },
+    "vps-awg"(el) {
+      const id = el.dataset.id;
+      vpsPassSheet(t("vps_awg_btn"), t("vps_awg_text"), "", (pw) => act("vps_awg", { id, password: pw }));
+    },
+    "vps-awgdev"(el) {
+      const id = el.dataset.id;
+      vpsPassSheet(t("vps_awg_dev_btn"), t("vps_awg_dev_text"),
+        `<label class="field">${esc(t("vps_friend_name"))}<input id="vdName" maxlength="30" placeholder="${esc(t("vps_awg_dev_ph"))}"></label>`,
+        (pw, sh) => act("vps_awg_device", { id, password: pw, name: $("#vdName", sh).value }));
+    },
+    "awgdev-open"(el) { awgDevSheet(el.dataset.id, el.dataset.n); },
+    "awgdev-save"() { act("save_file", { text: awgDevConf, name: "awg-" + (awgDevName.replace(/[^A-Za-z0-9_-]+/g, "") || "router") + ".conf", mime: "application/octet-stream" }); },
+    "awgdev-share"() { act("share_text", { text: awgDevConf }); },
     "vps-check"(el) {
       const id = el.dataset.id;
       vpsPassSheet(t("vps_check"), "", "", (pw) => act("vps_status", { id, password: pw }));

@@ -414,6 +414,8 @@ AWG_NET = "10.66.66"
 AWG_ERRORS = {
     "awg_os": "AmneziaWG программа ставит только на Ubuntu (22.04 или новее)",
     "awg_install": "не удалось установить AmneziaWG — у сервера нет доступа к репозиторию Amnezia или закончилось место",
+    "awg_repo": "сервер не смог подключить репозиторий Amnezia (launchpad.net) — проверь, что у сервера есть интернет, и попробуй снова",
+    "awg_build": "модуль AmneziaWG не собрался для ядра сервера — обнови систему сервера (apt upgrade), перезагрузи его и попробуй снова",
     "awg_module": "модуль AmneziaWG не загрузился — обнови систему сервера, перезагрузи его и попробуй снова",
     "awg_service": "AmneziaWG на сервере не запустился",
     "noawg": "на сервере нет AmneziaWG, установленного программой — сначала нажми «AmneziaWG 2.0»",
@@ -475,22 +477,27 @@ def _awg_lines(p: dict) -> str:
 
 AWG_SCRIPT = r"""#!/bin/bash
 # VEDOMYJ VPN: installs AmneziaWG 2.0 (kernel module from ppa:amnezia/ppa) next to Xray.
-say()  { echo "PULT_STEP:$1"; }
-fail() { echo "PULT_ERROR:$1"; exit 1; }
-[ "$(id -u)" = "0" ] || fail root
+LOG=/var/log/vedomyj-awg.log
+say()  { echo "PULT_STEP:$1"; echo "== $1" >> "$LOG"; }
+fail() { tail -n 25 "$LOG" 2>/dev/null | sed 's/^/PULT_LOG:/'; echo "PULT_ERROR:$1"; exit 1; }
+[ "$(id -u)" = "0" ] || { echo "PULT_ERROR:root"; exit 1; }
+: > "$LOG"
 . /etc/os-release 2>/dev/null
 [ "$ID" = "ubuntu" ] || fail awg_os
 export DEBIAN_FRONTEND=noninteractive
+APT="apt-get -y -q -o DPkg::Lock::Timeout=300"
 say packages
-apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq software-properties-common python3-launchpadlib gnupg2 iptables >/dev/null 2>&1 || fail awg_install
-apt-get install -y -qq "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
+$APT update >> "$LOG" 2>&1
+$APT install software-properties-common gnupg iptables >> "$LOG" 2>&1 || fail awg_install
+$APT install python3-launchpadlib >> "$LOG" 2>&1 || true
+$APT install "linux-headers-$(uname -r)" >> "$LOG" 2>&1 || true
 say awg
-add-apt-repository -y ppa:amnezia/ppa >/dev/null 2>&1 || fail awg_install
-apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq amneziawg amneziawg-tools >/dev/null 2>&1 || apt-get install -y -qq amneziawg >/dev/null 2>&1 || fail awg_install
+add-apt-repository -y ppa:amnezia/ppa >> "$LOG" 2>&1 || fail awg_repo
+$APT update >> "$LOG" 2>&1
+$APT install amneziawg-tools >> "$LOG" 2>&1 || fail awg_install
 command -v awg >/dev/null 2>&1 || fail awg_install
-modprobe amneziawg >/dev/null 2>&1 || fail awg_module
+$APT install amneziawg >> "$LOG" 2>&1 || fail awg_build
+modprobe amneziawg >> "$LOG" 2>&1 || fail awg_module
 say keys
 umask 077
 mkdir -p /etc/amnezia/amneziawg
