@@ -494,6 +494,14 @@ $APT install "linux-headers-$(uname -r)" >> "$LOG" 2>&1 || true
 say awg
 add-apt-repository -y ppa:amnezia/ppa >> "$LOG" 2>&1 || fail awg_repo
 $APT update >> "$LOG" 2>&1
+# a new Ubuntu with no Amnezia packages yet: use the packages built for 24.04 (noble)
+if ! apt-cache policy amneziawg-tools 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+  echo "== no packages for $VERSION_CODENAME, using noble" >> "$LOG"
+  for f in /etc/apt/sources.list.d/amnezia-ubuntu-ppa*; do
+    [ -f "$f" ] && sed -i -E "s/^(Suites:[[:space:]]*)$VERSION_CODENAME\$/\1noble/; s#(ppa\.launchpadcontent\.net/amnezia/ppa/ubuntu/?[[:space:]]+)$VERSION_CODENAME([[:space:]])#\1noble\2#" "$f"
+  done
+  $APT update >> "$LOG" 2>&1
+fi
 $APT install amneziawg-tools >> "$LOG" 2>&1 || fail awg_install
 command -v awg >/dev/null 2>&1 || fail awg_install
 $APT install amneziawg >> "$LOG" 2>&1 || fail awg_build

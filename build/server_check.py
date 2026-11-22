@@ -125,6 +125,8 @@ def main() -> int:
     if os.geteuid() != 0:
         print("Нужен root: sudo python3 build/server_check.py")
         return 2
+    rel = next((ln.split("=", 1)[1].strip().strip('"') for ln in open("/etc/os-release") if ln.startswith("PRETTY_NAME=")), "?")
+    print(f"Система: {rel}, ядро {os.uname().release}")
     # 1. скрипт мастера — как на настоящем сервере
     out = subprocess.run(["bash", "-s"], input=vps.script(), capture_output=True, text=True, timeout=900)
     res = next((ln[12:] for ln in out.stdout.splitlines() if ln.startswith("PULT_RESULT:")), "")
