@@ -577,7 +577,7 @@ def check_warp_xray(paths: xray.Paths, acct: dict | None) -> None:
     значит ядро действительно ведёт WARP через цепочку, а не мимо неё."""
     if not acct:
         return
-    passed, working = 0, None
+    passed, working = 0, []
     for i in range(len(warp.PRESETS)):
         p = warp.preset(i)
         conf = warp.build_conf(acct, p)
@@ -592,41 +592,50 @@ def check_warp_xray(paths: xray.Paths, acct: dict | None) -> None:
             continue
         got = _run_trace(paths, cfg, port, "warpx")
         passed += got in ("on", "plus")
-        if got in ("on", "plus") and working is None:
-            working = p
+        if got in ("on", "plus"):
+            working.append(p)
         add("ok" if got in ("on", "plus") else "warn",
             T(f"WARP в ядре {p['label']} ({p['endpoint']}): ", f"WARP in the core {p['label']} ({p['endpoint']}): ") + got)
     add("ok" if passed else "error", T(f"WARP во встроенном ядре: работают {passed} из {len(warp.PRESETS)} наборов обманок",
                                        f"WARP in the built-in core: {passed} of {len(warp.PRESETS)} decoy sets work"))
-    # «WARP после VPN»: «VPN» — вход SOCKS этого же ядра (с UDP), WARP идёт к Cloudflare через него
-    # (набор обманок — первый сработавший выше: сеть GitHub до отдельных адресов Cloudflare иногда не доходит)
-    if working is None:
+    # «WARP после VPN»: «VPN» — вход SOCKS этого же ядра (с UDP), WARP идёт к Cloudflare через него.
+    # Наборы обманок — сработавшие выше, до трёх по очереди: сеть GitHub до отдельных адресов Cloudflare
+    # иногда на минуту пропадает, это не ошибка программы.
+    if not working:
         return
-    conf = warp.build_conf(acct, working)
+
+    def chain(conf: dict, how: str, good: bool) -> str:
+        ports = netutil.find_free_ports(3, start=24000)
+        ob = warp.xray_outbound(conf, "warp", noise=False)
+        if how == "dialerProxy":
+            ob["streamSettings"] = {"sockopt": {"dialerProxy": "proxy"}}
+        else:
+            ob["proxySettings"] = {"tag": "proxy"}
+        cfg = {"log": {"loglevel": "warning"},
+               "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": ports[0], "protocol": "http", "settings": {}},
+                            {"tag": "srv-in", "listen": "127.0.0.1", "port": ports[1], "protocol": "socks",
+                             "settings": {"udp": True, "ip": "127.0.0.1"}}],
+               "outbounds": [ob, {"tag": "proxy", "protocol": "socks", "settings": {"servers": [
+                   {"address": "127.0.0.1", "port": ports[1] if good else ports[2]}]}},
+                             {"tag": "direct", "protocol": "freedom"}],
+               "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "warp"},
+                                     {"type": "field", "inboundTag": ["srv-in"], "outboundTag": "direct"}]}}
+        return _run_trace(paths, cfg, ports[0], "warpchain")
+
     for how in ("dialerProxy", "proxySettings"):
-        res = {}
-        for good in (True, False):
-            ports = netutil.find_free_ports(3, start=24000)
-            ob = warp.xray_outbound(conf, "warp", noise=False)
-            if how == "dialerProxy":
-                ob["streamSettings"] = {"sockopt": {"dialerProxy": "proxy"}}
-            else:
-                ob["proxySettings"] = {"tag": "proxy"}
-            cfg = {"log": {"loglevel": "warning"},
-                   "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": ports[0], "protocol": "http", "settings": {}},
-                                {"tag": "srv-in", "listen": "127.0.0.1", "port": ports[1], "protocol": "socks",
-                                 "settings": {"udp": True, "ip": "127.0.0.1"}}],
-                   "outbounds": [ob, {"tag": "proxy", "protocol": "socks", "settings": {"servers": [
-                       {"address": "127.0.0.1", "port": ports[1] if good else ports[2]}]}},
-                                 {"tag": "direct", "protocol": "freedom"}],
-                   "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "warp"},
-                                         {"type": "field", "inboundTag": ["srv-in"], "outboundTag": "direct"}]}}
-            res[good] = _run_trace(paths, cfg, ports[0], "warpchain")
+        res = {True: "", False: ""}
+        for p in working[:3] if how == "dialerProxy" else working[:1]:
+            conf = warp.build_conf(acct, p)
+            res[True] = chain(conf, how, True)
+            if res[True] in ("on", "plus"):
+                res[False] = chain(conf, how, False)
+                break
         works = res[True] in ("on", "plus") and res[False] not in ("on", "plus")
         add("ok" if works else ("error" if how == "dialerProxy" else "info"),
             T(f"WARP после VPN ({how}): ", f"WARP after VPN ({how}): ")
             + (T("идёт через цепочку", "goes through the chain") if works else
-               T(f"через цепочку: {res[True]}, цепочка в никуда: {res[False]}", f"via chain: {res[True]}, chain to nowhere: {res[False]}")))
+               T(f"через цепочку: {res[True]}, цепочка в никуда: {res[False] or '—'}",
+                 f"via chain: {res[True]}, chain to nowhere: {res[False] or '—'}")))
 
 
 def check_dht() -> None:
