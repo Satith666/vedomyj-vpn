@@ -701,6 +701,58 @@ def check_xdns(paths: xray.Paths) -> None:
             p.stop()
 
 
+def check_proto(paths: xray.Paths) -> None:
+    """1.26: свой протокол VEDOMYJ на этом компьютере по-настоящему: ключ VLESS от ядра, служба и клиент по ссылке
+    программы (sudoku «текст» + HTTP-приветствие) на одной машине."""
+    from pult import dialect, vps
+    ver = xray.xray_version(paths, paths.xray) or ""
+    if xray._ver(ver) < dialect.PROTO_MIN:
+        add("info", T(f"Свой протокол: ядро {ver or '?'} старое (нужно 26.10.21+)", f"Own protocol: core {ver or '?'} is old (26.10.21+ is needed)"))
+        return
+    out = subprocess.run([paths.xray, "vlessenc"], capture_output=True, text=True, timeout=30,
+                         creationflags=xray.NO_WINDOW).stdout
+    import re as _re
+    encs = _re.findall(r'"encryption": *"([^"]+)"', out)
+    decs = _re.findall(r'"decryption": *"([^"]+)"', out)
+    i = next((k for k, e in enumerate(encs) if len(e) < 300), -1)
+    if i < 0 or i >= len(decs):
+        add("error", T("Свой протокол: ядро не создало ключ шифрования VLESS", "Own protocol: the core did not make a VLESS key"), out[-200:])
+        return
+    uid, pw, dial = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", vps.xdns_password(), dialect.make()
+    sport, cport = netutil.find_free_ports(2, start=24400)
+    scfg = vps.proto_server_config(dial, uid, pw, decryption=decs[i], port=sport, listen="127.0.0.1")
+    srv = links.parse_link(vps.make_proto_link("127.0.0.1", sport, uid, encs[i], dial, pw, "CI"))
+    ccfg = {"log": {"loglevel": "warning"},
+            "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": cport, "protocol": "http", "settings": {}}],
+            "outbounds": xray.proxy_outbounds(srv, "proxy", False, ver) + [{"tag": "direct", "protocol": "freedom"}],
+            "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "proxy"}]}}
+    procs = []
+    try:
+        for name, cfg, wait in (("server", scfg, [sport]), ("client", ccfg, [cport])):
+            p = xray.XrayProcess(paths)
+            p.start(cfg, os.path.join(paths.data_dir, f"field-check-proto-{name}.json"), wait_for=wait)
+            procs.append(p)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{cport}",
+                                                                          "https": f"http://127.0.0.1:{cport}"}))
+        code, t0 = 0, time.time()
+        for _ in range(2):
+            try:
+                with opener.open("https://www.gstatic.com/generate_204", timeout=30) as r:
+                    code = r.status
+                break
+            except OSError as exc:
+                code = str(exc)[:120]
+        tail = "" if code == 204 else " | " + " / ".join(
+            f"{n}: " + " ; ".join(list(p.lines)[-3:])[-300:] for n, p in zip(("server", "client"), procs))
+        add("ok" if code == 204 else "error", T("Свой протокол на этом компьютере: сайт открывается",
+                                                "Own protocol on this computer: a site opens"), f"{code}, {time.time() - t0:.1f} s{tail}")
+    except xray.XrayError as exc:
+        add("error", T("Свой протокол: ядро не запустилось", "Own protocol: the core did not start"), str(exc))
+    finally:
+        for p in procs:
+            p.stop()
+
+
 def check_dht() -> None:
     """1.22: «Семья» через настоящую сеть торрентов — запись BEP 44 кладётся и читается другим клиентом."""
     from pult import dht
@@ -1135,6 +1187,7 @@ def main() -> None:
           else check_warp(paths, live=CI and IS_WINDOWS))
     if paths.xray_exists():
         guard(T("DNS-туннель", "DNS tunnel"), lambda: check_xdns(paths))
+        guard(T("Свой протокол", "Own protocol"), lambda: check_proto(paths))
     guard(T("Семья: сеть торрентов", "Family: torrent network"), check_dht)
 
     section(T("Windows", "Windows"))

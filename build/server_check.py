@@ -170,14 +170,19 @@ def xdns_client_cfg(link: str, port: int) -> dict:
             "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "proxy"}]}}
 
 
-def speed(port: int, what: str) -> None:
-    """200 КБ через туннель (первый из файлов для замера, что ответил) и скорость."""
+def speed(port: int, what: str, strict: bool = True) -> None:
+    """200 КБ через туннель (первый из файлов для замера, что ответил) и скорость.
+    strict=False — путь «на грани» (строгий DNS-посредник): пишем для сведения, проверку не валим."""
     for url in BIG_URLS:
         code, n, sec = fetch(port, url, timeout=240, limit=200000)
         if code == 200:
             break
-    ok(code == 200 and n == 200000, f"DNS-туннель: скачивание 200 КБ {what}",
-       f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с")
+    good = code == 200 and n == 200000
+    detail = f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с"
+    if strict or good:
+        ok(good, f"DNS-туннель: скачивание 200 КБ {what}", detail)
+    else:
+        print(f"[INFO] DNS-туннель: скачивание 200 КБ {what} — {detail}", flush=True)
 
 
 def xdns_diag(port: int, ub: subprocess.Popen) -> None:
@@ -250,7 +255,7 @@ def xdns_check() -> None:
         print(("[OK]   " if code == 204 else "[INFO] ") + "DNS-туннель через строгий рекурсивный DNS (unbound, обычные настройки)"
               + f" — ответ {code}, {sec:.1f} с", flush=True)
         if code == 204:
-            speed(21801, "через посредник (unbound)")
+            speed(21801, "через посредник (unbound)", strict=False)
         else:
             xdns_diag(port, ub)
         # тот же unbound, но ждёт ответа дольше (так ведут себя крупные публичные DNS): проверяем догадку про ожидание
@@ -268,7 +273,7 @@ def xdns_check() -> None:
         print(("[OK]   " if code == 204 else "[INFO] ") + "DNS-туннель через unbound с долгим ожиданием ответа"
               + f" — ответ {code}, {sec:.1f} с", flush=True)
         if code == 204:
-            speed(21805, "через unbound с долгим ожиданием")
+            speed(21805, "через unbound с долгим ожиданием", strict=False)
         # б2) посредник-пересыльщик (dnsmasq): так устроен DNS многих провайдеров и роутеров
         sh("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq-base >/dev/null 2>&1")
         dm = subprocess.Popen(["dnsmasq", "-k", "-p", "5455", "--listen-address=127.0.0.1", "--bind-interfaces",
