@@ -932,7 +932,7 @@ textarea.input { height: auto; }
 .m-list .m-wrap.sel { border-color: var(--accent-line); background: var(--accent-soft); }
 .m-list .m-opt { min-height: 42px; padding: 6px 12px; }
 .m-list .m-text { flex-direction: row; align-items: baseline; gap: 10px; flex: 1 1 auto; }
-.m-list .m-text b { flex: none; width: 92px; }
+.m-list .m-text b { flex: none; min-width: 92px; white-space: nowrap; }
 .m-list .m-text small, .m-list .m-opt .m-text small { display: block; flex: 1 1 auto; min-width: 0; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; -webkit-line-clamp: unset; }
 .m-list .m-dd { width: 36px; border-left-color: transparent; }
