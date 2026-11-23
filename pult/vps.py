@@ -600,3 +600,187 @@ def awg_client_conf(host: str, port: int, server_pub: str, client_priv: str, n: 
     lines += ["", "[Peer]", f"PublicKey = {server_pub}", f"Endpoint = {hp}:{int(port)}", "AllowedIPs = 0.0.0.0/0, ::/0",
               "PersistentKeepalive = 25"]
     return "\n".join(lines) + "\n"
+
+
+# ---------- DNS-туннель через свой домен (Xray XDNS) — эксперимент 1.25 ----------
+# Последний запасной путь, когда наружу открыт только DNS: mKCP внутри DNS-запросов к своему домену,
+# через обычные DNS-серверы (по умолчанию Яндекс). На сервере — отдельная маленькая служба Xray на UDP 5300,
+# внешний UDP 53 перенаправляется на неё (только на основном сетевом интерфейсе). Основной Xray не трогается.
+# Внутри — шифрование AES-128-GCM с паролем: DNS-серверы по пути видят только случайные байты.
+
+XDNS_PORT = 5300
+XDNS_SERVER_MTU = 900      # ответ TXT при EDNS 1232 — совет документации Xray
+XDNS_RESOLVERS = ("77.88.8.8:53", "77.88.8.1:53")   # Яндекс DNS: обычно открыт и при белых списках
+XDNS_NAME = "DNS-туннель"
+XDNS_ERRORS = {
+    "xdns_xray": "на сервере старое ядро Xray, а обновить его не вышло — у сервера нет доступа к GitHub",
+    "xdns_dns53": "на сервере уже работает свой DNS-сервер на порту 53 — DNS-туннель с ним не уживётся",
+    "xdns_port": f"порт {XDNS_PORT} на сервере занят другой программой",
+    "xdns_config": "Xray не принял настройки DNS-туннеля",
+    "xdns_service": "DNS-туннель на сервере не запустился",
+    "xdns_fw": "на сервере нет iptables, и его не удалось установить",
+}
+ERRORS.update(XDNS_ERRORS)
+STEPS.update({"xdns": "Ставлю DNS-туннель на сервер"})
+_RX_DOMAIN = re.compile(r"(?=.{4,60}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
+_RX_SECRET = re.compile(r"[A-Za-z0-9_-]{16,64}")
+_RX_IFACE = re.compile(r"[A-Za-z0-9_.@-]{1,15}")
+
+
+def check_domain(domain: str) -> str:
+    """Домен туннеля (например t.example.ru): строчные буквы, цифры, дефис, точки; 4–60 знаков; хотя бы 3 части —
+    туннелю нужен отдельный поддомен, весь домен целиком отдавать нельзя."""
+    d = (domain or "").strip().lower().rstrip(".")
+    try:
+        d = d.encode("idna").decode("ascii") if any(ord(c) > 127 for c in d) else d
+    except UnicodeError:
+        raise VpsError("в имени домена недопустимые знаки")
+    if not _RX_DOMAIN.fullmatch(d) or d.count(".") < 2:
+        raise VpsError("нужен поддомен своего домена, например t.example.ru")
+    return d
+
+
+def xdns_password(rnd=None) -> str:
+    import secrets
+    return (rnd or secrets.SystemRandom()).choice("abcdefghjkmnpqrstuvwxyz") + secrets.token_urlsafe(18)
+
+
+def xdns_server_config(domain: str, uuid: str, password: str, port: int = XDNS_PORT, listen: str = "0.0.0.0") -> dict:
+    """Настройки отдельной службы Xray DNS-туннеля. В скрипт идут с переменными оболочки, в проверку — с настоящими."""
+    from . import links
+    mask = links.xdns_mask(domain, password)
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{"tag": "xdns", "listen": listen, "port": port, "protocol": "vless",
+                      "settings": {"clients": [{"id": uuid}], "decryption": "none"},
+                      "streamSettings": {"network": "kcp", "kcpSettings": {
+                          "mtu": XDNS_SERVER_MTU, "tti": 200, "uplinkCapacity": 4, "downlinkCapacity": 1,
+                          "congestion": True, "readBufferSize": 2, "writeBufferSize": 2}, "finalmask": mask}}],
+        "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+        "routing": {"rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "block"}]},
+    }
+
+
+XDNS_SCRIPT = r"""#!/bin/bash
+# VEDOMYJ VPN: DNS tunnel (Xray XDNS) as a separate small Xray service; the main Xray is not touched.
+say()  { echo "PULT_STEP:$1"; }
+fail() { echo "PULT_ERROR:$1"; exit 1; }
+[ "$(id -u)" = "0" ] || fail root
+X=/usr/local/bin/xray
+NEED=__XDNS_MIN__
+newer() { [ -n "$1" ] && [ "$(printf '%s\n%s\n' "$NEED" "$1" | sort -V | head -n1)" = "$NEED" ]; }
+say xdns
+export DEBIAN_FRONTEND=noninteractive
+HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')
+if ! newer "$HAVE"; then
+  command -v curl >/dev/null 2>&1 || fail xdns_xray
+  bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/tmp/pult-xray-install.log 2>&1 || fail xdns_xray
+  HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')
+  newer "$HAVE" || fail xdns_xray
+fi
+if ! command -v iptables >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then apt-get install -y -qq iptables >/dev/null 2>&1
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q iptables >/dev/null 2>&1
+  elif command -v yum >/dev/null 2>&1; then yum install -y -q iptables >/dev/null 2>&1; fi
+  command -v iptables >/dev/null 2>&1 || fail xdns_fw
+fi
+systemctl stop vedomyj-xdns >/dev/null 2>&1 || true
+# someone else's DNS server on a public address: redirecting port 53 would break it
+ss -Hlun 2>/dev/null | awk '{print $4}' | grep -E ':53$' | grep -vE '^(127\.|\[::1\]|\[?::ffff:127\.)' | grep -q . && fail xdns_dns53
+ss -Hlun 2>/dev/null | awk '{print $4}' | grep -qE ':__PORT__$' && fail xdns_port
+G=nogroup; getent group nogroup >/dev/null 2>&1 || G=nobody
+mkdir -p /usr/local/etc/xray-xdns
+cat > /usr/local/etc/xray-xdns/config.json <<'JSON'
+__CONFIG__
+JSON
+chown root:$G /usr/local/etc/xray-xdns/config.json; chmod 640 /usr/local/etc/xray-xdns/config.json
+XRAY_LOCATION_ASSET=/usr/local/share/xray $X run -test -c /usr/local/etc/xray-xdns/config.json >/tmp/pult-xdns-test.log 2>&1 || fail xdns_config
+cat > /usr/local/sbin/vedomyj-xdns-nat <<'NAT'
+#!/bin/sh
+# VEDOMYJ VPN: external UDP 53 -> __PORT__ (DNS tunnel), only on the interface with the default route.
+IF=__IFACE__
+[ -n "$IF" ] || IF=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}')
+[ -n "$IF" ] || exit 0
+R="-i $IF -p udp --dport 53 -j REDIRECT --to-ports __PORT__"
+case "$1" in
+  add) iptables -t nat -C PREROUTING $R 2>/dev/null || iptables -t nat -I PREROUTING $R
+       if command -v ip6tables >/dev/null 2>&1; then ip6tables -t nat -C PREROUTING $R 2>/dev/null || ip6tables -t nat -I PREROUTING $R 2>/dev/null; fi ;;
+  del) while iptables -t nat -D PREROUTING $R 2>/dev/null; do :; done
+       if command -v ip6tables >/dev/null 2>&1; then while ip6tables -t nat -D PREROUTING $R 2>/dev/null; do :; done; fi ;;
+esac
+exit 0
+NAT
+chmod 755 /usr/local/sbin/vedomyj-xdns-nat
+cat > /etc/systemd/system/vedomyj-xdns.service <<UNIT
+[Unit]
+Description=VEDOMYJ VPN DNS tunnel (Xray XDNS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=nobody
+Group=$G
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+ExecStartPre=+/usr/local/sbin/vedomyj-xdns-nat add
+ExecStart=$X run -c /usr/local/etc/xray-xdns/config.json
+ExecStopPost=+/usr/local/sbin/vedomyj-xdns-nat del
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+  ufw allow 53/udp >/dev/null 2>&1; ufw allow __PORT__/udp >/dev/null 2>&1
+fi
+if command -v firewall-cmd >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port=53/udp >/dev/null 2>&1; firewall-cmd --permanent --add-port=__PORT__/udp >/dev/null 2>&1
+  firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+systemctl daemon-reload
+systemctl enable vedomyj-xdns >/dev/null 2>&1 || true
+systemctl restart vedomyj-xdns >/dev/null 2>&1
+sleep 2
+systemctl is-active --quiet vedomyj-xdns || fail xdns_service
+echo "PULT_RESULT:__PORT__|$HAVE"
+"""
+
+
+def xdns_script(domain: str, uuid: str, password: str, iface: str = "") -> str:
+    """Скрипт DNS-туннеля. Значения проверяются строго — они попадают в скрипт оболочки и настройки Xray.
+    iface — только для проверки на GitHub (сетевое пространство); на сервере берётся интерфейс маршрута по умолчанию."""
+    import json
+    from . import links
+    domain = check_domain(domain)
+    if not re.fullmatch(_RX_UUID, uuid or "") or not _RX_SECRET.fullmatch(password or "") \
+            or (iface and not _RX_IFACE.fullmatch(iface)):
+        raise VpsError("неверные параметры DNS-туннеля")
+    cfg = json.dumps(xdns_server_config(domain, uuid, password), separators=(",", ":"), ensure_ascii=True)
+    need = ".".join(str(x) for x in links.XDNS_MIN)
+    return (XDNS_SCRIPT.replace("__CONFIG__", cfg).replace("__PORT__", str(XDNS_PORT))
+            .replace("__XDNS_MIN__", need).replace("__IFACE__", iface))
+
+
+def parse_xdns_result(result: str) -> tuple[int, str]:
+    """Ответ скрипта: «порт|версия Xray»."""
+    m = re.fullmatch(r"(\d{2,5})\|([0-9][0-9.]{2,20})", (result or "").strip())
+    if not m:
+        raise VpsError("сервер прислал непонятный ответ")
+    return int(m.group(1)), m.group(2)
+
+
+def make_xdns_link(domain: str, uuid: str, password: str, name: str, resolvers=XDNS_RESOLVERS) -> str:
+    """Ссылка на DNS-туннель: адрес — первый DNS-сервер (сам сервер при белых списках недоступен),
+    в маскировке fm — домен, пароль и все DNS-серверы."""
+    import json
+    from . import links
+    domain = check_domain(domain)
+    if not re.fullmatch(_RX_UUID, uuid or "") or not _RX_SECRET.fullmatch(password or "") or not resolvers:
+        raise VpsError("неверные параметры DNS-туннеля")
+    host, _, port = resolvers[0].rpartition(":")
+    fm = json.dumps(links.xdns_mask(domain, password, list(resolvers)), separators=(",", ":"), ensure_ascii=True)
+    hp = f"[{host}]" if ":" in host else host
+    return (f"vless://{uuid}@{hp}:{int(port)}?encryption=none&type=kcp&security=none&fm={quote(fm, safe='')}"
+            f"#{quote(name)}")

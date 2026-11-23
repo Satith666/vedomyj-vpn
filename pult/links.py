@@ -235,7 +235,7 @@ def _truthy(v) -> bool:
 # ---------- Finalmask (параметр fm в ссылках, Xray 26.3.27+) ----------
 
 FM_TCP = frozenset(("fragment", "header-custom", "sudoku"))
-FM_UDP = frozenset(("header-custom", "noise", "salamander", "sudoku", "mkcp-legacy", "realm", "udphop"))
+FM_UDP = frozenset(("header-custom", "noise", "salamander", "sudoku", "mkcp-legacy", "realm", "udphop", "xdns"))
 FM_MAX = 8192
 PORTS_RE = re.compile(r"^\d{1,5}(-\d{1,5})?(,\d{1,5}(-\d{1,5})?)*$")
 
@@ -260,6 +260,47 @@ def clean_finalmask(obj) -> dict:
     if isinstance(qp, dict) and qp:
         out["quicParams"] = {k: v for k, v in qp.items() if isinstance(k, str) and isinstance(v, (str, int, float, bool, dict))}
     return out
+
+
+# ---------- DNS-туннель (Finalmask xdns, ядро 26.10.21+): mKCP внутри DNS-запросов к своему домену ----------
+
+XDNS_MIN = (26, 10, 21)    # с этой версии настройки xdns: domains[{names…}], resolvers[{addrs…}]
+XDNS_EDNS = 1232
+
+
+def xdns_mtu(domain: str) -> int:
+    """Размер пакета mKCP клиента: запрос — это имя до 255 байт, и чем длиннее свой домен, тем меньше места.
+    Документация Xray советует 130; оставляем запас на шифрование (AES-128-GCM) и длинные домены."""
+    n = len(domain or "")
+    return 110 if n <= 20 else 96 if n <= 32 else 80 if n <= 44 else 64
+
+
+def xdns_kcp(domain: str) -> dict:
+    """Настройки mKCP клиента для DNS-туннеля (tti 200 — совет документации; узкий канал, без «потопа» повторов)."""
+    return {"mtu": xdns_mtu(domain), "tti": 200, "uplinkCapacity": 1, "downlinkCapacity": 4,
+            "congestion": True, "readBufferSize": 2, "writeBufferSize": 2}
+
+
+def xdns_mask(domain: str, password: str, resolvers=None) -> dict:
+    """Finalmask DNS-туннеля: внутри — шифрование mKCP (AES-128-GCM с паролем), снаружи — DNS-запросы к домену.
+    resolvers — адреса DNS «хост:порт» (только у клиента)."""
+    xd: dict = {"domains": [{"names": [domain], "types": [16], "edns0": XDNS_EDNS}]}
+    if resolvers:
+        xd["resolvers"] = [{"addrs": [f"udp://{r}" for r in resolvers]}]
+    return {"udp": [{"type": "mkcp-legacy", "settings": {"header": "", "value": password}},
+                    {"type": "xdns", "settings": xd}]}
+
+
+def xdns_domain_of(ss: dict) -> str:
+    """Домен DNS-туннеля сервера или '' — это не DNS-туннель."""
+    for item in ((ss or {}).get("finalmask") or {}).get("udp") or []:
+        if item.get("type") == "xdns":
+            for d in (item.get("settings") or {}).get("domains") or []:
+                names = d.get("names") if isinstance(d, dict) else None
+                if names and isinstance(names[0], str):
+                    return names[0]
+            return "?"
+    return ""
 
 
 def parse_fm(value: str) -> dict:
@@ -384,6 +425,9 @@ def build_stream(p: dict, address: str, default_security: str = "none") -> dict:
     fm = parse_fm(p.get("fm") or p.get("finalmask") or "")
     if fm:
         ss["finalmask"] = fm  # своя маскировка сервера (Finalmask): ядро 26.3.27+, у старого — без неё
+        dom = xdns_domain_of(ss) if net == "kcp" else ""
+        if dom:
+            ss["kcpSettings"] = xdns_kcp(dom)  # DNS-туннель: маленькие пакеты mKCP, свои настройки скорости
     return ss
 
 
