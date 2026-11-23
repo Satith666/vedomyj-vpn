@@ -64,6 +64,11 @@ jobs:
         if: always()
         run: python3 build/proto_lab.py /usr/local/bin/xray
 
+      - name: Программа целиком на настоящем ядре (без TUN)
+        if: always()
+        timeout-minutes: 10
+        run: python3 build/e2e_live.py --rounds proxy
+
   android:
     name: Android
     runs-on: ubuntu-latest

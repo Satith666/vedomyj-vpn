@@ -63,10 +63,21 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python field_check.py --ci
 
+      # программа целиком на настоящем ядре: свои серверы VLESS (REALITY и простой) на этой машине, подключение,
+      # 75 секунд запросов к сайту — без TUN и в TUN каждым движком; падения ядра и движка TUN — ошибка
+      - name: Подключение целиком (настоящее ядро, TUN, мгновенное переключение)
+        if: success() || failure()
+        timeout-minutes: 25
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python build/e2e_live.py
+
       - name: Отчёт
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-report
-          path: data/reports/
+          path: |
+            data/reports/
+            e2e-report.txt
           if-no-files-found: ignore

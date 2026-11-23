@@ -18,3 +18,7 @@ android/keystore/
 build/release_key.json
 node_modules/
 package-lock.json
+
+# настоящая проверка подключения (build/e2e_live.py)
+build/e2e-cores/
+e2e-report.txt
