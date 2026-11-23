@@ -60,6 +60,10 @@ jobs:
       - name: Скрипт мастера, подключение к своему серверу и мост
         run: sudo python3 build/server_check.py
 
+      - name: Опыт — свой протокол (только для сведения)
+        if: always()
+        run: python3 build/proto_lab.py /usr/local/bin/xray
+
   android:
     name: Android
     runs-on: ubuntu-latest
