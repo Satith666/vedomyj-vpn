@@ -638,6 +638,65 @@ def check_warp_xray(paths: xray.Paths, acct: dict | None) -> None:
                  f"via chain: {res[True]}, chain to nowhere: {res[False] or '—'}")))
 
 
+def check_xdns(paths: xray.Paths) -> None:
+    """1.25: DNS-туннель (XDNS) на этом компьютере по-настоящему: ключ шифрования VLESS от настоящего ядра,
+    служба туннеля и клиент по ссылке программы (в ссылке — публичный адрес, как у человека) на одной машине."""
+    from pult import vps
+    ver = xray.xray_version(paths, paths.xray) or ""
+    if xray._ver(ver) < links.XDNS_MIN:
+        add("info", T(f"DNS-туннель: ядро {ver or '?'} старое (нужно 26.10.21+)", f"DNS tunnel: core {ver or '?'} is old (26.10.21+ is needed)"))
+        return
+    out = subprocess.run([paths.xray, "vlessenc"], capture_output=True, text=True, timeout=30,
+                         creationflags=xray.NO_WINDOW).stdout
+    import re as _re
+    encs = _re.findall(r'"encryption": *"([^"]+)"', out)
+    decs = _re.findall(r'"decryption": *"([^"]+)"', out)
+    i = next((k for k, e in enumerate(encs) if len(e) < 300), -1)
+    if i < 0 or i >= len(decs):
+        add("error", T("DNS-туннель: ядро не создало ключ шифрования VLESS", "DNS tunnel: the core did not make a VLESS key"), out[-200:])
+        return
+    enc, dec = encs[i], decs[i]
+    domain, uid, pw = "t.vedomyj.test", "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", vps.xdns_password()
+    sport, cport = netutil.find_free_ports(2, start=24300)
+    scfg = vps.xdns_server_config(domain, uid, pw, decryption=dec, port=sport, listen="127.0.0.1")
+    link = vps.make_xdns_link(domain, uid, pw, enc, "CI", resolvers=(f"127.0.0.1:{sport}",), address="77.88.8.8")
+    srv = links.parse_link(link)
+    ccfg = {"log": {"loglevel": "warning"},
+            "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": cport, "protocol": "http", "settings": {}}],
+            "outbounds": xray.proxy_outbounds(srv, "proxy", False, ver) + [{"tag": "direct", "protocol": "freedom"}],
+            "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "proxy"}]}}
+    for name, cfg in (("server", scfg), ("client", ccfg)):
+        ok, err = xray.check_config(paths, cfg, os.path.join(paths.data_dir, f"field-check-xdns-{name}.json"))
+        if not ok:
+            add("error", T(f"DNS-туннель: ядро не приняло настройки ({name})", f"DNS tunnel: the core rejected the settings ({name})"), err)
+            return
+    add("ok", T("DNS-туннель: ядро принимает настройки (публичный адрес, шифрование VLESS, xdns)",
+                "DNS tunnel: the core accepts the settings (public address, VLESS encryption, xdns)"))
+    procs = []
+    try:
+        for name, cfg, wait in (("server", scfg, []), ("client", ccfg, [cport])):
+            p = xray.XrayProcess(paths)
+            p.start(cfg, os.path.join(paths.data_dir, f"field-check-xdns-{name}.json"), wait_for=wait)
+            procs.append(p)
+        time.sleep(1.5)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{cport}",
+                                                                          "https": f"http://127.0.0.1:{cport}"}))
+        code, t0 = 0, time.time()
+        for _ in range(2):
+            try:
+                with opener.open("https://www.gstatic.com/generate_204", timeout=40) as r:
+                    code = r.status
+                break
+            except OSError as exc:
+                code = str(exc)[:120]
+        add("ok" if code == 204 else "error", T("DNS-туннель на этом компьютере: сайт открывается через туннель",
+                                                "DNS tunnel on this computer: a site opens through the tunnel"),
+            f"{code}, {time.time() - t0:.1f} s")
+    finally:
+        for p in procs:
+            p.stop()
+
+
 def check_dht() -> None:
     """1.22: «Семья» через настоящую сеть торрентов — запись BEP 44 кладётся и читается другим клиентом."""
     from pult import dht
@@ -1070,6 +1129,8 @@ def main() -> None:
         guard("AmneziaWG", lambda: check_awg(paths, live=CI))
     guard("WARP", lambda: check_warp_xray(paths, check_warp(paths, live=CI and IS_WINDOWS)) if paths.xray_exists()
           else check_warp(paths, live=CI and IS_WINDOWS))
+    if paths.xray_exists():
+        guard(T("DNS-туннель", "DNS tunnel"), lambda: check_xdns(paths))
     guard(T("Семья: сеть торрентов", "Family: torrent network"), check_dht)
 
     section(T("Windows", "Windows"))
