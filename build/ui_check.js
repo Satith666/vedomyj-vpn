@@ -233,6 +233,38 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   ok(famSw === "true", "Семья: «Посылки доставляются сами» включено по умолчанию", famSw);
   await page.evaluate(() => go("home"));
 
+  // 5ж. DNS-туннель (эксперимент): выключен по умолчанию; включили — у своего сервера кнопка, окно с записями домена
+  await page.evaluate(() => go("pro"));
+  await page.waitForTimeout(300);
+  const xSw0 = await page.$eval('[data-pset="exp_xdns"]', (el) => el.getAttribute("aria-checked")).catch(() => "");
+  await page.evaluate(() => go("share"));
+  await page.waitForTimeout(600);
+  const xBtn0 = await page.locator("[data-vxdns]").count();
+  await page.evaluate(() => go("pro"));
+  await page.waitForTimeout(300);
+  await page.click('[data-pset="exp_xdns"]');
+  await page.waitForTimeout(800);
+  await page.evaluate(() => go("share"));
+  await page.waitForSelector("[data-vxdns]", { timeout: 10000 }).catch(() => null);
+  const xBtn1 = await page.locator("[data-vxdns]").count();
+  let recs = "";
+  if (xBtn1) {
+    await page.click("[data-vxdns]");
+    await page.waitForSelector("#xDom");
+    await page.fill("#xDom", "Example.RU");
+    await page.waitForTimeout(200);
+    recs = (await page.textContent("#xRecs")).replace(/\s+/g, " ");
+    await page.locator(".modal [data-close]").first().click();
+  }
+  await page.evaluate(() => go("pro"));
+  await page.waitForTimeout(300);
+  await page.click('[data-pset="exp_xdns"]');
+  await page.waitForTimeout(500);
+  await page.evaluate(() => go("home"));
+  ok(xSw0 === "false" && xBtn0 === 0 && xBtn1 >= 1 && /tns\.example\.ru/.test(recs) && /t\.example\.ru/.test(recs) && /203\.0\.113\.10/.test(recs),
+    "DNS-туннель: выключен по умолчанию; включён — кнопка у своего сервера, записи для регистратора с адресом сервера",
+    `${xSw0} ${xBtn0} ${xBtn1} ${recs.slice(0, 90)}`);
+
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
   const PAGES = ["home", "status", "more", "features", "zapret", "byedpi", "services", "routes", "traffic", "updates", "settings",

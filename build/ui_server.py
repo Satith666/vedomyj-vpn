@@ -29,6 +29,8 @@ def main() -> None:
     ui = UIServer(os.path.join(ROOT, "ui"), "tok")
     e = Engine(app, ui.notify)
     e._fam_dht_loop_on = False  # «Семья» через сеть торрентов — без настоящей сети
+    e.settings["vps_hosts"] = [{"id": "v1", "name": "Germany", "host": "203.0.113.10", "port": 22, "user": "root",
+                                "friends": []}]  # свой сервер для окна (без настоящего SSH)
     ui.engine = e
     e.settings.update(ping_host=f"127.0.0.1:{st.WEB}", socks_port=netutil.find_free_ports(1, 35000)[0],
                       http_port=netutil.find_free_ports(1, 35100)[0], system_proxy=False, autopilot=True, mode="vpn")

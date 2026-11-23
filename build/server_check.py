@@ -132,7 +132,7 @@ UNBOUND_CONF = """server:
   qname-minimisation: no
   username: ""
   chroot: ""
-  directory: "/tmp"
+  directory: "/etc/unbound"
   pidfile: ""
   use-syslog: no
   verbosity: 2
@@ -144,14 +144,18 @@ stub-zone:
 """
 
 
-def fetch(port: int, url: str, timeout: float = 120.0) -> tuple[int, int, float]:
-    """Скачать через прокси: (код ответа, байт, секунд)."""
+BIG_URLS = ("https://proof.ovh.net/files/1Mb.dat", "https://speed.cloudflare.com/__down?bytes=1000000")
+
+
+def fetch(port: int, url: str, timeout: float = 120.0, limit: int = 0) -> tuple[int, int, float]:
+    """Скачать через прокси: (код ответа, байт, секунд). limit — сколько байт прочитать (0 — всё)."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{port}",
                                                                       "https": f"http://127.0.0.1:{port}"}))
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0 Safari/537.36"})
     t0 = time.time()
     try:
-        with opener.open(url, timeout=timeout) as r:
-            return r.status, len(r.read()), time.time() - t0
+        with opener.open(req, timeout=timeout) as r:
+            return r.status, len(r.read(limit) if limit else r.read()), time.time() - t0
     except urllib.error.HTTPError as exc:
         return exc.code, 0, time.time() - t0
     except OSError:
@@ -164,6 +168,16 @@ def xdns_client_cfg(link: str, port: int) -> dict:
             "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": port, "protocol": "http", "settings": {}}],
             "outbounds": [dict(srv.outbound, tag="proxy"), {"tag": "direct", "protocol": "freedom"}],
             "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "proxy"}]}}
+
+
+def speed(port: int, what: str) -> None:
+    """200 КБ через туннель (первый из файлов для замера, что ответил) и скорость."""
+    for url in BIG_URLS:
+        code, n, sec = fetch(port, url, timeout=240, limit=200000)
+        if code == 200:
+            break
+    ok(code == 200 and n == 200000, f"DNS-туннель: скачивание 200 КБ {what}",
+       f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с")
 
 
 def xdns_diag(port: int, ub: subprocess.Popen) -> None:
@@ -216,11 +230,13 @@ def xdns_check() -> None:
         procs.append(run_xray(xdns_client_cfg(link, 21800), "DNS-туннель напрямую"))
         code, n, sec = fetch(21800, URL)
         ok(code == 204, "DNS-туннель: сайт открывается (напрямую на сервер)", f"ответ {code}, {sec:.1f} с")
+        if code == 204:
+            speed(21800, "напрямую на сервер")
         # б) через DNS-сервер-посредник: обычные DNS-запросы к своему домену, как в жизни
         sh("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unbound >/dev/null 2>&1; systemctl stop unbound >/dev/null 2>&1")
-        with open("/tmp/vedomyj-unbound.conf", "w") as f:
+        with open("/etc/unbound/vedomyj-ci.conf", "w") as f:  # AppArmor не даёт unbound читать /tmp
             f.write(UNBOUND_CONF)
-        ub = subprocess.Popen(["unbound", "-d", "-c", "/tmp/vedomyj-unbound.conf"], stdout=subprocess.DEVNULL,
+        ub = subprocess.Popen(["unbound", "-d", "-c", "/etc/unbound/vedomyj-ci.conf"], stdout=subprocess.DEVNULL,
                               stderr=subprocess.PIPE, text=True)
         procs.append(ub)
         time.sleep(2)
@@ -229,9 +245,7 @@ def xdns_check() -> None:
         code, n, sec = fetch(21801, URL)
         ok(code == 204, "DNS-туннель: сайт открывается через DNS-сервер-посредник (unbound)", f"ответ {code}, {sec:.1f} с")
         if code == 204:
-            code, n, sec = fetch(21801, "https://speed.cloudflare.com/__down?bytes=200000", timeout=240)
-            ok(code == 200 and n == 200000, "DNS-туннель: скачивание 200 КБ через посредник",
-               f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с")
+            speed(21801, "через посредник (unbound)")
         else:
             xdns_diag(port, ub)
         # б2) посредник-пересыльщик (dnsmasq): так устроен DNS многих провайдеров и роутеров
@@ -246,9 +260,7 @@ def xdns_check() -> None:
         code, n, sec = fetch(21804, URL)
         ok(code == 204, "DNS-туннель: сайт открывается через DNS-пересыльщик (dnsmasq)", f"ответ {code}, {sec:.1f} с")
         if code == 204:
-            code, n, sec = fetch(21804, "https://speed.cloudflare.com/__down?bytes=200000", timeout=240)
-            ok(code == 200 and n == 200000, "DNS-туннель: скачивание 200 КБ через пересыльщик",
-               f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с")
+            speed(21804, "через пересыльщик (dnsmasq)")
         # в) «другой компьютер»: запросы на порт 53 сервера (перенаправление iptables на службу)
         link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=("10.210.0.1:53",))
         path = os.path.join(tempfile.gettempdir(), "server-check-xdns-ns.json")
