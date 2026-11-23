@@ -249,6 +249,11 @@ class UIServer:
         if action == "auto":
             if not e.settings["subscriptions"] and not e.servers:
                 raise ActionError("Сначала добавь подписку.")
+            if "sub" in a:  # «Автонастройка ▾» → подписка: искать только в ней (и «Авто» потом держится её)
+                try:
+                    e.set_auto_scope(str(a.get("sub") or "")[:64])
+                except RuntimeError as exc:
+                    raise ActionError(str(exc)) from exc
             return task("Автонастройка", e.auto_setup)
         if action == "add_sub":
             url = str(a.get("url", "")).strip()

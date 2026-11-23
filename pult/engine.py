@@ -1036,11 +1036,44 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     ENGINE_PICKS = ("auto", "xray", "hy2", "singbox", "awg")
 
     def pool(self) -> list[Server]:
-        """Серверы выбранного движка («Движок» на главной): Авто — все, кроме AmneziaWG (его включают отдельно)."""
+        """Серверы выбранного движка («Движок» на главной): Авто — все, кроме AmneziaWG (его включают отдельно).
+        Выбрана подписка у «Автонастройки» (auto_scope) — только её серверы, пока среди них есть рабочие."""
         pick = self.settings.get("engine_pick", "auto")
         if pick not in self.ENGINE_PICKS or pick == "auto":
-            return [s for s in self.servers if s.engine != "awg" and self._exp_ok(s)]
-        return [s for s in self.servers if links.kind_of(s) == pick and self._exp_ok(s)]
+            lst = [s for s in self.servers if s.engine != "awg" and self._exp_ok(s)]
+        else:
+            lst = [s for s in self.servers if links.kind_of(s) == pick and self._exp_ok(s)]
+        scope = self.auto_scope()
+        if scope:
+            mine = [s for s in lst if s.sub_id == scope]
+            if any((s.result or {}).get("ok") or not s.result for s in mine if s.supported and not s.stub):
+                return mine  # ещё не проверенные тоже держим в подписке: проверка решит
+        return lst
+
+    def auto_scope(self) -> str:
+        """Подписка, внутри которой ищет «Автонастройка» и меняет серверы «Авто» ('' — все). Удалённая — не в счёт."""
+        scope = str(self.settings.get("auto_scope") or "")
+        if not scope:
+            return ""
+        return scope if any(s.sub_id == scope for s in self.servers) else ""
+
+    def set_auto_scope(self, scope: str) -> None:
+        scope = str(scope or "")
+        if scope and not any(s.sub_id == scope for s in self.servers):
+            raise RuntimeError("Такой подписки нет — обнови список.")
+        self.settings["auto_scope"] = scope
+        self.save()
+        name = self._sub_name(scope) if scope else ""
+        self.log(f"Автонастройка: ищет в подписке «{name}»." if scope else "Автонастройка: ищет во всех подписках.")
+        self.notify("status")
+
+    def _sub_name(self, sub_id: str) -> str:
+        if sub_id == "manual":
+            return "Мои серверы"
+        for sub in self.settings.get("subscriptions") or []:
+            if isinstance(sub, dict) and sub.get("id") == sub_id:
+                return self.sub_name(sub)
+        return sub_id
 
     def _exp_ok(self, s: Server) -> bool:
         """Эксперименты (DNS-туннель, свой протокол) попадают в «Авто», только когда включены."""
@@ -3508,7 +3541,13 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         elif not self.servers:
             raise RuntimeError("Сначала добавь подписку — кнопка «Добавить подписку» на главной.")
         self.check_stop()
-        working = self.test_all()
+        scope = self.auto_scope()
+        mine = [x for x in self.servers if x.sub_id == scope] if scope else None
+        working = self.test_all(mine)
+        if scope and not working:
+            # в выбранной подписке ничего не работает — без VPN не оставляем: проверяем остальные
+            self.log(f"Автонастройка: в подписке «{self._sub_name(scope)}» ни один сервер не отвечает — проверяю остальные.")
+            working = self.test_all([x for x in self.servers if x.sub_id != scope])
         if not working:
             raise RuntimeError("Ни один сервер не отвечает. Проверь интернет или обнови подписку.")
         try:
@@ -5795,7 +5834,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
                                                "dpi_update_hours", "leak_protection", "dns_encrypted", "block_ads",
                                                "lan_socks_port", "lan_http_port", "lan_auth", "lan_user", "lan_pass",
                                                "mask_auto", "multi_enabled", "whitelist_auto", "background", "block_quic",
-                                               *self.AUTO_FLAGS)},
+                                               "auto_scope", *self.AUTO_FLAGS)},
             "lan_ip": netutil.lan_ip() if s.get("allow_lan") else "",
             "backup": self._backup_info(),
             "updates": {"xray": self.xray_ver, "xray_exists": self.paths.xray_exists(),

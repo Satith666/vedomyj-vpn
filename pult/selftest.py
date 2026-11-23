@@ -5127,6 +5127,58 @@ def t_tun_fallback():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@case("Автонастройка по одной подписке: проверяет только её, «Авто» держится её, ничего не работает — берёт остальные")
+def t_auto_scope():
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    old_check_all = engmod.services.check_all
+    try:
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.startup()
+        q = "?security=reality&pbk=K&sni=a.com&type=tcp"
+        e.add_servers(f"vless://71111111-1111-4111-8111-111111111111@sa1.example:443{q}#A1\n"
+                      f"vless://72222222-2222-4222-8222-222222222222@sa2.example:443{q}#A2\n"
+                      f"vless://73333333-3333-4333-8333-333333333333@sb1.example:443{q}#B1")
+        wait_idle(e)
+        by = {x.name: x for x in e.servers}
+        by["B1"].sub_id = "subB"  # будто из другой подписки
+        e.test_all()
+        check(e.auto_scope() == "" and len(e.pool()) == 3, "по умолчанию — все подписки")
+        e.set_auto_scope("subB")
+        check(all(x.sub_id == "subB" for x in e.pool()) and e.best() is by["B1"], f"только своя подписка: {[x.name for x in e.pool()]}")
+        check(e.state()["settings"]["auto_scope"] == "subB", "окно видит выбранную подписку")
+        by["B1"].result = dict(by["B1"].result, ok=False)
+        check(len(e.pool()) == 3, "в подписке ничего не работает — «Авто» берёт остальные, а не остаётся без VPN")
+        by["B1"].result["ok"] = True
+        try:
+            e.set_auto_scope("nope")
+            check(False, "несуществующая подписка принята")
+        except RuntimeError:
+            pass
+        # «Автонастройка» в подписке, где всё мёртвое: проверяет остальные и подключается к ним
+        engmod.services.check_all = lambda paths, svcs=None, on_result=None, stop_event=None: {}
+        e.update_geo = lambda *a, **k: None
+        DEAD.add("sb1.example")
+        e.auto_setup()
+        check(e.connected and e.current.name in ("A1", "A2"), f"подписка не работает — подключено к другой: {e.current.name if e.current else None}")
+        DEAD.discard("sb1.example")
+        # из окна: «Автонастройка ▾» → «Во всех подписках»
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        wait_idle(e)
+        e.auto_setup = lambda: None
+        ui.dispatch("auto", {"sub": ""})
+        wait_idle(e)
+        check(e.auto_scope() == "" and e.settings["auto_scope"] == "", "выбор «во всех подписках» из окна")
+    finally:
+        engmod.services.check_all = old_check_all
+        DEAD.discard("sb1.example")
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @case("Фон: пока VPN работает, программа не запускает других программ (10 минут за секунду)")
 def t_quiet_background():
     import subprocess as sp

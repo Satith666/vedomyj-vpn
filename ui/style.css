@@ -941,3 +941,101 @@ textarea.input { height: auto; }
 .home-selects .dd-btn { height: 36px; padding: 0 10px 0 12px; gap: 6px; }
 .home-selects .dd-btn > span { display: none; }   /* на главном — только выбранное, пояснение — в списке и в «Дополнительно» */
 .home-selects .dd-btn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- 1.27: тот же главный экран, только компактнее (меньше кнопка, значки, отступы и строки) ---------- */
+.con-grid { gap: 12px; }
+.con-card { padding: 12px 14px; border-radius: 14px; }
+.con-main { padding: 14px 16px; gap: 10px; }
+.con-main .hero-top { gap: 12px; }
+.con-main .power { width: 68px; height: 68px; margin: 3px; }
+.con-main .power .glyph .i { width: 26px; height: 26px; }
+.con-main .power.is-on { box-shadow: 0 0 0 5px var(--good-soft), 0 0 22px rgba(63, 208, 143, .18); }
+.con-main .power.is-weak { box-shadow: 0 0 0 5px var(--warn-soft); }
+.con-main .hero-state { font-size: 21px; }
+.con-main .hero-server { margin-top: 3px; font-size: 13px; }
+.auto-split { display: inline-flex; align-self: center; border: 1px solid var(--line-2); border-radius: 9px; flex: none; }
+.auto-split .hero-auto { border: 0; border-radius: 8px 0 0 8px; height: 30px; padding: 0 10px; font-size: 12.5px; }
+.auto-split .hero-auto small { margin-left: 4px; font-size: 11.5px; color: var(--muted); font-weight: 500; max-width: 110px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-split .m-dd { width: 24px; border-left: 1px solid var(--line-2); border-radius: 0 8px 8px 0; }
+.con-main .route { padding: 7px 10px 8px; border-radius: 10px; }
+.con-main .rt-title { font-size: 11px; margin-bottom: 5px; }
+.con-main .rt-ico { width: 26px; height: 26px; border-radius: 7px; }
+.con-main .rt-ico .i { width: 14px; height: 14px; }
+.con-main .rt-text b { font-size: 12px; }
+.con-main .rt-text small { font-size: 11px; }
+.con-main .stats { gap: 6px; }
+.con-main .stats > div { padding: 6px 10px; border-radius: 9px; }
+.con-main .stats dt { font-size: 11px; }
+.con-main .stats dd { font-size: 16px; margin-top: 1px; }
+.con-main .stats dd small { font-size: 11px; }
+.home-selects { gap: 6px; }
+.home-selects .sel-label { font-size: 11px; }
+.home-selects .sel-wrap { gap: 3px; }
+.home-selects .dd-btn { height: 30px; font-size: 13px; border-radius: 8px; }
+.con-foot { font-size: 12px; }
+.con-title { font-size: 14px; }
+.con-title-row { margin-bottom: 6px; }
+.con-title-row .btn-small { height: 26px; padding: 0 9px; font-size: 12px; }
+.m-list .m-opt { min-height: 32px; padding: 3px 10px; gap: 9px; }
+.m-list .m-dot { width: 15px; height: 15px; }
+.m-list .m-opt.sel .m-dot::after { width: 7px; height: 7px; }
+.m-list .m-text b { font-size: 13px; min-width: 86px; }
+.m-list .m-text small, .m-list .m-opt .m-text small { font-size: 12px; }
+.m-list .m-dd { width: 30px; }
+.m-list .m-dd .i { width: 14px; height: 14px; }
+.methods.m-list { gap: 2px; }
+.con-toggles { padding: 2px 6px; }
+.tg-row { padding: 5px 6px; gap: 10px; }
+.tg-text b { font-size: 13px; }
+.tg-text small { font-size: 11.5px; }
+.con-toggles .switch-ctl { transform: scale(.82); transform-origin: right center; }
+.con-toggles .tg-dd { width: 24px; height: 24px; }
+.nw-row { gap: 6px; margin-top: -4px; }
+.nw-cell { min-height: 38px; padding: 4px 10px; border-radius: 11px; gap: 8px; }
+.nw-cell > .i { width: 15px; height: 15px; }
+.nw-text b { font-size: 13px; }
+.nw-text small { font-size: 11.5px; }
+.con-side { gap: 10px; }
+.con-more { margin-top: 2px; }
+/* серверы — строки ниже */
+#srvSection .srv { padding-top: 3px; padding-bottom: 3px; }
+#srvSection .srv .icon-btn { width: 28px; height: 28px; }
+#srvSection .sub-head { padding-top: 6px; padding-bottom: 6px; }
+/* переключатели — название и состояние в одну строку, как в «Способе» */
+.con-toggles .tg-row { padding: 3px 6px; min-height: 34px; }
+.con-toggles .tg-text { flex-direction: row; align-items: baseline; gap: 8px; flex: 1 1 auto; }
+.con-toggles .tg-text b { white-space: nowrap; flex: none; }
+.con-toggles .tg-text small { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.con-toggles .tg-text b { min-width: 186px; }   /* состояния — ровной колонкой */
+@media (max-width: 1040px) { .con-toggles .tg-text b { min-width: 0; } }
+/* симметрия: левая карточка и правая колонка одной высоты, края выровнены */
+.con-grid { align-items: stretch; }
+.con-main { height: 100%; box-sizing: border-box; }
+.con-main .nw-row { margin-top: 0; }
+.con-main .con-foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); }
+.con-main .con-foot .con-more { margin: 0 0 0 auto; padding: 2px; }
+.con-side { justify-content: space-between; }
+.con-side > .con-toggles { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: space-around; }
+.con-main { justify-content: space-between; }        /* лишняя высота — поровну между блоками, а не дыркой внизу */
+.con-main .con-foot { margin-top: 0; }
+
+/* Окно уменьшено целиком (html.fit, см. fitWindow в app.js): раскладка — как в широком окне. Правила для узкого окна
+   (@media) смотрят на ширину окна до уменьшения, поэтому здесь они возвращаются к «широким». */
+html.fit .page { padding: 16px 20px 76px; }
+html.fit .con-grid { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+html.fit .selects { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+html.fit .selects > :last-child { grid-column: auto; }
+html.fit .con-main { padding: 14px 16px; }
+html.fit .con-main .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+html.fit .con-main .stats > div:last-child { grid-column: auto; }
+html.fit .rt-row { flex-wrap: nowrap; }
+html.fit .rt-line { display: block; }
+html.fit .nw-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+html.fit .con-toggles .tg-text b { min-width: 186px; }
+html.fit .srv { grid-template-columns: 34px minmax(0, 1fr) 64px 84px 32px; }
+html.fit .srv .proto { display: block; }
+html.fit .hero-top { flex-wrap: wrap; }
+.con-toggles .tg-row { padding-left: 10px; padding-right: 10px; }
+.methods.m-list { gap: 6px; }
+.m-list .m-opt { min-height: 30px; }

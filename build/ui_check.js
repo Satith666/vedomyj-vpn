@@ -204,6 +204,29 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   await page.waitForTimeout(400);
   ok(engPick === "xray", "Движок выбирается прямо в плитке «VPN-сервер»", engPick);
 
+  // 1.27: симметрия — левая карточка и правая колонка одной высоты; «Автонастройка ▾» с выбором подписки
+  const sym = await page.evaluate(() => {
+    const a = document.querySelector(".con-main").getBoundingClientRect();
+    const b = document.querySelector(".con-side").getBoundingClientRect();
+    return [Math.round(a.top - b.top), Math.round(a.bottom - b.bottom)];
+  });
+  await page.click('[data-dd="auto_scope"]');
+  await page.waitForSelector("#popover:not([hidden]) .dd");
+  const scopeItems = await page.$$eval("#popover .dd-item", (els) => els.map((e) => e.textContent.trim()));
+  await page.keyboard.press("Escape");
+  await page.mouse.click(5, 5);
+  await page.waitForTimeout(150);
+  ok(Math.abs(sym[0]) <= 1 && Math.abs(sym[1]) <= 1 && scopeItems.length >= 2 && /Во всех подписках/.test(scopeItems[0]),
+    "Главный экран: колонки ровные (верх и низ на одной линии), «Автонастройка ▾» — выбор подписки", `${sym} | ${scopeItems.join(" / ")}`);
+  // окно уже — главный экран уменьшается целиком, а не перестраивается (масштаб Windows, размер окна)
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.waitForTimeout(300);
+  const fit = await page.evaluate(() => [document.documentElement.classList.contains("fit"), getComputedStyle(document.querySelector(".con-grid")).gridTemplateColumns.split(" ").length]);
+  await page.setViewportSize({ width: 1180, height: 760 });
+  await page.waitForTimeout(300);
+  const unfit = await page.evaluate(() => document.documentElement.classList.contains("fit"));
+  ok(fit[0] === true && fit[1] === 2 && unfit === false, "Узкое окно: та же раскладка в две колонки, только мельче", `${fit} ${unfit}`);
+
   // 5в. «Не работает» и «Белые списки» — ряд из двух одинаковых кнопок
   const nwBox = await page.locator(".nw-row .nw-cell").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().width)));
   await page.click('[data-act="wl_toggle"]');

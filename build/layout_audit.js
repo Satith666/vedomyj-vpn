@@ -6,6 +6,8 @@
 window.__audit = function () {
   const out = [];
   const W = innerWidth;
+  // окно уменьшено целиком (html.fit, zoom): все размеры на экране меньше во столько же раз — и пороги тоже
+  const Z = parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
   const vis = (el) => {
     // всплывающие подсказки (тосты) и плашка «идёт задача… Стоп» висят поверх страницы на время — их не считаем
     if (el.closest && el.closest(".toasts, #toast, #busy")) return false;
@@ -65,10 +67,10 @@ window.__audit = function () {
     if (!tr.length) continue;
     const minX = Math.min(...tr.map((x) => Math.min(x.left - r.left, r.right - x.right)));
     const minY = Math.min(...tr.map((x) => Math.min(x.top - r.top, r.bottom - x.bottom)));
-    const small = r.height < 34;
-    const needX = small ? 6 : el.matches(".card, .modal, section") ? 12 : 9;
+    const small = r.height < 34 * Z;
+    const needX = (small ? 6 : el.matches(".card, .modal, section") ? 12 : 9) * Z;
     if (minX < needX) out.push(["text-edge-x", desc(el) + ` ${minX.toFixed(1)}px`]);
-    if (minY < (small ? 2 : 4)) out.push(["text-edge-y", desc(el) + ` ${minY.toFixed(1)}px`]);
+    if (minY < (small ? 2 : 4) * Z) out.push(["text-edge-y", desc(el) + ` ${minY.toFixed(1)}px`]);
   }
   // 2) управляющие элементы вплотную или внахлёст
   const ctl = [...scope.querySelectorAll("button, .btn, input, select, textarea, a[href], .chip, [data-act]")].filter(vis)
@@ -85,7 +87,7 @@ window.__audit = function () {
       const gapY = Math.max(b.top - a.bottom, a.top - b.bottom);
       if (gapX < 0 && gapY < 0) { out.push(["overlap", desc(ctl[i]) + " ⟷ " + desc(ctl[j])]); continue; }
       const sameRow = gapY < 0, sameCol = gapX < 0;
-      if ((sameRow && gapX < 6) || (sameCol && gapY < 6)) out.push(["tight-gap", desc(ctl[i]) + " ⟷ " + desc(ctl[j]) + ` ${(sameRow ? gapX : gapY).toFixed(1)}px`]);
+      if ((sameRow && gapX < 6 * Z - 0.05) || (sameCol && gapY < 6 * Z - 0.05)) out.push(["tight-gap", desc(ctl[i]) + " ⟷ " + desc(ctl[j]) + ` ${(sameRow ? gapX : gapY).toFixed(1)}px`]);
     }
   }
   return [...new Map(out.map((x) => [x.join("|"), x])).values()];

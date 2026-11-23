@@ -314,6 +314,19 @@ document.addEventListener("scroll", e => {
 }, true);
 addEventListener("resize", () => syncPopover());
 
+/* Окно на ПК не перестраивается, когда меняют его размер или масштаб Windows (100/125/150 %): главный экран
+   рассчитан на ширину FIT_W и в более узком окне уменьшается целиком, как картинка, а не переставляет блоки.
+   Совсем узкое окно (меньше FIT_MIN от расчётной ширины) — как раньше, блоки встают в столбик. */
+const FIT_W = 1120, FIT_MIN = 0.6;
+function fitWindow() {
+  const z = window.innerWidth / FIT_W;
+  const on = z < 1 && z >= FIT_MIN;
+  document.documentElement.classList.toggle("fit", on);
+  document.documentElement.style.zoom = on ? String(Math.round(z * 1000) / 1000) : "";
+}
+addEventListener("resize", fitWindow);
+fitWindow();
+
 function openMenu(anchor, items) {
   const pop = $("#popover");
   pop.className = "popover";
@@ -546,7 +559,12 @@ function renderHero() {
   if (!on && S.filter_on) line += `<span class="ads-chip">${icon("block")}${t("ads_chip")}</span>`;
   if (!on && S.kill_on) line = `<span class="kill-chip">${icon("lock")}${t("kill_chip")}</span>`;
   if (on && S.vpn_until) line += `<span class="timer-chip">${t("vpn_until", { n: Math.max(1, Math.round((S.vpn_until - Date.now() / 1000) / 60)) })}</span>`;
-  const autoBtn = busy("auto") ? stopBtn() : `<button class="btn btn-small hero-auto" data-act="auto">${icon("bolt")}${t("auto")}</button>`;
+  // «Автонастройка ▾»: стрелка — где искать лучший сервер (все подписки или одна)
+  const scope = S.subs.find(x => x.id === (S.settings.auto_scope || ""));
+  const autoBtn = busy("auto") ? stopBtn() : `<span class="auto-split seg-group"><button class="btn btn-small hero-auto" data-act="auto"
+      title="${esc(scope ? t("auto_scope_on", { name: scope.name }) : t("auto_scope_all"))}">${icon("bolt")}${t("auto")}${scope
+      ? `<small>${esc(scope.name)}</small>` : ""}</button><button type="button" class="m-dd" data-dd="auto_scope" aria-haspopup="listbox"
+      aria-expanded="false" aria-label="${esc(t("auto_scope_dd"))}" title="${esc(t("auto_scope_dd"))}">${icon("down")}</button></span>`;
   const hv = healthVerdict();
   const J = S.journal || {};
   const html = `
@@ -566,9 +584,11 @@ function renderHero() {
         ${routeHtml(on, connecting, awgOn, accelRun)}
         <dl class="stats" id="heroStats"></dl>
         <div class="selects home-selects">${connSelects("h")}</div>
+        ${nwRowHtml()}
         <div class="con-foot">
           <button type="button" class="link-btn con-health" data-nav="status"><i class="dot ${hv.cls}"></i>${esc(hv.short)}</button>
           <span class="hint">${esc(t("journal_auto_short", { h: J.auto_hour || 0 }))}</span>
+          <button type="button" class="link-btn con-more" data-nav="more">${t("all_settings")}</button>
         </div>
       </div>
       <div class="con-side">
@@ -578,8 +598,6 @@ function renderHero() {
           <div class="methods m-list" role="radiogroup" aria-labelledby="methodTitle">${methodRows(method)}</div>
         </div>
         <div class="con-card con-toggles">${toggleRows()}</div>
-        ${nwRowHtml()}
-        <button type="button" class="link-btn con-more" data-nav="more">${t("all_settings")}</button>
       </div>
     </div>${whatWorksHtml()}`;
   // пересобираем только если что-то правда поменялось: иначе кнопка под курсором не пересоздаётся
@@ -972,6 +990,18 @@ function renderHome(full) {
   renderDpi();
   renderSrvTools();
   if (!(document.activeElement && document.activeElement.id === "emptyUrl")) renderSubs();
+}
+
+/* «Автонастройка ▾»: где искать лучший сервер — во всех подписках или в одной (там «Авто» потом и меняет серверы). */
+function autoScopeDropdown(anchor) {
+  const cur = S.settings.auto_scope || "";
+  const subs = S.subs.filter(x => x.count);
+  openDropdown(anchor, [{ head: t("auto_scope_head"), first: true, items: [{ id: "", label: t("auto_scope_all_item"), sel: !cur }]
+    .concat(subs.map(x => ({ id: x.id, label: `${x.name} (${x.count})`, sel: cur === x.id }))) }], id => {
+    S.settings.auto_scope = id;
+    renderHero();
+    act("auto", { sub: id }).then(() => scheduleRefresh(50));
+  });
 }
 
 function routeDropdown(anchor) {
@@ -3996,6 +4026,7 @@ document.addEventListener("click", e => {
     if (!pop.hidden && pop._anchor === dd) return closeMenu();
     if (dd.dataset.dd === "dpi") return dpiDropdown(dd);
     if (dd.dataset.dd === "engine") return engineDropdown(dd);
+    if (dd.dataset.dd === "auto_scope") return autoScopeDropdown(dd);
     if (dd.dataset.dd.startsWith("m_")) return methodDropdown(dd, dd.dataset.dd.slice(2));
     return dd.dataset.dd === "route" ? routeDropdown(dd) : connDropdown(dd);
   }
