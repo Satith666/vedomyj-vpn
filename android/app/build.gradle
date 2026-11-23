@@ -4,7 +4,7 @@ plugins {
 
 // ---------- ядро Xray для Android (AndroidLibXrayLite) ----------
 // Скачивается при первой сборке в app/libs и заново — когда здесь меняется версия (coreTag).
-def coreTag = 'v26.7.31'
+def coreTag = 'v26.11.9'
 def coreAar = file('libs/libv2ray.aar')
 def coreMark = file('libs/libv2ray.version')
 if (!coreAar.exists() || !coreMark.exists() || coreMark.text.trim() != coreTag) {

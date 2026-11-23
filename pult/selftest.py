@@ -3719,6 +3719,8 @@ def t_vps_xdns():
           and "REDIRECT --to-ports 5300" in body and "xdns_dns53" in body and "chmod 640" in body,
           "отдельная служба (основной Xray не трогается), порт 53 → 5300, чужой DNS-сервер не ломаем, пароль закрыт")
     check("NEED=26.10.21" in body and "install-release.sh" in body, "старое ядро на сервере обновляется (XDNS — с 26.10.21)")
+    check(cfg["inbounds"][0]["settings"]["decryption"] == "__DEC__" and "vlessenc" in body and 'sed -i "s|__DEC__|$DEC|"' in body,
+          "шифрование VLESS: ключ создаёт сам сервер, закрытая часть остаётся на нём")
     codes = set(re.findall(r"fail (\w+)", vps.XDNS_SCRIPT))
     check(codes and all(c in vps.ERRORS for c in codes), f"у каждой ошибки скрипта есть понятный текст: {codes - set(vps.ERRORS)}")
     for args in (("t.example.ru", "x;reboot", pw), ("t.example.ru", uid, "$(reboot)aaaaaaaaaaaa"), ("t.example.ru", uid, "short")):
@@ -3735,14 +3737,15 @@ def t_vps_xdns():
     if sys.platform != "win32" and shutil.which("bash"):
         r = sp.run(["bash", "-n"], input=body, capture_output=True, text=True)
         check(r.returncode == 0, f"скрипт без ошибок синтаксиса bash: {r.stderr[:200]}")
-    check(vps.parse_xdns_result("5300|26.10.31") == (5300, "26.10.31"), "ответ сервера")
-    for bad in ("5300", "x|26.10.31", "5300|26.10.31|x", "5300|$(id)"):
+    enc = "mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf"
+    check(vps.parse_xdns_result(f"5300|26.10.31|{enc}") == (5300, "26.10.31", enc), "ответ сервера")
+    for bad in ("5300", "5300|26.10.31", "x|26.10.31|" + enc, "5300|26.10.31|x", "5300|$(id)|" + enc, f"5300|26.10.31|{enc};id"):
         try:
             vps.parse_xdns_result(bad)
             check(False, f"непонятный ответ принят: {bad}")
         except vps.VpsError:
             pass
-    link = vps.make_xdns_link("t.example.ru", uid, pw, "VPS · DNS-туннель")
+    link = vps.make_xdns_link("t.example.ru", uid, pw, enc, "VPS · DNS-туннель")
     srv = links.parse_link(link)
     ss = srv.outbound["streamSettings"]
     v = srv.outbound["settings"]["vnext"][0]
@@ -3751,6 +3754,13 @@ def t_vps_xdns():
           and xd["resolvers"] == [{"addrs": ["udp://77.88.8.8:53", "udp://77.88.8.1:53"]}]
           and ss["finalmask"]["udp"][0]["settings"]["value"] == pw and links.is_xdns(srv),
           "ссылка: запросы идут через DNS Яндекса, а не на адрес сервера (при белых списках он закрыт)")
+    check(v["users"][0]["encryption"] == enc and not srv.insecure and srv.supported,
+          "с шифрованием VLESS: новое ядро запускает (без него ядра с 26.7.11 не пускают VLESS без TLS к публичным адресам)")
+    try:
+        vps.make_xdns_link("t.example.ru", uid, pw, "none", "X")
+        check(False, "ссылка без шифрования VLESS принята")
+    except vps.VpsError:
+        pass
     check(ss["kcpSettings"]["mtu"] == links.xdns_mtu("t.example.ru") and ss["kcpSettings"]["tti"] == 200
           and links.xdns_mtu("t.a.ru") > links.xdns_mtu("t." + "x" * 40 + ".ru"), "пакеты mKCP — по длине домена")
     check(xray.needs_new_core(srv, "26.10.10") and not xray.needs_new_core(srv, "26.10.21"), "старое ядро — подсказка обновить")
@@ -3784,7 +3794,7 @@ def t_vps_xdns():
         check(protect.PRO_KEYS.count("exp_xdns") == 1 and settings_mod.DEFAULTS["exp_xdns"] is False,
               "эксперимент выключен по умолчанию и есть в профессиональных настройках")
         e.settings["exp_xdns"] = True
-        scenario["lines"] = ["PULT_STEP:xdns", "PULT_RESULT:5300|26.10.31"]
+        scenario["lines"] = ["PULT_STEP:xdns", f"PULT_RESULT:5300|26.10.31|{enc}"]
         name = e.vps_xdns(vid, "T.Example.RU")
         srv = next(x for x in e.servers if x.name == name)
         sent = scenario["bodies"][-1]

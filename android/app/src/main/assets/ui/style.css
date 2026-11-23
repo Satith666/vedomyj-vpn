@@ -464,3 +464,8 @@ details.card-pad .btns { margin-top: 10px; }
 .nw-res p { margin: 0; }
 .nw-steps { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
 @media (max-width: 340px) { .nw-row { grid-template-columns: 1fr; } }
+.dns-recs { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; font-size: 13px; }
+.dns-recs > div { display: grid; grid-template-columns: 34px 1fr auto 1fr; gap: 6px; align-items: center; padding: 8px 10px;
+  border-radius: 10px; border: 1px solid var(--line); }
+.dns-recs code { overflow-wrap: anywhere; user-select: all; font-size: 12.5px; }
+.dns-recs span { color: var(--muted, inherit); }

@@ -354,8 +354,11 @@ const out = process.argv[3];
   await page.click('[data-nav="pro"]');
   await page.waitForTimeout(500);
   const proTxt = await page.$eval("#proBox", (e) => e.textContent.replace(/\s+/g, " "));
-  for (const w of ["Предохранители", "Автооткат", "Безопасный запуск", "Подбор отпечатка TLS", "Сторож данных", "Память сетей", "Сбор ошибок"])
+  for (const w of ["Предохранители", "Автооткат", "Безопасный запуск", "Подбор отпечатка TLS", "Сторож данных", "Память сетей", "Сбор ошибок",
+    "Эксперименты", "DNS-туннель через свой сервер"])
     if (!proTxt.includes(w)) throw new Error("pro: no " + w + ": " + proTxt.slice(0, 500));
+  if ((await page.getAttribute('[data-act="flip"][data-k="exp_xdns"]', "aria-checked")) !== "false")
+    throw new Error("pro: DNS tunnel experiment must be off by default");
   await page.click('[data-act="flip"][data-k="guard_rollback"]');
   await page.waitForTimeout(1300);
   if (await page.evaluate(() => JSON.parse(window.Pult.call("state", "{}")).result.settings.guard_rollback) !== false)

@@ -32,6 +32,7 @@ public final class Vps {
             case "start": return Text.t("Запускаю Xray на сервере", "Starting Xray on the server");
             case "awg": return Text.t("Ставлю AmneziaWG на сервер", "Installing AmneziaWG on the server");
             case "peer": return Text.t("Добавляю устройство на сервер", "Adding a device to the server");
+            case "xdns": return Text.t("Ставлю DNS-туннель на сервер", "Installing the DNS tunnel on the server");
             default: return key;
         }
     }
@@ -62,6 +63,18 @@ public final class Vps {
             case "noawg": return Text.t("на сервере нет AmneziaWG, установленного программой — сначала нажми «AmneziaWG 2.0»",
                     "the server has no AmneziaWG installed by the app — press “AmneziaWG 2.0” first");
             case "awg_full": return Text.t("на сервере уже 248 устройств — больше не поместится", "the server already has 248 devices — no more fit");
+            case "xdns_xray": return Text.t("на сервере старое ядро Xray, а обновить его не вышло — у сервера нет доступа к GitHub",
+                    "the server has an old Xray core and it could not be updated — the server has no access to GitHub");
+            case "xdns_dns53": return Text.t("на сервере уже работает свой DNS-сервер на порту 53 — DNS-туннель с ним не уживётся",
+                    "the server already runs its own DNS server on port 53 — the DNS tunnel can't share it");
+            case "xdns_port": return Text.t("порт " + XDNS_PORT + " на сервере занят другой программой",
+                    "port " + XDNS_PORT + " on the server is used by another program");
+            case "xdns_config": return Text.t("Xray не принял настройки DNS-туннеля", "Xray did not accept the DNS tunnel settings");
+            case "xdns_service": return Text.t("DNS-туннель на сервере не запустился", "The DNS tunnel did not start on the server");
+            case "xdns_fw": return Text.t("на сервере нет iptables, и его не удалось установить",
+                    "the server has no iptables, and it could not be installed");
+            case "xdns_keys": return Text.t("Xray на сервере не создал ключ шифрования туннеля",
+                    "Xray on the server did not create the tunnel encryption key");
             case "service": return Text.t("Xray на сервере не запустился", "Xray did not start on the server");
             case "noxray": return Text.t("на сервере нет Xray, установленного программой — сначала настрой сервер мастером",
                     "the server has no Xray installed by the program — set up the server with the wizard first");
@@ -684,5 +697,209 @@ public final class Vps {
         b.append("\n[Peer]\nPublicKey = ").append(serverPub).append("\nEndpoint = ").append(hp).append(':').append(port)
                 .append("\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n");
         return b.toString();
+    }
+
+    // ---------- DNS-туннель через свой домен (Xray XDNS) — эксперимент 1.25, как pult/vps.py ----------
+    // На сервере — отдельная служба Xray на UDP 5300, внешний UDP 53 перенаправляется на неё; основной Xray не трогается.
+
+    public static final int XDNS_PORT = 5300;
+    static final int XDNS_SERVER_MTU = 900;
+    public static final List<String> XDNS_RESOLVERS = java.util.Arrays.asList("77.88.8.8:53", "77.88.8.1:53");
+    public static final String XDNS_NAME = "DNS-туннель";
+    static final String RX_DOMAIN = "(?=.{4,60}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]";
+    static final String RX_SECRET = "[A-Za-z0-9_-]{16,64}", RX_IFACE = "[A-Za-z0-9_.@-]{1,15}";
+    /** VLESS Encryption (открытая часть): ядра с 26.7.11 не пускают VLESS без TLS к публичным адресам. */
+    static final String RX_VLESSENC = "mlkem768x25519plus\\.[A-Za-z0-9_.-]{20,300}";
+
+    /** Домен туннеля (например t.example.ru): 4–60 знаков, хотя бы 3 части — нужен отдельный поддомен. */
+    public static String checkDomain(String domain) throws VpsError {
+        String d = (domain == null ? "" : domain).trim().toLowerCase(java.util.Locale.ROOT).replaceAll("\\.+$", "");
+        boolean ascii = true;
+        for (int i = 0; i < d.length(); i++) {
+            ascii &= d.charAt(i) < 128;
+        }
+        if (!ascii) {
+            try {
+                d = java.net.IDN.toASCII(d);
+            } catch (IllegalArgumentException e) {
+                throw new VpsError(Text.t("в имени домена недопустимые знаки", "the domain name has characters that aren't allowed"));
+            }
+        }
+        int dots = d.length() - d.replace(".", "").length();
+        if (!d.matches(RX_DOMAIN) || dots < 2) {
+            throw new VpsError(Text.t("нужен поддомен своего домена, например t.example.ru",
+                    "a subdomain of your domain is needed, for example t.example.com"));
+        }
+        return d;
+    }
+
+    public static String xdnsPassword() {
+        java.security.SecureRandom r = new java.security.SecureRandom();
+        byte[] b = new byte[18];
+        r.nextBytes(b);
+        return "abcdefghjkmnpqrstuvwxyz".charAt(r.nextInt(23))
+                + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+    }
+
+    /** Настройки отдельной службы Xray DNS-туннеля — как xdns_server_config (порядок ключей тот же). */
+    public static java.util.Map<String, Object> xdnsServerConfig(String domain, String uuid, String password) {
+        return xdnsServerConfig(domain, uuid, password, "__DEC__");
+    }
+
+    /** Ключ VLESS Encryption создаёт сам сервер (xray vlessenc): в скрипте здесь метка __DEC__. */
+    public static java.util.Map<String, Object> xdnsServerConfig(String domain, String uuid, String password, String decryption) {
+        return Json.obj(
+                "log", Json.obj("loglevel", "warning"),
+                "inbounds", Json.arr(Json.obj("tag", "xdns", "listen", "0.0.0.0", "port", XDNS_PORT, "protocol", "vless",
+                        "settings", Json.obj("clients", Json.arr(Json.obj("id", uuid)), "decryption", decryption),
+                        "streamSettings", Json.obj("network", "kcp", "kcpSettings", Json.obj(
+                                "mtu", XDNS_SERVER_MTU, "tti", 200, "uplinkCapacity", 4, "downlinkCapacity", 1,
+                                "congestion", true, "readBufferSize", 2, "writeBufferSize", 2),
+                                "finalmask", Links.xdnsMask(domain, password, null)))),
+                "outbounds", Json.arr(Json.obj("tag", "direct", "protocol", "freedom"), Json.obj("tag", "block", "protocol", "blackhole")),
+                "routing", Json.obj("rules", Json.arr(Json.obj("type", "field", "ip", Json.arr("geoip:private"), "outboundTag", "block"))));
+    }
+
+    static final String XDNS_SCRIPT = "#!/bin/bash\n"
+            + "# VEDOMYJ VPN: DNS tunnel (Xray XDNS) as a separate small Xray service; the main Xray is not touched.\n"
+            + "say()  { echo \"PULT_STEP:$1\"; }\n"
+            + "fail() { echo \"PULT_ERROR:$1\"; exit 1; }\n"
+            + "[ \"$(id -u)\" = \"0\" ] || fail root\n"
+            + "X=/usr/local/bin/xray\n"
+            + "NEED=__XDNS_MIN__\n"
+            + "newer() { [ -n \"$1\" ] && [ \"$(printf '%s\\n%s\\n' \"$NEED\" \"$1\" | sort -V | head -n1)\" = \"$NEED\" ]; }\n"
+            + "say xdns\n"
+            + "export DEBIAN_FRONTEND=noninteractive\n"
+            + "HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')\n"
+            + "if ! newer \"$HAVE\"; then\n"
+            + "  command -v curl >/dev/null 2>&1 || fail xdns_xray\n"
+            + "  bash -c \"$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)\" @ install >/tmp/pult-xray-install.log 2>&1 || fail xdns_xray\n"
+            + "  HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')\n"
+            + "  newer \"$HAVE\" || fail xdns_xray\n"
+            + "fi\n"
+            + "if ! command -v iptables >/dev/null 2>&1; then\n"
+            + "  if command -v apt-get >/dev/null 2>&1; then apt-get install -y -qq iptables >/dev/null 2>&1\n"
+            + "  elif command -v dnf >/dev/null 2>&1; then dnf install -y -q iptables >/dev/null 2>&1\n"
+            + "  elif command -v yum >/dev/null 2>&1; then yum install -y -q iptables >/dev/null 2>&1; fi\n"
+            + "  command -v iptables >/dev/null 2>&1 || fail xdns_fw\n"
+            + "fi\n"
+            + "systemctl stop vedomyj-xdns >/dev/null 2>&1 || true\n"
+            + "# someone else's DNS server on a public address: redirecting port 53 would break it\n"
+            + "ss -Hlun 2>/dev/null | awk '{print $4}' | grep -E ':53$' | grep -vE '^(127\\.|\\[::1\\]|\\[?::ffff:127\\.)' | grep -q . && fail xdns_dns53\n"
+            + "ss -Hlun 2>/dev/null | awk '{print $4}' | grep -qE ':__PORT__$' && fail xdns_port\n"
+            + "G=nogroup; getent group nogroup >/dev/null 2>&1 || G=nobody\n"
+            + "# VLESS Encryption key (X25519 authentication, the short one): the private part stays here\n"
+            + "VE=$($X vlessenc 2>/dev/null)\n"
+            + "ENCS=$(printf '%s\\n' \"$VE\" | grep -o '\"encryption\": *\"[^\"]*\"' | sed 's/.*\"\\([^\"]*\\)\"$/\\1/')\n"
+            + "DECS=$(printf '%s\\n' \"$VE\" | grep -o '\"decryption\": *\"[^\"]*\"' | sed 's/.*\"\\([^\"]*\\)\"$/\\1/')\n"
+            + "ENC=\"\"; DEC=\"\"; i=0\n"
+            + "for e in $ENCS; do\n"
+            + "  i=$((i+1))\n"
+            + "  if [ ${#e} -lt 300 ]; then ENC=$e; DEC=$(printf '%s\\n' \"$DECS\" | sed -n \"${i}p\"); break; fi\n"
+            + "done\n"
+            + "RX='^mlkem768x25519plus\\.[A-Za-z0-9_.-]{20,300}$'\n"
+            + "printf '%s' \"$ENC\" | grep -qE \"$RX\" || fail xdns_keys\n"
+            + "printf '%s' \"$DEC\" | grep -qE \"$RX\" || fail xdns_keys\n"
+            + "mkdir -p /usr/local/etc/xray-xdns\n"
+            + "cat > /usr/local/etc/xray-xdns/config.json <<'JSON'\n"
+            + "__CONFIG__\n"
+            + "JSON\n"
+            + "sed -i \"s|__DEC__|$DEC|\" /usr/local/etc/xray-xdns/config.json\n"
+            + "chown root:$G /usr/local/etc/xray-xdns/config.json; chmod 640 /usr/local/etc/xray-xdns/config.json\n"
+            + "XRAY_LOCATION_ASSET=/usr/local/share/xray $X run -test -c /usr/local/etc/xray-xdns/config.json >/tmp/pult-xdns-test.log 2>&1 || fail xdns_config\n"
+            + "cat > /usr/local/sbin/vedomyj-xdns-nat <<'NAT'\n"
+            + "#!/bin/sh\n"
+            + "# VEDOMYJ VPN: external UDP 53 -> __PORT__ (DNS tunnel), only on the interface with the default route.\n"
+            + "IF=__IFACE__\n"
+            + "[ -n \"$IF\" ] || IF=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i==\"dev\"){print $(i+1); exit}}')\n"
+            + "[ -n \"$IF\" ] || exit 0\n"
+            + "R=\"-i $IF -p udp --dport 53 -j REDIRECT --to-ports __PORT__\"\n"
+            + "case \"$1\" in\n"
+            + "  add) iptables -t nat -C PREROUTING $R 2>/dev/null || iptables -t nat -I PREROUTING $R\n"
+            + "       if command -v ip6tables >/dev/null 2>&1; then ip6tables -t nat -C PREROUTING $R 2>/dev/null || ip6tables -t nat -I PREROUTING $R 2>/dev/null; fi ;;\n"
+            + "  del) while iptables -t nat -D PREROUTING $R 2>/dev/null; do :; done\n"
+            + "       if command -v ip6tables >/dev/null 2>&1; then while ip6tables -t nat -D PREROUTING $R 2>/dev/null; do :; done; fi ;;\n"
+            + "esac\n"
+            + "exit 0\n"
+            + "NAT\n"
+            + "chmod 755 /usr/local/sbin/vedomyj-xdns-nat\n"
+            + "cat > /etc/systemd/system/vedomyj-xdns.service <<UNIT\n"
+            + "[Unit]\n"
+            + "Description=VEDOMYJ VPN DNS tunnel (Xray XDNS)\n"
+            + "After=network-online.target\n"
+            + "Wants=network-online.target\n"
+            + "\n"
+            + "[Service]\n"
+            + "User=nobody\n"
+            + "Group=$G\n"
+            + "Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray\n"
+            + "ExecStartPre=+/usr/local/sbin/vedomyj-xdns-nat add\n"
+            + "ExecStart=$X run -c /usr/local/etc/xray-xdns/config.json\n"
+            + "ExecStopPost=+/usr/local/sbin/vedomyj-xdns-nat del\n"
+            + "Restart=on-failure\n"
+            + "RestartSec=3\n"
+            + "NoNewPrivileges=yes\n"
+            + "LimitNOFILE=65535\n"
+            + "\n"
+            + "[Install]\n"
+            + "WantedBy=multi-user.target\n"
+            + "UNIT\n"
+            + "if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then\n"
+            + "  ufw allow 53/udp >/dev/null 2>&1; ufw allow __PORT__/udp >/dev/null 2>&1\n"
+            + "fi\n"
+            + "if command -v firewall-cmd >/dev/null 2>&1; then\n"
+            + "  firewall-cmd --permanent --add-port=53/udp >/dev/null 2>&1; firewall-cmd --permanent --add-port=__PORT__/udp >/dev/null 2>&1\n"
+            + "  firewall-cmd --reload >/dev/null 2>&1 || true\n"
+            + "fi\n"
+            + "systemctl daemon-reload\n"
+            + "systemctl enable vedomyj-xdns >/dev/null 2>&1 || true\n"
+            + "systemctl restart vedomyj-xdns >/dev/null 2>&1\n"
+            + "sleep 2\n"
+            + "systemctl is-active --quiet vedomyj-xdns || fail xdns_service\n"
+            + "echo \"PULT_RESULT:__PORT__|$HAVE|$ENC\"\n";
+
+    public static String xdnsScript(String domain, String uuid, String password, String iface) throws VpsError {
+        domain = checkDomain(domain);
+        if (uuid == null || !uuid.matches(RX_UUID) || password == null || !password.matches(RX_SECRET)
+                || (iface != null && !iface.isEmpty() && !iface.matches(RX_IFACE))) {
+            throw new VpsError(Text.t("неверные параметры DNS-туннеля", "wrong DNS tunnel parameters"));
+        }
+        String need = Links.XDNS_MIN[0] + "." + Links.XDNS_MIN[1] + "." + Links.XDNS_MIN[2];
+        return XDNS_SCRIPT.replace("__CONFIG__", Json.write(xdnsServerConfig(domain, uuid, password)))
+                .replace("__PORT__", String.valueOf(XDNS_PORT)).replace("__XDNS_MIN__", need)
+                .replace("__IFACE__", iface == null ? "" : iface);
+    }
+
+    /** Ответ скрипта «порт|версия Xray|открытая часть ключа VLESS Encryption» → {порт, версия, ключ}. */
+    public static Object[] parseXdnsResult(String result) throws VpsError {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d{2,5})\\|([0-9][0-9.]{2,20})\\|(" + RX_VLESSENC + ")")
+                .matcher(result == null ? "" : result.trim());
+        if (!m.matches()) {
+            throw new VpsError(Text.t("сервер прислал непонятный ответ", "the server sent an unclear answer"));
+        }
+        return new Object[]{Integer.parseInt(m.group(1)), m.group(2), m.group(3)};
+    }
+
+    /** Ссылка на DNS-туннель: адрес — первый DNS-сервер, в fm — домен, пароль и все DNS-серверы (как make_xdns_link). */
+    public static String makeXdnsLink(String domain, String uuid, String password, String enc, String name,
+                                      List<String> resolvers) throws VpsError {
+        return makeXdnsLink(domain, uuid, password, enc, name, resolvers, "");
+    }
+
+    public static String makeXdnsLink(String domain, String uuid, String password, String enc, String name,
+                                      List<String> resolvers, String address) throws VpsError {
+        domain = checkDomain(domain);
+        if (uuid == null || !uuid.matches(RX_UUID) || password == null || !password.matches(RX_SECRET)
+                || resolvers == null || resolvers.isEmpty() || enc == null || !enc.matches(RX_VLESSENC)) {
+            throw new VpsError(Text.t("неверные параметры DNS-туннеля", "wrong DNS tunnel parameters"));
+        }
+        String first = resolvers.get(0);
+        int cut = first.lastIndexOf(':');
+        String host = address == null || address.isEmpty() ? first.substring(0, cut) : address;
+        int port = Integer.parseInt(first.substring(cut + 1));
+        String fm = Json.write(Links.xdnsMask(domain, password, resolvers));
+        String hp = host.contains(":") ? "[" + host + "]" : host;
+        return "vless://" + uuid + "@" + hp + ":" + port + "?encryption=" + enc + "&type=kcp&security=none&fm=" + Text.quote(fm)
+                + "#" + Text.quote(name);
     }
 }

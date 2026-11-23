@@ -4268,7 +4268,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         uid, pw = str(__import__("uuid").uuid4()), vps.xdns_password()
         result = self._vps_run(h, vps.xdns_script(domain, uid, pw), "DNS-туннель не установился", timeout=900.0)
         try:
-            port, _ver = vps.parse_xdns_result(result)
+            port, _ver, enc = vps.parse_xdns_result(result)
         except vps.VpsError as exc:
             raise RuntimeError(f"DNS-туннель не установился: {exc}") from exc
         name = f"{h.get('name') or 'VPS'} · {i18n.tr(vps.XDNS_NAME)}"
@@ -4278,7 +4278,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             self.settings["manual_links"] = [x for x in self.settings["manual_links"] if x not in old]
         h["xdns"] = {"domain": domain, "port": port, "ts": int(time.time())}
         self.save()
-        self.add_servers(vps.make_xdns_link(domain, uid, pw, name))
+        self.add_servers(vps.make_xdns_link(domain, uid, pw, enc, name))
         self.log(f"Свой сервер «{h.get('name', '')}»: DNS-туннель установлен, он добавлен в свои серверы.")
         self.notify("vps")
         self.notify("servers")

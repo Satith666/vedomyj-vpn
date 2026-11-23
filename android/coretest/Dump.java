@@ -90,6 +90,54 @@ public class Dump {
         if (mode.equals("vps")) {
             out.print(Vps.script());
         }
+        if (mode.equals("vpsxdns")) {
+            String uid = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", pw = "kAbcdefghijklmnopqrstuvwx_-1";
+            String a70 = new String(new char[70]).replace('\0', 'a');
+            for (String d : new String[]{"T.Example.RU.", "t.my-site.ru", "т.пример.рф", "example.ru", "t.$(id).ru", "t..ru", "-t.example.ru", a70 + ".ru.ru", ""}) {
+                try {
+                    out.println(Vps.checkDomain(d));
+                } catch (Vps.VpsError e) {
+                    out.println("bad");
+                }
+            }
+            String x25 = new String(new char[25]).replace('\0', 'x'), x35 = new String(new char[35]).replace('\0', 'x'),
+                    x50 = new String(new char[50]).replace('\0', 'x');
+            for (String d : new String[]{"t.a.ru", "t.example.ru", "t." + x25 + ".ru", "t." + x35 + ".ru", "t." + x50 + ".ru"}) {
+                out.println(Links.xdnsMtu(d));
+            }
+            out.println(Json.canonical(Vps.xdnsServerConfig("t.example.ru", uid, pw)));
+            out.print(Vps.xdnsScript("t.example.ru", uid, pw, ""));
+            out.print(Vps.xdnsScript("t.example.ru", uid, pw, "vdx0"));
+            for (String[] args : new String[][]{{"t.example.ru", "x;reboot", pw, ""}, {"t.example.ru", uid, "$(reboot)aaaaaaaaaaaa", ""}, {"t.example.ru", uid, pw, "eth0;id"}}) {
+                try {
+                    Vps.xdnsScript(args[0], args[1], args[2], args[3]);
+                    out.println("accepted");
+                } catch (Vps.VpsError e) {
+                    out.println("bad");
+                }
+            }
+            String enc = "mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf";
+            for (String rr : new String[]{"5300|26.11.9|" + enc, "5300|26.11.9", "x|26.10.31|" + enc, "5300|$(id)|" + enc, "5300|26.11.9|" + enc + ";id"}) {
+                try {
+                    Object[] x = Vps.parseXdnsResult(rr);
+                    out.println(x[0] + " " + x[1] + " " + x[2]);
+                } catch (Vps.VpsError e) {
+                    out.println("bad");
+                }
+            }
+            for (int k = 0; k < 2; k++) {
+                List<String> res = k == 0 ? Vps.XDNS_RESOLVERS : java.util.Arrays.asList("127.0.0.1:5454");
+                String link = Vps.makeXdnsLink("t.example.ru", uid, pw, enc, "Germany · DNS-туннель", res, k == 0 ? "" : "77.88.8.8");
+                out.println(link);
+                Server srv = Links.parseLink(link);
+                out.println(Json.canonical(srv.outbound));
+                out.println((Links.isXdns(srv) ? "True" : "False") + " " + Links.xdnsDomainOf(Json.map(srv.outbound, "streamSettings"))
+                        + " " + (srv.insecure ? "True" : "False"));
+                for (String ver : new String[]{"26.9.30", "26.10.21", "26.11.9"}) {
+                    out.println(Json.canonical(XrayConfig.proxyOutbounds(srv, "proxy", false, ver)));
+                }
+            }
+        }
         if (mode.equals("vpsawg")) {
             final int[] c = {0};
             Warp.Rnd rnd = n -> (int) ((c[0]++ * 7919L) % n);

@@ -371,6 +371,10 @@ public final class Links {
         Map<String, Object> fm = parseFm(first(g(p, "fm"), g(p, "finalmask")));
         if (!fm.isEmpty()) {
             ss.put("finalmask", fm); // своя маскировка сервера (Finalmask, Xray 26.3.27+), как links.py
+            String dom = "kcp".equals(net) ? xdnsDomainOf(ss) : "";
+            if (!dom.isEmpty()) {
+                ss.put("kcpSettings", xdnsKcp(dom)); // DNS-туннель: маленькие пакеты mKCP, свои настройки скорости
+            }
         }
         return ss;
     }
@@ -378,7 +382,7 @@ public final class Links {
     // ---------- Finalmask (fm в ссылках) и перебор портов Hysteria2 — как links.py ----------
 
     static final List<String> FM_TCP = Arrays.asList("fragment", "header-custom", "sudoku");
-    static final List<String> FM_UDP = Arrays.asList("header-custom", "noise", "salamander", "sudoku", "mkcp-legacy", "realm", "udphop");
+    static final List<String> FM_UDP = Arrays.asList("header-custom", "noise", "salamander", "sudoku", "mkcp-legacy", "realm", "udphop", "xdns");
 
     @SuppressWarnings("unchecked")
     static Map<String, Object> cleanFinalmask(Object v) {
@@ -420,6 +424,67 @@ public final class Links {
             out.put("quicParams", q);
         }
         return out;
+    }
+
+    // ---------- DNS-туннель (Finalmask xdns, ядро 26.10.21+): mKCP внутри DNS-запросов — как links.py ----------
+
+    /** С этой версии настройки xdns: domains[{names…}], resolvers[{addrs…}]. */
+    public static final int[] XDNS_MIN = {26, 10, 21};
+    static final int XDNS_EDNS = 1232;
+
+    /** Размер пакета mKCP клиента: чем длиннее домен, тем меньше места в имени запроса (как xdns_mtu). */
+    public static int xdnsMtu(String domain) {
+        int n = domain == null ? 0 : domain.length();
+        return n <= 20 ? 110 : n <= 32 ? 96 : n <= 44 ? 80 : 64;
+    }
+
+    static Map<String, Object> xdnsKcp(String domain) {
+        return Json.obj("mtu", xdnsMtu(domain), "tti", 200, "uplinkCapacity", 1, "downlinkCapacity", 4,
+                "congestion", true, "readBufferSize", 2, "writeBufferSize", 2);
+    }
+
+    /** Внутри — шифрование mKCP (AES-128-GCM с паролем), снаружи — DNS-запросы к домену; resolvers — только у клиента. */
+    public static Map<String, Object> xdnsMask(String domain, String password, List<String> resolvers) {
+        Map<String, Object> xd = Json.obj("domains", Json.arr(Json.obj("names", Json.arr(domain), "types", Json.arr(16),
+                "edns0", XDNS_EDNS)));
+        if (resolvers != null && !resolvers.isEmpty()) {
+            List<Object> addrs = new ArrayList<Object>();
+            for (String r : resolvers) {
+                addrs.add("udp://" + r);
+            }
+            xd.put("resolvers", Json.arr(Json.obj("addrs", addrs)));
+        }
+        return Json.obj("udp", Json.arr(
+                Json.obj("type", "mkcp-legacy", "settings", Json.obj("header", "", "value", password)),
+                Json.obj("type", "xdns", "settings", xd)));
+    }
+
+    /** Домен DNS-туннеля сервера или "" — это не DNS-туннель. */
+    public static String xdnsDomainOf(Map<String, Object> ss) {
+        List<Object> udp = Json.list(Json.map(ss, "finalmask"), "udp");
+        if (udp == null) {
+            return "";
+        }
+        for (Object item : udp) {
+            Map<String, Object> m = Json.map(item);
+            if (m == null || !"xdns".equals(m.get("type"))) {
+                continue;
+            }
+            List<Object> doms = Json.list(Json.map(m, "settings"), "domains");
+            for (Object d : doms == null ? new ArrayList<Object>() : doms) {
+                List<Object> names = Json.list(Json.map(d), "names");
+                if (names != null && !names.isEmpty() && names.get(0) instanceof String) {
+                    return (String) names.get(0);
+                }
+            }
+            return "?";
+        }
+        return "";
+    }
+
+    /** Сервер — DNS-туннель (медленный запасной путь, эксперимент). */
+    public static boolean isXdns(Server s) {
+        return s != null && !xdnsDomainOf(Json.map(s.outbound, "streamSettings")).isEmpty();
     }
 
     static Map<String, Object> parseFm(String value) {

@@ -70,6 +70,12 @@ public final class XrayConfig {
         return new int[]{Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3))};
     }
 
+    /** Ссылка просит то, чего это ядро не умеет (DNS-туннель — с 26.10.21): подсказать обновить приложение. */
+    public static boolean needsNewCore(Server s, String coreVersion) {
+        int[] v = version(coreVersion);
+        return v.length > 0 && Links.isXdns(s) && !atLeast(v, Links.XDNS_MIN);
+    }
+
     static boolean atLeast(int[] v, int[] min) {
         if (v.length == 0) {
             return false;
@@ -303,6 +309,14 @@ public final class XrayConfig {
     /** Старое ядро (до 26.3.27): только Salamander, без шума, перебора портов и fm из ссылки (как fm_for_core). */
     static List<Map<String, Object>> fmForCore(List<Map<String, Object>> obs, String coreVersion) {
         int[] v = version(coreVersion);
+        if (v.length > 0 && !atLeast(v, Links.XDNS_MIN)) {
+            // DNS-туннель у ядра до 26.10.21 не заработает — «заглушка», чтобы не отказался весь конфиг (как fm_for_core)
+            for (int i = 0; i < obs.size(); i++) {
+                if (!Links.xdnsDomainOf(Json.map(obs.get(i), "streamSettings")).isEmpty()) {
+                    obs.set(i, Json.obj("tag", Json.str(obs.get(i), "tag"), "protocol", "blackhole"));
+                }
+            }
+        }
         if (v.length == 0 || atLeast(v, FM_MIN)) {
             return obs;
         }

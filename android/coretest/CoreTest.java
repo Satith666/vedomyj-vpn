@@ -388,6 +388,11 @@ public class CoreTest {
                 out.line("PULT_RESULT:" + AWG_SPUB + "|45123");
                 return;
             }
+            if (script.contains("DNS tunnel (Xray XDNS)")) { // DNS-туннель на своём сервере
+                out.line("PULT_STEP:xdns");
+                out.line("PULT_RESULT:5300|26.11.9|mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf");
+                return;
+            }
             if (script.contains("awg set awg0 peer")) {
                 out.line("PULT_RESULT:" + AWG_SPUB + "|45123|3");
                 return;
@@ -1204,6 +1209,68 @@ public class CoreTest {
             String dconf = e.vpsAwgConf(Json.str(Json.map(devs.get(0)), "id"));
             check(dconf.contains("Address = 10.66.66.3/32") && fake.lastScript.contains("awg set awg0 peer"), "устройство для роутера — свой ключ и адрес");
             check(!String.join("\n", e.logLines()).contains("PrivateKey") && !Json.write(e.settings).contains("secret"), "ключи и пароль не в журнале");
+            e.vpsForget(id);
+        });
+
+        test("Свой сервер: DNS-туннель (эксперимент выключен по умолчанию, отдельная служба, «Авто» — только при включённом)", () -> {
+            e.vpsSetup("vps4.example.net", "22", "root", "secret", "Fourth");
+            waitIdle(e);
+            String id = "";
+            for (Object o : Json.list(e.state(), "vps")) {
+                if ("vps4.example.net".equals(Json.str(Json.map(o), "host"))) id = Json.str(Json.map(o), "id");
+            }
+            check(!Json.bool(e.settings, "exp_xdns", true), "эксперимент выключен по умолчанию");
+            boolean refused = false;
+            try {
+                e.vpsXdns(id, "secret", "t.example.ru");
+            } catch (Vps.VpsError err) {
+                refused = true;
+            }
+            check(refused, "без включённого эксперимента установка не идёт");
+            Map<String, Object> in = new HashMap<String, Object>();
+            in.put("exp_xdns", true);
+            e.setSettings(in);
+            waitIdle(e);
+            e.vpsXdns(id, "secret", "T.Example.RU");
+            waitIdle(e);
+            String sent = fake.lastScript;
+            check(sent.contains("vedomyj-xdns") && sent.contains("t.example.ru") && !sent.contains("/usr/local/etc/xray/config.json"),
+                    "на сервер уходит отдельная служба DNS-туннеля, основной Xray не трогается");
+            String name = "Fourth · DNS-туннель";
+            Map<String, Object> srv = serverByName(e, name);
+            check(srv != null && "DNS".equals(Json.str(srv, "protocol")), "туннель — в своих серверах, подписан как DNS");
+            Server full = e.find(Json.str(srv, "key"));
+            List<Object> udp = Json.list(Json.map(Json.map(full.outbound, "streamSettings"), "finalmask"), "udp");
+            String pw = Json.str(Json.map(Json.map(udp.get(0)), "settings"), "value");
+            check(!pw.isEmpty() && sent.contains(pw), "пароль шифрования у сервера и телефона один");
+            check(!full.insecure && full.usable(), "с шифрованием VLESS — не «без шифрования», ядро телефона его запустит");
+            check(e.inPool(full), "эксперимент включён — «Авто» пробует DNS-туннель");
+            in.put("exp_xdns", false);
+            e.setSettings(in);
+            waitIdle(e);
+            check(!e.inPool(full) && serverByName(e, name) != null, "эксперимент выключен — «Авто» не трогает, сервер в списке");
+            in.put("exp_xdns", true);
+            e.setSettings(in);
+            waitIdle(e);
+            e.vpsXdns(id, "secret", "t.example.ru");
+            waitIdle(e);
+            int n = 0;
+            for (Object o : Json.list(e.state(), "servers")) {
+                if (name.equals(Json.str(Json.map(o), "name"))) n++;
+            }
+            check(n == 1, "переустановка заменяет прежнюю ссылку");
+            String logs = String.join("\n", e.logLines());
+            check(!logs.contains(pw) && !logs.contains("vless://") && !Json.write(e.settings).contains("secret"), "пароль и ссылка не в журнале");
+            boolean vpsHas = false;
+            for (Object o : Json.list(e.state(), "vps")) {
+                if (id.equals(Json.str(Json.map(o), "id"))) vpsHas = "t.example.ru".equals(Json.str(Json.map(o), "xdns"));
+            }
+            check(vpsHas, "окно видит DNS-туннель у сервера");
+            check(XrayConfig.needsNewCore(full, "26.7.31") && !XrayConfig.needsNewCore(full, "26.11.9"), "старое ядро — подсказка");
+            in.put("exp_xdns", false);
+            e.setSettings(in);
+            waitIdle(e);
+            e.removeServer(Json.str(srv, "key"));
             e.vpsForget(id);
         });
 

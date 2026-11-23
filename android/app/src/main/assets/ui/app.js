@@ -841,6 +841,8 @@
         ${h.bridge_of ? `<p class="hint">${esc(t("vps_is_bridge"))}</p>` : `<button class="btn wide" data-act="vps-bridge" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("server")}${esc(t("vps_bridge_short"))}</button>`}
         ${h.awg ? `<button class="btn wide" data-act="vps-awgdev" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_awg_dev_btn"))}</button>`
           : `<button class="btn wide" data-act="vps-awg" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("shield")}${esc(t("vps_awg_btn"))}</button>`}
+        ${S.settings.exp_xdns && !h.bridge_of ? `<button class="btn wide" data-act="vps-xdns" data-id="${esc(h.id)}" data-host="${esc(h.host)}" data-d="${esc(h.xdns || "")}" ${busy ? "disabled" : ""}>${icon("globe")}${esc(t("vps_xdns_btn"))}</button>` : ""}
+        ${h.xdns && S.settings.exp_xdns ? `<p class="hint">${esc(t("vps_xdns_have", { d: h.xdns }))}</p>` : ""}
         ${(h.awg_devices || []).map((d) => `<button class="row" data-act="awgdev-open" data-id="${esc(d.id)}" data-n="${esc(d.name)}">${icon("qr")}<span class="main"><span class="title"><span>${esc(d.name)}</span></span>
           <span class="meta">${esc(t("vps_awg_dev_made_s"))}</span></span></button>`).join("")}
         ${fr ? `<div class="vps-friends">${fr}</div>` : ""}</div>`;
@@ -1051,6 +1053,7 @@
     ["pg_memory", [["net_memory", "s_netmem"]]],
     ["pg_auto", [["autopilot", "s_auto"], ["fp_auto", "s_fp"], ["mask_auto", "s_mask"], ["data_watch", "s_dwatch"],
       ["stall_check", "s_stall16"], ["warp_fallback", "s_warpfb"], ["whitelist_auto", "s_wl"]]],
+    ["pg_exp", [["exp_xdns", "s_xdns"]]],
   ];
   function leftText(sec) {
     const h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60);
@@ -1865,6 +1868,26 @@
       vpsPassSheet(t("vps_awg_dev_btn"), t("vps_awg_dev_text"),
         `<label class="field">${esc(t("vps_friend_name"))}<input id="vdName" maxlength="30" placeholder="${esc(t("vps_awg_dev_ph"))}"></label>`,
         (pw, sh) => act("vps_awg_device", { id, password: pw, name: $("#vdName", sh).value }));
+    },
+    "vps-xdns"(el) {
+      const id = el.dataset.id, host = el.dataset.host;
+      const recs = (d) => {
+        const dom = d || t("vps_xdns_dom_ph");
+        return `<div class="dns-recs"><div><b>A</b><code>tns.${esc(dom)}</code><span>→</span><code>${esc(host)}</code></div>
+          <div><b>NS</b><code>t.${esc(dom)}</code><span>→</span><code>tns.${esc(dom)}</code></div></div>`;
+      };
+      const base = (el.dataset.d || "").replace(/^t\./, "");
+      const dom = (sh) => $("#vxDom", sh).value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/\.$/, "");
+      vpsPassSheet(t("vps_xdns_title"), t("vps_xdns_text"),
+        `<label class="field">${esc(t("vps_xdns_domain"))}<input id="vxDom" value="${esc(base)}" placeholder="example.ru" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        <p class="hint">${esc(t("vps_xdns_rec"))}</p><div id="vxRecs">${recs(base)}</div><p class="hint">${esc(t("vps_xdns_warn"))}</p>`,
+        (pw, sh) => {
+          const d = dom(sh);
+          if (!/^[^.\s]+\.[^.\s]+/.test(d)) { toast(t("vps_xdns_need"), "bad"); return undefined; }
+          return act("vps_xdns", { id, password: pw, domain: "t." + d });
+        });
+      const inp = $("#vxDom");
+      if (inp) inp.addEventListener("input", () => { $("#vxRecs").innerHTML = recs(dom(document)); });
     },
     "awgdev-open"(el) { awgDevSheet(el.dataset.id, el.dataset.n); },
     "awgdev-save"() { act("save_file", { text: awgDevConf, name: "awg-" + (awgDevName.replace(/[^A-Za-z0-9_-]+/g, "") || "router") + ".conf", mime: "application/octet-stream" }); },

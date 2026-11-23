@@ -619,12 +619,14 @@ XDNS_ERRORS = {
     "xdns_config": "Xray не принял настройки DNS-туннеля",
     "xdns_service": "DNS-туннель на сервере не запустился",
     "xdns_fw": "на сервере нет iptables, и его не удалось установить",
+    "xdns_keys": "Xray на сервере не создал ключ шифрования туннеля",
 }
 ERRORS.update(XDNS_ERRORS)
 STEPS.update({"xdns": "Ставлю DNS-туннель на сервер"})
 _RX_DOMAIN = re.compile(r"(?=.{4,60}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
 _RX_SECRET = re.compile(r"[A-Za-z0-9_-]{16,64}")
 _RX_IFACE = re.compile(r"[A-Za-z0-9_.@-]{1,15}")
+_RX_VLESSENC = re.compile(r"mlkem768x25519plus\.[A-Za-z0-9_.-]{20,300}")  # VLESS Encryption (открытая часть)
 
 
 def check_domain(domain: str) -> str:
@@ -645,14 +647,16 @@ def xdns_password(rnd=None) -> str:
     return (rnd or secrets.SystemRandom()).choice("abcdefghjkmnpqrstuvwxyz") + secrets.token_urlsafe(18)
 
 
-def xdns_server_config(domain: str, uuid: str, password: str, port: int = XDNS_PORT, listen: str = "0.0.0.0") -> dict:
-    """Настройки отдельной службы Xray DNS-туннеля. В скрипт идут с переменными оболочки, в проверку — с настоящими."""
+def xdns_server_config(domain: str, uuid: str, password: str, decryption: str = "__DEC__", port: int = XDNS_PORT,
+                       listen: str = "0.0.0.0") -> dict:
+    """Настройки отдельной службы Xray DNS-туннеля. VLESS Encryption обязателен: ядра с 26.7.11 не пускают VLESS
+    без TLS к публичным адресам. Ключ создаёт сам сервер (xray vlessenc) — в скрипте здесь метка __DEC__."""
     from . import links
     mask = links.xdns_mask(domain, password)
     return {
         "log": {"loglevel": "warning"},
         "inbounds": [{"tag": "xdns", "listen": listen, "port": port, "protocol": "vless",
-                      "settings": {"clients": [{"id": uuid}], "decryption": "none"},
+                      "settings": {"clients": [{"id": uuid}], "decryption": decryption},
                       "streamSettings": {"network": "kcp", "kcpSettings": {
                           "mtu": XDNS_SERVER_MTU, "tti": 200, "uplinkCapacity": 4, "downlinkCapacity": 1,
                           "congestion": True, "readBufferSize": 2, "writeBufferSize": 2}, "finalmask": mask}}],
@@ -689,10 +693,23 @@ systemctl stop vedomyj-xdns >/dev/null 2>&1 || true
 ss -Hlun 2>/dev/null | awk '{print $4}' | grep -E ':53$' | grep -vE '^(127\.|\[::1\]|\[?::ffff:127\.)' | grep -q . && fail xdns_dns53
 ss -Hlun 2>/dev/null | awk '{print $4}' | grep -qE ':__PORT__$' && fail xdns_port
 G=nogroup; getent group nogroup >/dev/null 2>&1 || G=nobody
+# VLESS Encryption key (X25519 authentication, the short one): the private part stays here
+VE=$($X vlessenc 2>/dev/null)
+ENCS=$(printf '%s\n' "$VE" | grep -o '"encryption": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
+DECS=$(printf '%s\n' "$VE" | grep -o '"decryption": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
+ENC=""; DEC=""; i=0
+for e in $ENCS; do
+  i=$((i+1))
+  if [ ${#e} -lt 300 ]; then ENC=$e; DEC=$(printf '%s\n' "$DECS" | sed -n "${i}p"); break; fi
+done
+RX='^mlkem768x25519plus\.[A-Za-z0-9_.-]{20,300}$'
+printf '%s' "$ENC" | grep -qE "$RX" || fail xdns_keys
+printf '%s' "$DEC" | grep -qE "$RX" || fail xdns_keys
 mkdir -p /usr/local/etc/xray-xdns
 cat > /usr/local/etc/xray-xdns/config.json <<'JSON'
 __CONFIG__
 JSON
+sed -i "s|__DEC__|$DEC|" /usr/local/etc/xray-xdns/config.json
 chown root:$G /usr/local/etc/xray-xdns/config.json; chmod 640 /usr/local/etc/xray-xdns/config.json
 XRAY_LOCATION_ASSET=/usr/local/share/xray $X run -test -c /usr/local/etc/xray-xdns/config.json >/tmp/pult-xdns-test.log 2>&1 || fail xdns_config
 cat > /usr/local/sbin/vedomyj-xdns-nat <<'NAT'
@@ -744,7 +761,7 @@ systemctl enable vedomyj-xdns >/dev/null 2>&1 || true
 systemctl restart vedomyj-xdns >/dev/null 2>&1
 sleep 2
 systemctl is-active --quiet vedomyj-xdns || fail xdns_service
-echo "PULT_RESULT:__PORT__|$HAVE"
+echo "PULT_RESULT:__PORT__|$HAVE|$ENC"
 """
 
 
@@ -763,24 +780,27 @@ def xdns_script(domain: str, uuid: str, password: str, iface: str = "") -> str:
             .replace("__XDNS_MIN__", need).replace("__IFACE__", iface))
 
 
-def parse_xdns_result(result: str) -> tuple[int, str]:
-    """Ответ скрипта: «порт|версия Xray»."""
-    m = re.fullmatch(r"(\d{2,5})\|([0-9][0-9.]{2,20})", (result or "").strip())
+def parse_xdns_result(result: str) -> tuple[int, str, str]:
+    """Ответ скрипта: «порт|версия Xray|открытая часть ключа VLESS Encryption»."""
+    m = re.fullmatch(r"(\d{2,5})\|([0-9][0-9.]{2,20})\|(" + _RX_VLESSENC.pattern + ")", (result or "").strip())
     if not m:
         raise VpsError("сервер прислал непонятный ответ")
-    return int(m.group(1)), m.group(2)
+    return int(m.group(1)), m.group(2), m.group(3)
 
 
-def make_xdns_link(domain: str, uuid: str, password: str, name: str, resolvers=XDNS_RESOLVERS) -> str:
-    """Ссылка на DNS-туннель: адрес — первый DNS-сервер (сам сервер при белых списках недоступен),
-    в маскировке fm — домен, пароль и все DNS-серверы."""
+def make_xdns_link(domain: str, uuid: str, password: str, enc: str, name: str, resolvers=XDNS_RESOLVERS,
+                   address: str = "") -> str:
+    """Ссылка на DNS-туннель: адрес — первый DNS-сервер (сам сервер при белых списках недоступен), запросы идут
+    через все DNS-серверы из маскировки fm; там же домен и пароль. address — только для проверки на GitHub."""
     import json
     from . import links
     domain = check_domain(domain)
-    if not re.fullmatch(_RX_UUID, uuid or "") or not _RX_SECRET.fullmatch(password or "") or not resolvers:
+    if not re.fullmatch(_RX_UUID, uuid or "") or not _RX_SECRET.fullmatch(password or "") or not resolvers \
+            or not _RX_VLESSENC.fullmatch(enc or ""):
         raise VpsError("неверные параметры DNS-туннеля")
     host, _, port = resolvers[0].rpartition(":")
+    host = address or host
     fm = json.dumps(links.xdns_mask(domain, password, list(resolvers)), separators=(",", ":"), ensure_ascii=True)
     hp = f"[{host}]" if ":" in host else host
-    return (f"vless://{uuid}@{hp}:{int(port)}?encryption=none&type=kcp&security=none&fm={quote(fm, safe='')}"
+    return (f"vless://{uuid}@{hp}:{int(port)}?encryption={enc}&type=kcp&security=none&fm={quote(fm, safe='')}"
             f"#{quote(name)}")

@@ -217,8 +217,11 @@ def xdns_check() -> None:
     if not res:
         print(sh("cat /tmp/pult-xdns-test.log; journalctl -u vedomyj-xdns -n 30 --no-pager").stdout[-1500:])
         return
-    port, have = vps.parse_xdns_result(res)
-    ok(port == vps.XDNS_PORT, "Ответ скрипта понятен программе", res)
+    port, have, enc = vps.parse_xdns_result(res)
+    ok(port == vps.XDNS_PORT, "Ответ скрипта понятен программе", f"{port}|{have}|{enc[:34]}…")
+    conf = sh("cat /usr/local/etc/xray-xdns/config.json").stdout
+    ok("__DEC__" not in conf and '"decryption":"mlkem768x25519plus.' in conf and enc not in conf,
+       "Ключ шифрования VLESS создан на сервере: закрытая часть там, программе — только открытая")
     rule = sh(f"iptables -t nat -C PREROUTING -i vdx0 -p udp --dport 53 -j REDIRECT --to-ports {port}")
     ok(rule.returncode == 0, "Порт 53 перенаправлен на DNS-туннель (только на основном интерфейсе)")
     secret = sh("stat -c '%a %U' /usr/local/etc/xray-xdns/config.json").stdout.strip()
@@ -226,7 +229,7 @@ def xdns_check() -> None:
     procs = []
     try:
         # а) напрямую на службу
-        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=(f"127.0.0.1:{port}",))
+        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, enc, "CI", resolvers=(f"127.0.0.1:{port}",))
         procs.append(run_xray(xdns_client_cfg(link, 21800), "DNS-туннель напрямую"))
         code, n, sec = fetch(21800, URL)
         ok(code == 204, "DNS-туннель: сайт открывается (напрямую на сервер)", f"ответ {code}, {sec:.1f} с")
@@ -240,10 +243,10 @@ def xdns_check() -> None:
                               stderr=subprocess.PIPE, text=True)
         procs.append(ub)
         time.sleep(2)
-        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=("127.0.0.1:5454",))
+        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, enc, "CI", resolvers=("127.0.0.1:5454",), address="77.88.8.8")
         procs.append(run_xray(xdns_client_cfg(link, 21801), "DNS-туннель через DNS-посредник"))
         code, n, sec = fetch(21801, URL)
-        ok(code == 204, "DNS-туннель: сайт открывается через DNS-сервер-посредник (unbound)", f"ответ {code}, {sec:.1f} с")
+        ok(code == 204, "DNS-туннель: сайт открывается через DNS-сервер-посредник (unbound; в ссылке публичный адрес — шифрование VLESS)", f"ответ {code}, {sec:.1f} с")
         if code == 204:
             speed(21801, "через посредник (unbound)")
         else:
@@ -255,14 +258,14 @@ def xdns_check() -> None:
                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         procs.append(dm)
         time.sleep(1)
-        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=("127.0.0.1:5455",))
+        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, enc, "CI", resolvers=("127.0.0.1:5455",), address="77.88.8.8")
         procs.append(run_xray(xdns_client_cfg(link, 21804), "DNS-туннель через dnsmasq"))
         code, n, sec = fetch(21804, URL)
         ok(code == 204, "DNS-туннель: сайт открывается через DNS-пересыльщик (dnsmasq)", f"ответ {code}, {sec:.1f} с")
         if code == 204:
             speed(21804, "через пересыльщик (dnsmasq)")
         # в) «другой компьютер»: запросы на порт 53 сервера (перенаправление iptables на службу)
-        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=("10.210.0.1:53",))
+        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, enc, "CI", resolvers=("10.210.0.1:53",))
         path = os.path.join(tempfile.gettempdir(), "server-check-xdns-ns.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(xdns_client_cfg(link, 21802), f)
@@ -274,7 +277,7 @@ def xdns_check() -> None:
                f"-x http://127.0.0.1:21802 {URL}")
         ok(r.stdout.strip() == "204", "DNS-туннель: с другого компьютера через порт 53 сервера", f"ответ {r.stdout.strip() or r.stderr[-200:]}")
         # г) без пароля шифрования сервер не отвечает (чужой не воспользуется туннелем)
-        bad = vps.make_xdns_link(XDNS_DOMAIN, uuid, vps.xdns_password(), "CI", resolvers=(f"127.0.0.1:{port}",))
+        bad = vps.make_xdns_link(XDNS_DOMAIN, uuid, vps.xdns_password(), enc, "CI", resolvers=(f"127.0.0.1:{port}",))
         procs.append(run_xray(xdns_client_cfg(bad, 21803), "DNS-туннель с чужим паролем"))
         code, n, sec = fetch(21803, URL, timeout=20)
         ok(code != 204, "DNS-туннель с чужим паролем не работает", f"ответ {code}")

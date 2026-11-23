@@ -65,6 +65,40 @@ elif mode == "services":
     print(canon([[[s["name"], s["domains"], bool(s.get("russian"))] for s in services.SERVICES], dpi.YOUTUBE_DOMAINS, dpi.DISCORD_DOMAINS]))
 elif mode == "vps":
     sys.stdout.write(vps.script())
+elif mode == "vpsxdns":
+    from pult import xray
+    uid, pw = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", "kAbcdefghijklmnopqrstuvwx_-1"
+    for d in ("T.Example.RU.", "t.my-site.ru", "т.пример.рф", "example.ru", "t.$(id).ru", "t..ru", "-t.example.ru", "a" * 70 + ".ru.ru", ""):
+        try:
+            print(vps.check_domain(d))
+        except vps.VpsError:
+            print("bad")
+    for d in ("t.a.ru", "t.example.ru", "t." + "x" * 25 + ".ru", "t." + "x" * 35 + ".ru", "t." + "x" * 50 + ".ru"):
+        print(links.xdns_mtu(d))
+    print(canon(vps.xdns_server_config("t.example.ru", uid, pw)))
+    sys.stdout.write(vps.xdns_script("t.example.ru", uid, pw))
+    sys.stdout.write(vps.xdns_script("t.example.ru", uid, pw, iface="vdx0"))
+    for args in (("t.example.ru", "x;reboot", pw), ("t.example.ru", uid, "$(reboot)aaaaaaaaaaaa"), ("t.example.ru", uid, pw, "eth0;id")):
+        try:
+            vps.xdns_script(*args)
+            print("accepted")
+        except vps.VpsError:
+            print("bad")
+    enc = "mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf"
+    for r in ("5300|26.11.9|" + enc, "5300|26.11.9", "x|26.10.31|" + enc, "5300|$(id)|" + enc, "5300|26.11.9|" + enc + ";id"):
+        try:
+            x = vps.parse_xdns_result(r)
+            print(f"{x[0]} {x[1]} {x[2]}")
+        except vps.VpsError:
+            print("bad")
+    for res, addr in ((vps.XDNS_RESOLVERS, ""), (("127.0.0.1:5454",), "77.88.8.8")):
+        link = vps.make_xdns_link("t.example.ru", uid, pw, enc, "Germany · DNS-туннель", resolvers=res, address=addr)
+        print(link)
+        srv = links.parse_link(link)
+        print(canon(srv.outbound))
+        print(links.is_xdns(srv), links.xdns_domain_of(srv.outbound["streamSettings"]), srv.insecure)
+        for ver in ("26.9.30", "26.10.21", "26.11.9"):
+            print(canon(xray.proxy_outbounds(srv, "proxy", False, ver)))
 elif mode == "vpsawg":
     from pult import warp
     cnt = [0]

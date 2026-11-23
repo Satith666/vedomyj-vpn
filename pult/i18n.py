@@ -49,6 +49,7 @@ RULES: list[tuple[str, str]] = [
     (r"^DNS-туннель на сервере не запустился$", "The DNS tunnel did not start on the server"),
     (r"^на сервере нет iptables, и его не удалось установить$", "the server has no iptables, and it could not be installed"),
     (r"^Ставлю DNS-туннель на сервер$", "Installing the DNS tunnel on the server"),
+    (r"^Xray на сервере не создал ключ шифрования туннеля$", "Xray on the server did not create the tunnel encryption key"),
     (r"^нужен поддомен своего домена, например t\.example\.ru$", "a subdomain of your domain is needed, for example t.example.com"),
     (r"^в имени домена недопустимые знаки$", "the domain name has characters that aren't allowed"),
     (r"^неверные параметры DNS-туннеля$", "wrong DNS tunnel parameters"),
