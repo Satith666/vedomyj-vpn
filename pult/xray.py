@@ -702,6 +702,7 @@ class XrayProcess:
         self.proc: subprocess.Popen | None = None
         self.lines: collections.deque = collections.deque(maxlen=200)
         self._lock = threading.Lock()
+        self._reader_thread: threading.Thread | None = None
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -719,7 +720,8 @@ class XrayProcess:
                                          **_popen_kwargs(self.paths.bin_dir))
         except OSError as exc:
             raise XrayError(start_error(exc, self.exe)) from exc
-        threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
+        self._reader_thread = threading.Thread(target=self._reader, args=(self.proc,), daemon=True)
+        self._reader_thread.start()
         if not netutil.wait_ports(wait_for, timeout=timeout, alive=self.alive):
             time.sleep(0.3)
             tail = "\n".join(list(self.lines)[-4:])
@@ -733,6 +735,21 @@ class XrayProcess:
                     f.write(str(self.proc.pid))
             except OSError:
                 pass
+
+    def death_note(self, wait: float = 1.5) -> str:
+        """Почему ядро остановилось: код выхода и последние строки вывода. Ядро уже закрылось, а читатель вывода
+        мог ещё не дочитать его (паника Go печатается в самом конце) — ждём его до wait секунд."""
+        t = getattr(self, "_reader_thread", None)
+        if t is not None:
+            t.join(wait)
+        proc = self.proc
+        code = proc.poll() if proc is not None else None
+        lines = list(self.lines)
+        # паника: первая строка «panic: …» и место, где она случилась, важнее хвоста из адресов памяти
+        panic = next((i for i, ln in enumerate(lines) if ln.startswith(("panic:", "fatal error:"))), None)
+        pick = lines[panic:panic + 6] if panic is not None else lines[-4:]
+        head = f"код выхода {code}" if code is not None else "процесс пропал"
+        return "\n".join([head] + pick)
 
     def _reader(self, proc: subprocess.Popen):
         assert proc.stdout is not None

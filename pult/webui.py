@@ -1062,6 +1062,8 @@ class UIServer:
             s["conn_method"] = "auto" if s["autopilot"] else "server"
         if a.get("tun_engine") in ("auto", "xray", "singbox", "tun2proxy"):
             s["tun_engine"] = a["tun_engine"]
+        if "tun_engine" in a or a.get("tun_enabled"):
+            e._tun_skip.clear()  # человек сам выбрал TUN или движок — пробуем снова, даже если недавно не держался
         if "autostart" in a:
             try:
                 autostart.set_enabled(e.paths.app_dir, bool(a["autostart"]))

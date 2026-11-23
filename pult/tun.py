@@ -302,6 +302,14 @@ class ElevatedXray:
             self.helper.stop(self.NAME)
         self.running = False
 
+    def death_note(self, wait: float = 0.0) -> str:
+        """Почему ядро (запущенное помощником) остановилось: что помощник успел увидеть в его выводе."""
+        st = self.helper.status(self.NAME)
+        log = [ln for ln in str(st.get("log") or st.get("error") or "").splitlines() if ln.strip()]
+        panic = next((i for i, ln in enumerate(log) if ln.startswith(("panic:", "fatal error:"))), None)
+        pick = log[panic:panic + 6] if panic is not None else log[-4:]
+        return "\n".join(["ядро в режиме TUN (через помощника)"] + pick)
+
 
 class TunProcess:
     """sing-box или tun2proxy, запущенные помощником."""
@@ -335,6 +343,12 @@ class TunProcess:
 
     def error(self) -> str:
         return _short(self.helper.status(self.NAME).get("error") or "")
+
+    def death_note(self) -> str:
+        """Подробнее, чем error(): последние строки вывода sing-box или tun2proxy (для «проблемы» и отчёта)."""
+        st = self.helper.status(self.NAME)
+        log = [ln.strip() for ln in str(st.get("log") or st.get("error") or "").splitlines() if ln.strip()]
+        return "\n".join(log[-5:]) or "без подробностей"
 
     def stop(self) -> None:
         if self.engine:

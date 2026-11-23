@@ -336,7 +336,7 @@ def run_selftest(app_dir: str) -> list[dict]:
         # вывод — строго в UTF-8: в русской Windows по умолчанию cp1251, и символ «→» в названии теста ронял вывод
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         proc = subprocess.run([sys.executable, "-m", "pult.selftest", "--json"], cwd=app_dir, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", timeout=240, creationflags=flags, env=env)
+                              text=True, encoding="utf-8", errors="replace", timeout=900, creationflags=flags, env=env)
         lines = proc.stdout.strip().splitlines()
         if not lines:
             tail = (proc.stderr or "").strip().splitlines()
@@ -583,7 +583,21 @@ def finish(r: Report, e) -> dict:
     if getattr(e, "journal", None) is not None:
         from . import journal
         lines += [""] + journal.report_lines(e.journal.recent(journal.KEEP), i18n.tr)
-    lines += ["", T("Последние строки журнала:", "Last log lines:")] + e.logs_view()[-60:]
+    errs = getattr(e, "errors", None)
+    if errs is not None:
+        # журнал ошибок хранится на диске: виден и после перезапуска программы, когда журнал в памяти уже пуст
+        recent = [x for x in errs.recent(40) if time.time() - float(x.get("last") or 0) < 3 * 86400][:15]
+        if recent:
+            lines += ["", T("Ошибки и проблемы за 3 дня (журнал ошибок):", "Errors and problems in 3 days (error log):")]
+            for x in recent:
+                when = time.strftime("%d.%m %H:%M", time.localtime(float(x.get("last") or 0)))
+                times = f" ×{x['count']}" if int(x.get("count") or 1) > 1 else ""
+                detail = " | ".join(ln.strip() for ln in str(x.get("detail") or "").splitlines() if ln.strip())[:400]
+                lines.append(f"{when}{times} [{x.get('version', '?')}] {i18n.tr(x.get('title', ''))}"
+                             + (f" — {i18n.tr(detail)}" if detail else ""))
+    lines += ["", T("Последние строки журнала:", "Last log lines:")] + (e.logs_view()[-60:] or [
+        T("(пусто: программу перезапускали — журнал ошибок выше остаётся и после перезапуска)",
+          "(empty: the program was restarted — the error log above survives restarts)")])
     sec = secrets_of(e)
     text = scrub("\n".join(lines), sec)
     items = [dict(i, title=scrub(i["title"], sec), detail=scrub(i["detail"], sec)) for i in r.items]

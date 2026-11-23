@@ -117,6 +117,9 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self._ping_at = -1e9        # когда последний раз измерен пинг
         self._net_event_at = 0.0    # Windows сообщила о смене сети
         self._vpn_wanted = False    # идёт подключение VPN (до того, как connected станет True)
+        self._tun_fail_times: dict[str, list[float]] = {}   # движок TUN → когда падал (_tun_failed)
+        self._tun_skip: dict[str, tuple[float, str]] = {}   # движок TUN → (до какого времени пропускать, почему)
+        self._tun_up_at = 0.0       # когда подключились в режиме TUN (0 — не в TUN)
         self._tail_lock = threading.Lock()
         self._dispatcher_init()     # диспетчер: можно ли автоматике трогать VPN (dispatcher.py)
         self._protect_init()        # предохранители, автооткат, безопасный запуск (protect.py)
@@ -255,8 +258,27 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             text = text.replace(meta["url"], "<ссылка на подписку>")
         return text
 
+    def _connecting(self) -> bool:
+        """Идёт подключение или переподключение (ядро и движок TUN в этот момент перезапускаются — это не падение)."""
+        if self.conn_busy():
+            return True
+        if self._conn_lock.acquire(blocking=False):
+            self._conn_lock.release()
+            return False
+        return True
+
+    @staticmethod
+    def _death_note(proc) -> str:
+        try:
+            return proc.death_note() if hasattr(proc, "death_note") else "\n".join(list(proc.lines)[-3:])
+        except Exception as exc:  # причина падения — для журнала; сама её добыча не должна ронять монитор
+            return f"без подробностей ({exc})"
+
     def _xray_line(self, line: str) -> None:
         low = line.lower()
+        if low.startswith(("panic:", "fatal error:")):
+            self.log("Xray: " + line[:300])  # паника ядра — без «[Error]» в строке, раньше в журнал не попадала
+            return
         if "[warning]" in low or "[error]" in low or "failed" in low:
             self.log("Xray: " + line[line.find("["):] if "[" in line else "Xray: " + line)
 
@@ -1196,6 +1218,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             self.kill_on = False
             self.connected = True
             self.current = server
+            self._tun_up_at = time.time() if self.tun_active else 0.0
             self.resolve("connect", "core_crash", "no_working", "server_down", "port_busy", "kill_switch")
             self._ping_failures = 0
             self._slow_count = 0
@@ -1256,18 +1279,64 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
 
     # ---------- режим TUN ----------
 
+    TUN_FAILS = 2          # столько падений движка TUN за TUN_FAIL_WINDOW — и он пропускается
+    TUN_FAIL_WINDOW = 600  # с
+    TUN_SKIP_FOR = 3600    # с: сколько не пробовать сломавшийся движок (потом — снова)
+
+    def _tun_failed(self, engine: str, reason: str) -> None:
+        """Движок TUN упал. Дважды за 10 минут — час его не пробуем: «Авто» берёт следующий движок, а если других
+        нет (или движок выбран вручную) — программа работает через системный прокси и честно об этом пишет."""
+        now = time.time()
+        hist = [t for t in self._tun_fail_times.get(engine, []) if now - t < self.TUN_FAIL_WINDOW] + [now]
+        self._tun_fail_times[engine] = hist
+        if len(hist) >= self.TUN_FAILS:
+            self._tun_skip[engine] = (now + self.TUN_SKIP_FOR, reason)
+            self._tun_fail_times[engine] = []
+            self.log(f"Режим TUN через {tun.ENGINE_NAMES[engine]} падает снова и снова ({reason}) — "
+                     f"час его не использую.")
+
+    def _tun_skipped(self, engine: str) -> str:
+        """Причина, если движок сейчас пропускается, иначе ''."""
+        until, reason = self._tun_skip.get(engine, (0.0, ""))
+        return reason if until > time.time() else ""
+
+    TUN_TRUST_AFTER = 180  # с: сервер перестал отвечать в первые 3 минуты TUN — виноват TUN, а не сервер
+
+    def _tun_broken_check(self) -> bool:
+        """Только что включили TUN, и сервер сразу «не отвечает» (проверка связи — мимо TUN, прямо в ядро):
+        значит, TUN ломает собственные соединения ядра. Так было в 1.26.0 — без TUN тот же сервер работал.
+        TUN откладывается на час, программа переподключается через системный прокси и пишет об этом."""
+        if not (self.tun_active and self.current and self._ping_failures >= 2 and self._tun_up_at
+                and time.time() - self._tun_up_at < self.TUN_TRUST_AFTER) or self.conn_busy() or self.data_flowing():
+            return False
+        engine = self.tun_active
+        reason = f"через {tun.ENGINE_NAMES[engine]} сайты не открываются, без TUN сервер работает"
+        for e in tun.ENGINES:
+            self._tun_skip[e] = (time.time() + self.TUN_SKIP_FOR, reason)
+        self._ping_failures = 0
+        self._tun_up_at = 0.0
+        self.log(f"Режим TUN: сервер не отвечает сразу после включения TUN ({tun.ENGINE_NAMES[engine]}) — "
+                 "переподключаюсь через системный прокси.")
+        self.run_task("Переподключение", self._tun_reconnect, self.current, lane="conn")
+        return True
+
+    def _tun_reconnect(self, server: Server) -> None:
+        self._lane.why = "режим TUN остановился"
+        self.connect(server)
+
     def _tun_engines(self, server: Server) -> list[str]:
-        """Какие движки пробовать: выбранный или, в «Авто», по очереди (сначала тот, что уже заработал)."""
+        """Какие движки пробовать: выбранный или, в «Авто», по очереди (сначала тот, что уже заработал).
+        Движки, которые только что падали раз за разом (_tun_failed), пропускаются."""
         choice = self.settings.get("tun_engine", "auto")
         if choice in tun.ENGINES:
-            return [choice]
+            return [] if self._tun_skipped(choice) else [choice]
         ver = xray.LEGACY_VERSION if server.insecure else (self.xray_ver or "")
         order = [e for e in tun.ENGINES if e != "xray" or tun.xray_supports_tun(ver)]
         pref = self.settings.get("tun_engine_auto")
         if pref in order:
             order.remove(pref)
             order.insert(0, pref)
-        return order
+        return [e for e in order if not self._tun_skipped(e)]
 
     def _ensure_tun_engine(self, engine: str, exe: str, server: Server) -> None:
         proxy = self.ports.get("health") if self.connected and self.proc.alive() else None
@@ -1297,6 +1366,12 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             self.log(f"Сервер «{server.name}» просит новую маскировку (fm или перебор портов), а ядро Xray старое — "
                      "пока без неё. Обнови ядро на странице «Обновления».")
         engines = self._tun_engines(server) if s.get("tun_enabled") and self.tun_supported else []
+        if s.get("tun_enabled") and self.tun_supported and not engines and server is not self.FILTER:
+            why = "; ".join(f"{tun.ENGINE_NAMES[e]}: {self._tun_skipped(e)}" for e in tun.ENGINES if self._tun_skipped(e))
+            self.tun_error = why
+            self.problem("tun", "Режим TUN сейчас не держится — работаю через системный прокси", why,
+                         where="Подключение", fix="Браузеры и большинство программ идут через VPN. Через час программа "
+                         "снова попробует TUN. Выбрать другой движок можно в списке «Подключение».")
         errors = []
         for engine in engines:
             try:
@@ -4784,19 +4859,24 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
             if self.settings.get("autopilot") and time.time() - self._standby_at > 600:
                 self._standby_at = time.time()
                 threading.Thread(target=self._standby_check, daemon=True).start()
-            if not self.proc.alive() and self.connected:
-                self.log("Ядро Xray неожиданно остановилось.")
-                self.problem("core_crash", "Ядро Xray неожиданно остановилось",
-                             "\n".join(list(self.proc.lines)[-3:]), where="Подключение",
+            if not self.proc.alive() and self.connected and not self._connecting():
+                note = self._death_note(self.proc)
+                self.log("Ядро Xray неожиданно остановилось: " + note.replace("\n", " | "))
+                self.problem("core_crash", "Ядро Xray неожиданно остановилось", note, where="Подключение",
                              fix="Программа переподключится сама. Если повторяется — обнови ядро.")
+                if self.tun_active == "xray":
+                    self._tun_failed("xray", "ядро в режиме TUN остановилось")
                 if self.current and not self.conn_busy():
                     self.run_task("Переподключение", self._recover, self.current, lane="conn")
-            elif self.tun_active in ("singbox", "tun2proxy") and self.connected and not self.tun_proc.alive():
-                err = self.tun_proc.error()
-                self.log(f"Режим TUN неожиданно остановился: {err or 'без подробностей'}.")
+            elif self.tun_active in ("singbox", "tun2proxy") and self.connected and not self._connecting() \
+                    and not self.tun_proc.alive():  # во время переподключения движок перезапускается — это не падение
+                engine = self.tun_active
+                note = self.tun_proc.death_note()
+                self.log(f"Режим TUN ({tun.ENGINE_NAMES[engine]}) неожиданно остановился: {note.replace(chr(10), ' | ')}.")
                 self._tun_sig = None
+                self._tun_failed(engine, "движок остановился: " + note.splitlines()[-1][:200])
                 if self.current and not self.is_busy():
-                    self.run_task("Переподключение", self.connect, self.current)
+                    self.run_task("Переподключение", self._tun_reconnect, self.current)
         elif self.filter_on:
             if tick % (self.LOG_TAIL_UI if ui else self.LOG_TAIL_BG) == 0:
                 self._tail_access_log()
@@ -5043,6 +5123,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         else:
             self._ping_failures += 1
             self.live["ping"] = None
+            if self._tun_broken_check():
+                return
             if self._ping_failures >= 2:
                 self.problem("server_down", "Сервер не отвечает", r["error"],
                              where=self.current.name if self.current else "",

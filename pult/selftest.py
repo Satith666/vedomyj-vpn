@@ -5020,6 +5020,14 @@ def t_methods():
             time.sleep(0.05)
         ui.dispatch("method", {"method": "auto"})
         check(e.settings["engine_pick"] == "auto", "Авто — снова все серверы")
+        # «Автопереход» в настройках и на главном — это способ: выключили — «VPN-сервер», включили — «Авто»
+        wait_idle(e)
+        ui.dispatch("save_settings", {"autopilot": False})
+        m_off = e.method()
+        wait_idle(e)
+        ui.dispatch("save_settings", {"autopilot": True})
+        wait_idle(e)
+        check(m_off == "server" and e.method() == "auto" and e.settings["autopilot"], f"Автопереход = способ: {m_off}, {e.method()}")
         try:
             ui.dispatch("method", {"method": "nope"})
             check(False, "неизвестный способ принят")
@@ -5044,15 +5052,79 @@ def t_methods():
         e.dpi_supported = True
         e.set_dpi = lambda vals: calls.append(("set", dict(vals))) or True
         e.setup_dpi = lambda: calls.append(("setup",)) or ""
+        e.settings.update(zapret_enabled=False, byedpi_role="off")
         e.method_off()
         check(not e.connected and ("setup",) in calls and calls[0][1] == {"zapret_enabled": True, "byedpi_role": "backup"},
               f"Без VPN: {calls}")
+        # 1.26.1: в списке «Способ» выбран ByeDPI (главный ByeDPI, запасной Zapret) — «Без VPN» это не перебивает
+        calls.clear()
+        e.settings.update(zapret_enabled=True, byedpi_role="main")
+        e.method_off()
+        check(not any(c[0] == "set" for c in calls) and ("setup",) in calls, f"ByeDPI главный остаётся: {calls}")
         check(e.method() == "auto", "способ меняет только кнопка (method_off сам его не трогает)")
     finally:
         if e:
             e.shutdown()
         shutil.rmtree(tmp, ignore_errors=True)
         HEALTH_PORT.clear()
+
+
+@case("TUN не держится → сам системный прокси: падения движка, «сервер не отвечает» сразу после TUN, выбор заново")
+def t_tun_fallback():
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    try:
+        e = make_engine(tmp)
+        e._monitor_tick = lambda tick: None
+        e.startup()
+        q = "?security=reality&pbk=K&sni=a.com&type=tcp"
+        e.add_servers(f"vless://79999999-9999-4999-8999-999999999991@fast.example:443{q}#A")
+        wait_idle(e)
+        srv = e.servers[0]
+        e.tun_supported = True
+        e.xray_ver = "26.11.9"
+        e.settings.update(tun_enabled=True, tun_engine="auto", tun_engine_auto="")
+        check(e._tun_engines(srv) == ["xray", "singbox", "tun2proxy"], f"по умолчанию — все движки: {e._tun_engines(srv)}")
+        # движок упал дважды за 10 минут — час его не пробуем, «Авто» берёт следующий
+        e._tun_failed("singbox", "движок остановился: FATAL")
+        check("singbox" in e._tun_engines(srv), "одно падение — ещё не повод")
+        e._tun_failed("singbox", "движок остановился: FATAL")
+        check(e._tun_engines(srv) == ["xray", "tun2proxy"] and "FATAL" in e._tun_skipped("singbox"),
+              f"два падения — sing-box пропускается: {e._tun_engines(srv)}")
+        # подключились в TUN, и сервер сразу «не отвечает» (проверка идёт мимо TUN) — виноват TUN: переподключение без него
+        e.settings["tun_enabled"] = False
+        e.connect(srv)
+        e.settings["tun_enabled"] = True
+        tasks = []
+        e.run_task = lambda title, func, *a, **kw: tasks.append((title, func.__name__)) or True
+        e.tun_active, e._tun_up_at, e._ping_failures = "xray", time.time(), 2
+        e._rx_at = -1e9
+        check(e._tun_broken_check() and tasks == [("Переподключение", "_tun_reconnect")]
+              and e._tun_engines(srv) == [], f"TUN сломал соединения ядра → без TUN: {tasks}, {e._tun_engines(srv)}")
+        # «сервер не отвечает» через 10 минут после включения TUN — это сервер, а не TUN
+        tasks.clear()
+        e._tun_skip.clear()
+        e._tun_up_at, e._ping_failures = time.time() - 600, 2
+        check(not e._tun_broken_check() and not tasks, "поздний сбой — не повод выключать TUN")
+        e.tun_active = ""
+        del e.run_task
+        # все движки пропускаются — подключение идёт через системный прокси, в окне — понятная проблема
+        for x in tun.ENGINES:
+            e._tun_skip[x] = (time.time() + 3600, "сайты не открываются")
+        e.connect(srv)
+        probs = {p["key"]: p for p in e.problems_list()}
+        check(e.connected and not e.tun_active and "tun" in probs and "системный прокси" in probs["tun"]["title"],
+              f"без TUN и с объяснением: {e.tun_active!r}, {list(probs)}")
+        # человек сам выбрал движок или снова включил TUN — пробуем заново
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        wait_idle(e)
+        ui.dispatch("save_settings", {"tun_engine": "singbox"})
+        check(not e._tun_skip, "свой выбор движка снимает пропуск")
+    finally:
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 @case("Фон: пока VPN работает, программа не запускает других программ (10 минут за секунду)")
@@ -5647,6 +5719,20 @@ def t_warp_xray():
         check(f"PrivateKey = {priv}" in text and warp.current_params(text)["endpoint"] == warp.PRESETS[2][0]
               and len(text.encode()) < 1800, "QR: конфиг с обманками, которые работают в этой сети")
         qr.make(text)
+        # 1.26.1: нажали «WARP» в списке, а программы AmneziaWG нет — WARP во встроенном ядре, а не ошибка «скачай AmneziaWG»
+        e.disconnect()
+        e.awg.client = ""
+        e.awg.refresh = lambda: ""
+        ui.dispatch("connect", {"key": by[warp.NAME].key})
+        wait_idle(e)
+        check(e.connected and e.current is not None and e.current.key == warpauto.WARP_KEY and e.method() == "awg"
+              and not any(it["kind"] == "fail" for it in e.journal.recent(3)),
+              f"WARP без программы AmneziaWG — во встроенном ядре: {e.current.name if e.current else None}, {e.journal.recent(2)}")
+        # «Автонастройка» после этого: не «Не удалось выбрать сервер», а способ «Авто» и обычный сервер
+        e.update_geo = lambda *a, **k: None
+        e.auto_setup()
+        check(e.method() == "auto" and e.settings["engine_pick"] == "auto" and e.connected
+              and e.current.key == by["Two"].key, f"Автонастройка после WARP: {e.method()}, {e.current.name if e.current else None}")
         # своего WARP нет — маршрут не выбрать без создания; запасной путь выключен — честное «ничего не работает»
         e.settings["routes"].pop("svc:ChatGPT")
         e.settings["manual_links"] = [x for x in e.settings["manual_links"] if not x.startswith("awg://")]
@@ -6547,6 +6633,9 @@ def run_all() -> dict:
     install_fakes()
     t0 = time.time()
     order = [c for c in CASES if c.__name__ != "t_i18n"] + [c for c in CASES if c.__name__ == "t_i18n"]
+    if "--only" in sys.argv:  # для разработки: python -m pult.selftest --only t_methods,t_i18n
+        names = set(sys.argv[sys.argv.index("--only") + 1].split(","))
+        order = [c for c in order if c.__name__ in names]
     for c in order:
         c()
     failed = [r for r in RESULTS if not r["ok"]]
