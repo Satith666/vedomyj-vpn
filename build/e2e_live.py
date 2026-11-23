@@ -2,7 +2,7 @@
 же машине. Ловит то, чего не видно в проверке настроек (xray -test) и в самопроверке на заглушках: ядро или движок
 TUN падают через несколько секунд после подключения, «подключено», а сайты не открываются.
 
-Серверы — настоящий Xray на 127.0.0.2: VLESS + REALITY + Vision (как у большинства подписок) и VLESS без шифрования
+Серверы — настоящий Xray на этой машине: VLESS + REALITY + Vision (как у большинства подписок) и VLESS без шифрования
 (запасной для «мгновенного переключения»). Ключи создаются на месте, наружу ничего не уходит.
 
 Настройки — как у человека из отчёта: «всё через VPN», российские напрямую, системный прокси, маскировка сама,
@@ -10,8 +10,9 @@ TUN падают через несколько секунд после подк�
   proxy                — без TUN;
   tun-xray / tun-singbox / tun-tun2proxy — режим TUN каждым движком (только Windows, нужны права администратора).
 В каждом круге: подключение через Engine.connect, потом ~75 секунд каждые 3 секунды запрос к сайту (в TUN — без
-прокси, как браузер), живы ли ядро и движок TUN, что в «проблемах» и журнале подключения. Если круг не прошёл —
-он повторяется без «мгновенного переключения» и с ядром Xray v26.10.31: так видно, кто виноват.
+прокси, как браузер), живы ли ядро и движок TUN, что в «проблемах» и журнале подключения. Круг прошёл, если в конце
+сайты открываются: в TUN или, если TUN не держится, через системный прокси (так программа чинит себя сама с 1.26.1) —
+в отчёте видно, что именно. Не прошёл — повтор без правила «Discord через VPN».
 В конце — «Автонастройка» целиком.
 
 Запуск: python build/e2e_live.py [--rounds proxy,tun-xray] [--seconds 75]. Код выхода 1 — если основной круг
@@ -42,11 +43,24 @@ from pult import engine as engmod  # noqa: E402
 
 IS_WINDOWS = sys.platform == "win32"
 EXE = "xray.exe" if IS_WINDOWS else "xray"
-OLD_CORE = "v26.10.31"
 PROBE = "http://www.gstatic.com/generate_204"
-# 127.0.0.1 и localhost программа считает «заглушкой провайдера» (так помечают сообщения в подписках) — свои серверы
-# слушают на другом адресе той же петли
-HOST = "127.0.0.2"
+
+
+def lan_ip() -> str:
+    """Адрес основного адаптера (до включения TUN)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 53))
+            return s.getsockname()[0]
+    except OSError:
+        return ""
+
+
+# 127.0.0.1 и localhost программа считает «заглушкой провайдера» (так помечают сообщения в подписках). На Windows
+# серверы слушают на адресе основного адаптера и выходят в интернет только через него (sendThrough): иначе в режиме
+# TUN их собственный трафик ушёл бы в TUN — петля, которой у настоящего (удалённого) сервера не бывает, а привязка
+# выходов программы к адаптеру (tun2proxy, Xray TUN) ломает соединения к петле 127.x.
+HOST = (lan_ip() if IS_WINDOWS else "") or "127.0.0.2"
 REPORT: list[str] = []
 FAILS: list[str] = []
 
@@ -111,7 +125,7 @@ def _open(host: str, port: int) -> bool:
 
 
 class Servers:
-    """Два настоящих сервера Xray на 127.0.0.2 (REALITY + Vision и простой VLESS) — для одного ядра."""
+    """Два настоящих сервера Xray на этой машине (REALITY + Vision и простой VLESS) — для одного ядра."""
 
     def __init__(self, folder: str, work: str):
         self.folder, self.work = folder, work
@@ -132,7 +146,9 @@ class Servers:
                     {"listen": HOST, "port": self.p2, "protocol": "vless",
                      "settings": {"clients": [{"id": self.uid}], "decryption": "none"},
                      "streamSettings": {"network": "tcp", "security": "none"}}],
-                "outbounds": [{"protocol": "freedom", "tag": "out"}]}
+                "dns": {"servers": ["1.1.1.1", "8.8.8.8"]},
+                "outbounds": [dict({"protocol": "freedom", "tag": "out", "settings": {"domainStrategy": "UseIPv4"}},
+                                   **({"sendThrough": HOST} if not HOST.startswith("127.") else {}))]}
 
     def start(self) -> None:
         path = os.path.join(self.work, "server.json")
@@ -226,11 +242,13 @@ def probe(proxy_port: int | None) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
-def run_round(name: str, folder: str, links: list[str], seconds: int, failover: bool = True) -> bool:
+def run_round(name: str, folder: str, links: list[str], seconds: int, failover: bool = True, discord: bool = True) -> bool:
     tun_engine = name[4:] if name.startswith("tun-") else ""
-    title = f"{name} | ядро {core_version(folder)} | мгновенное переключение: {'да' if failover else 'нет'}"
+    title = f"{name} | ядро {core_version(folder)} | мгновенное переключение: {'да' if failover else 'нет'}" \
+        + ("" if discord else " | без правила Discord")
     say(f"\n=== Круг: {title}")
     e, app = make_engine(folder, links, tun_engine, failover)
+    e.settings["discord_via_vpn"] = discord
     ok_round = True
     try:
         e.startup()
@@ -247,12 +265,14 @@ def run_round(name: str, folder: str, links: list[str], seconds: int, failover: 
             ok_round = False
         good = bad = 0
         deaths = []
+        results: list[bool] = []
         t_end = time.monotonic() + seconds
         while time.monotonic() < t_end:
             port = None if e.tun_active else e.settings["http_port"]
             ok, detail = probe(port)
             good += ok
             bad += not ok
+            results.append(ok)
             core = e.proc.alive()
             tunp = e.tun_proc.alive() if e.tun_active in ("singbox", "tun2proxy") else True
             stamp = f"{seconds - int(t_end - time.monotonic()):>3} с"
@@ -276,7 +296,12 @@ def run_round(name: str, folder: str, links: list[str], seconds: int, failover: 
         crash = [ln for ln in e.logs if re.search(r"неожиданно|panic|fatal", ln, re.I)]
         for ln in crash[-10:]:
             say("  лог> " + ln[:300])
-        if deaths or bad > max(2, (good + bad) // 5):
+        tail_ok = all(results[-4:]) if len(results) >= 4 else False
+        say(f"В конце круга: {'сайты открываются' if tail_ok else 'сайты НЕ открываются'}; "
+            f"TUN: {e.tun_active or ('нет — программа ушла на системный прокси' if tun_engine else 'нет')}")
+        if tun_engine and not e.tun_active:
+            say("  TUN не удержался: " + "; ".join(f"{k}: {v[1]}" for k, v in e._tun_skip.items()))
+        if not tail_ok or (deaths and not tail_ok):
             ok_round = False
     except Exception as exc:  # noqa: BLE001
         say(f"ОШИБКА круга: {exc}")
@@ -325,7 +350,7 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = sys.argv[1:]
-    seconds = int(args[args.index("--seconds") + 1]) if "--seconds" in args else 75
+    seconds = int(args[args.index("--seconds") + 1]) if "--seconds" in args else 60
     rounds = args[args.index("--rounds") + 1].split(",") if "--rounds" in args else \
         (["proxy", "tun-xray", "tun-singbox", "tun-tun2proxy"] if IS_WINDOWS else ["proxy"])
     xray.WIPE_CONFIGS = False
@@ -342,13 +367,9 @@ def main() -> None:
             results[name] = ok
             if ok:
                 continue
-            # не прошло — кто виноват: мгновенное переключение или новое ядро?
-            results[name + " без мгновенного переключения"] = run_round(name, latest, srv.links(), seconds, failover=False)
-            try:
-                old = core_dir(OLD_CORE)
-                results[f"{name} на ядре {OLD_CORE}"] = run_round(name, old, srv.links(), seconds)
-            except Exception as exc:  # noqa: BLE001
-                say(f"(ядро {OLD_CORE} не скачалось: {exc})")
+            # не прошло — не виновато ли правило «Discord через VPN» (процесс в маршрутах ядра, только в TUN)?
+            # (мгновенное переключение и ядро 26.10.31 вместо 26.11.9 в прошлых прогонах ничего не меняли)
+            results[name + " без правила Discord"] = run_round(name, latest, srv.links(), seconds, discord=False)
         results["Автонастройка после WARP/AmneziaWG"] = autosetup_round(latest, srv.links())
     finally:
         srv.stop()
