@@ -657,8 +657,10 @@ def check_xdns(paths: xray.Paths) -> None:
         return
     enc, dec = encs[i], decs[i]
     domain, uid, pw = "t.vedomyj.test", "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", vps.xdns_password()
-    sport, cport = netutil.find_free_ports(2, start=24300)
+    sport, cport, rport = netutil.find_free_ports(3, start=24300)
     scfg = vps.xdns_server_config(domain, uid, pw, decryption=dec, port=sport, listen="127.0.0.1")
+    # служба туннеля слушает только UDP — TCP-«маячок», чтобы дождаться, пока ядро прочитает настройки
+    scfg["inbounds"].append({"tag": "ready", "listen": "127.0.0.1", "port": rport, "protocol": "socks", "settings": {}})
     link = vps.make_xdns_link(domain, uid, pw, enc, "CI", resolvers=(f"127.0.0.1:{sport}",), address="77.88.8.8")
     srv = links.parse_link(link)
     ccfg = {"log": {"loglevel": "warning"},
@@ -674,7 +676,7 @@ def check_xdns(paths: xray.Paths) -> None:
                 "DNS tunnel: the core accepts the settings (public address, VLESS encryption, xdns)"))
     procs = []
     try:
-        for name, cfg, wait in (("server", scfg, []), ("client", ccfg, [cport])):
+        for name, cfg, wait in (("server", scfg, [rport]), ("client", ccfg, [cport])):
             p = xray.XrayProcess(paths)
             p.start(cfg, os.path.join(paths.data_dir, f"field-check-xdns-{name}.json"), wait_for=wait)
             procs.append(p)
@@ -689,9 +691,11 @@ def check_xdns(paths: xray.Paths) -> None:
                 break
             except OSError as exc:
                 code = str(exc)[:120]
+        tail = "" if code == 204 else " | " + " / ".join(
+            f"{n}: " + " ; ".join(list(p.lines)[-3:])[-300:] for n, p in zip(("server", "client"), procs))
         add("ok" if code == 204 else "error", T("DNS-туннель на этом компьютере: сайт открывается через туннель",
                                                 "DNS tunnel on this computer: a site opens through the tunnel"),
-            f"{code}, {time.time() - t0:.1f} s")
+            f"{code}, {time.time() - t0:.1f} s{tail}")
     finally:
         for p in procs:
             p.stop()
