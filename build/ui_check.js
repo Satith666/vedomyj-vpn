@@ -15,7 +15,7 @@ const fails = [];
 const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAIL]"} ${name}${detail ? " — " + detail : ""}`); if (!cond) fails.push(name); };
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   const page = await browser.newPage({ viewport: { width: 1180, height: 760 } });
   const errors = [];
   page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
@@ -98,11 +98,29 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   const routeOk = await page.locator(".route .rt-node").count();
   ok(routeOk >= 2, "Путь трафика на главном экране", `звеньев: ${routeOk}`);
 
-  // маршрутизация, вход и движок теперь в «Дополнительно»
+  // 1.26.1: маршрутизация, подключение и движок — снова на главном (и в «Дополнительно»); Мультисервер и Автопереход
+  const homeSel = await page.evaluate(() => ["route", "conn", "engine"].map(d => document.querySelectorAll(`#hero [data-dd="${d}"]`).length).join(""));
+  const homeSw = await page.evaluate(() => [
+    document.querySelectorAll('#hero [data-act="tile_set"][data-key="multi_enabled"]').length,
+    document.querySelectorAll('#hero [data-act="home_autopilot"]').length].join(""));
+  const multiBefore = await page.evaluate(() => S.settings.multi_enabled);
+  await page.click('#hero [data-act="tile_set"][data-key="multi_enabled"]');
+  await page.waitForTimeout(500);
+  const multiAfter = await page.evaluate(() => S.settings.multi_enabled);
+  await page.click('#hero [data-act="tile_set"][data-key="multi_enabled"]');
+  await page.waitForTimeout(400);
+  await page.click('#hero [data-act="home_autopilot"]');
+  await page.waitForTimeout(700);
+  const apMethod = await page.evaluate(() => S.method);
+  await page.click('#hero [data-act="home_autopilot"]');
+  await page.waitForTimeout(700);
+  const apBack = await page.evaluate(() => S.method);
+  ok(homeSel === "111" && homeSw === "11" && multiBefore !== multiAfter && apMethod === "server" && apBack === "auto",
+    "Главный экран: Маршрутизация, Подключение, Движок, Мультисервер и Автопереход", `${homeSel} ${homeSw} ${multiBefore}→${multiAfter} ${apMethod}→${apBack}`);
   await page.locator("#moreBtn").click();
   await page.waitForSelector('[data-dd="route"]');
   ok(await page.locator('[data-dd="conn"]').count() === 1 && await page.locator('[data-dd="engine"]').count() === 1,
-    "Маршрутизация, подключение и движок — в «Дополнительно»");
+    "Маршрутизация, подключение и движок — и в «Дополнительно»");
 
   // 4в. «Семья»: кнопка на главном, приглашение с QR, настройка устройства → посылка
   await page.locator("#backBtn").click();
@@ -166,10 +184,17 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
   };
   const ddSrv = await ddItems('[data-dd="m_server"]');
   const ddAwg = await ddItems('[data-dd="m_awg"]');
-  const ddOff = await ddItems('[data-dd="m_off"]');
-  ok(/Xray/.test(ddSrv) && /Hysteria2/.test(ddSrv) && /sing-box/.test(ddSrv) && /zapret/.test(ddAwg) && /ByeDPI/.test(ddAwg)
-    && /Zapret, запасной ByeDPI/.test(ddOff) && (await page.locator('.tg-dd[data-dd="dpi"]').count()) === 1,
-    "«Способ»: списки у плиток и у ускорения", `${ddSrv.slice(0, 60)} / ${ddAwg.slice(0, 60)} / ${ddOff.slice(0, 40)}`);
+  const ddDpi = await page.locator('.tg-dd[data-dd="dpi"]').count();  // на Linux ускорения нет — стрелка неактивна
+  // «Способ» — ровный список: пять строк одной высоты, стрелки только у «VPN-сервер» и «AmneziaWG»
+  const rows = await page.$$eval(".methods.m-list .m-wrap", (els) => els.map((e) => [e.querySelector(".m-text b").textContent.trim(),
+    Math.round(e.getBoundingClientRect().height), Math.round(e.getBoundingClientRect().left)]));
+  const names = rows.map((r) => r[0]).join(",");
+  const sameH = new Set(rows.map((r) => r[1])).size === 1 && new Set(rows.map((r) => r[2])).size === 1;
+  const ddCount = await page.locator(".methods .m-dd").count();
+  ok(/Xray/.test(ddSrv) && /Hysteria2/.test(ddSrv) && /sing-box/.test(ddSrv) && !/zapret/i.test(ddAwg)
+    && ddDpi === 1 && names === "Авто,VPN-сервер,AmneziaWG,Zapret,ByeDPI" && sameH && ddCount === 2,
+    "«Способ»: ровный список Авто / VPN-сервер / AmneziaWG / Zapret / ByeDPI, стрелки у сервера и AmneziaWG",
+    `${names} ${rows.map((r) => r[1]).join("/")} dd=${ddCount} | ${ddSrv.slice(0, 40)} / ${ddAwg.slice(0, 40)} / ${ddDpi}`);
   await page.click('[data-dd="m_server"]');
   await page.click('#popover [data-pick="eng:xray"]');
   await page.waitForTimeout(600);

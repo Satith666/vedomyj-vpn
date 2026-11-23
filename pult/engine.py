@@ -1100,7 +1100,11 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         """Ускорение YouTube и Discord: zapret, запасной ByeDPI (на Windows); подбор стратегий — сам."""
         if not self.dpi_supported:
             raise RuntimeError("Ускорение YouTube и Discord работает только в Windows.")
-        changed = self.set_dpi({"zapret_enabled": True, "byedpi_role": "backup"})
+        s = self.settings
+        if s.get("zapret_enabled") or s.get("byedpi_role", "off") != "off":
+            changed = False  # уже выбрано, кто главный (Zapret или ByeDPI в списке «Способ») — не перебиваем
+        else:
+            changed = self.set_dpi({"zapret_enabled": True, "byedpi_role": "backup"})
         if changed or not self.dpi_mode:
             self.setup_dpi()
 
@@ -1130,6 +1134,18 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         except Exception:
             pass
 
+    def _warp_builtin_for(self, server: Server) -> Server | None:
+        """Свой бесплатный WARP, а программы AmneziaWG на компьютере нет (или это не Windows): включаем его во
+        встроенном ядре Xray с подбором обманок, а не ошибкой «скачай AmneziaWG». None — обычный путь AmneziaWG."""
+        if server.key != getattr(self.own_warp(), "key", None) or not self.paths.xray_exists():
+            return None
+        if self.awg.client or self.awg.refresh():
+            return None
+        if not warpauto.core_ok(self.xray_ver or ""):
+            return None
+        self.log("Программы AmneziaWG нет — включаю бесплатный WARP во встроенном ядре Xray.")
+        return self.warp_pick() or self.warp_xray()
+
     def connect(self, server: Server) -> None:
         """Подключиться (или переключиться) к серверу — с записью в журнал подключения."""
         prev = self.awg_active or (self.current if self.connected else None)
@@ -1144,8 +1160,11 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
 
     def _connect(self, server: Server) -> None:
         if server.engine == "awg":
-            self.connect_awg(server)
-            return
+            wsrv = self._warp_builtin_for(server)
+            if wsrv is None:
+                self.connect_awg(server)
+                return
+            server = wsrv  # свой WARP без программы AmneziaWG — во встроенном ядре Xray
         self._need_xray()
         if not server.supported:
             raise RuntimeError(f"«{server.name}» — {server.note}.")
@@ -3424,9 +3443,21 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         except Exception as exc:
             self.log(f"Замер скорости не удался: {exc}")
         self.check_stop()
+        if self.method() != "auto":
+            # «Автонастройка» — это «Авто»: лучший обычный сервер и автопереход при сбое. Без этого после
+            # нажатия WARP или AmneziaWG (способ «AmneziaWG») выбирать было не из чего: «Не удалось выбрать сервер»
+            self.log(f"Автонастройка: способ «{self.METHODS[self.method()]}» → «Авто».")
+            self.set_method("auto")
         best = self.best()
+        if not best and self.settings.get("engine_pick", "auto") != "auto":
+            self.log(f"Автонастройка: у движка «{self.ENGINE_NAMES.get(self.settings.get('engine_pick'), '?')}» "
+                     "нет рабочих серверов — беру все.")
+            self.settings["engine_pick"] = "auto"
+            self.save()
+            best = self.best()
         if not best:
-            raise RuntimeError("Не удалось выбрать сервер.")
+            raise RuntimeError("Не удалось выбрать сервер: рабочие есть только среди AmneziaWG и экспериментов. "
+                               "Включи AmneziaWG кнопкой «Способ → AmneziaWG».")
         self.connect(best)
         steps.append(f"сервер: {best.name}")
         r = best.result

@@ -565,6 +565,7 @@ function renderHero() {
         </div>
         ${routeHtml(on, connecting, awgOn, accelRun)}
         <dl class="stats" id="heroStats"></dl>
+        <div class="selects home-selects">${connSelects("h")}</div>
         <div class="con-foot">
           <button type="button" class="link-btn con-health" data-nav="status"><i class="dot ${hv.cls}"></i>${esc(hv.short)}</button>
           <span class="hint">${esc(t("journal_auto_short", { h: J.auto_hour || 0 }))}</span>
@@ -574,7 +575,7 @@ function renderHero() {
         <div class="con-card">
           <div class="con-title-row"><h2 class="con-title" id="methodTitle">${t("method_title")}</h2>
             <button type="button" class="btn btn-small" data-act="pick_server">${t("m_change")}</button></div>
-          <div class="methods" role="radiogroup" aria-labelledby="methodTitle">${methodRows(method)}</div>
+          <div class="methods m-list" role="radiogroup" aria-labelledby="methodTitle">${methodRows(method)}</div>
         </div>
         <div class="con-card con-toggles">${toggleRows()}</div>
         ${nwRowHtml()}
@@ -604,24 +605,35 @@ function routeHtml(on, connecting, awgOn, accelRun) {
     <div class="rt-row">${parts.join(line)}</div></div>`;
 }
 
-const METHODS = ["auto", "server", "awg", "off"];
+/* «Способ» — ровный список сверху вниз. Zapret и ByeDPI — это способ «Без VPN» (только ускорение YouTube и
+   Discord) с тем или другим главным: zapret с запасным ByeDPI или наоборот. */
+const METHODS = ["auto", "server", "awg", "zapret", "byedpi"];
+const DPI_METHOD = { zapret: "zb", byedpi: "bz" };
+
+/* Какая строка списка выбрана: «Без VPN» показывается строкой того, кто сейчас главный в ускорении. */
+function methodRow(method) {
+  if (method !== "off") return method;
+  const c = S.dpi ? dpiCombo() : "off";
+  return c === "bz" || c === "b" ? "byedpi" : "zapret";
+}
 
 function methodRows(method) {
   const cur = S.connected && S.current ? S.current : null;
   const last = S.servers.find(s => s.key === (S.settings.last_server_key || "")) || S.servers.find(s => s.key === S.best);
-  const awgName = S.awg && S.awg.count ? (S.awg.name || t("m_awg_ready")) : t("m_awg_warp");
+  const dpiOk = !!(S.dpi && S.dpi.supported);
   const subs = {
     auto: t("m_auto_sub"),
     server: cur && method === "server" ? cur.name : last ? last.name : t("m_server_none"),
-    awg: S.awg && S.awg.count && !S.awg.client ? t("awg_need_client") : awgName,
-    off: S.dpi && S.dpi.supported ? t("m_off_sub") : t("dpi_st_win"),
+    awg: S.awg && S.awg.count ? (S.awg.name || t("m_awg_ready")) : t("m_awg_warp"),
+    zapret: dpiOk ? t("m_zapret_sub") : t("dpi_st_win"),
+    byedpi: dpiOk ? t("m_byedpi_sub") : t("dpi_st_win"),
   };
   const pick = (S.engine && S.engine.pick) || "auto";
   if (pick !== "auto" && pick !== "awg") subs.server += ` · ${t(`i_eng_${pick}_name`)}`;
-  if (method === "off" && S.dpi && S.dpi.supported) subs.off = t(`i_dpi_${dpiCombo()}_name`);
-  const empty = { awg: false, server: !S.servers.some(s => s.supported && s.kind !== "awg"), auto: false, off: false };
+  const row = methodRow(method);
+  const empty = { server: !S.servers.some(s => s.supported && s.kind !== "awg"), zapret: !dpiOk, byedpi: !dpiOk };
   return METHODS.map(id => {
-    const sel = id === method;
+    const sel = id === row;
     const btn = `<button type="button" class="m-opt ${sel ? "sel" : ""} ${empty[id] && !sel ? "m-empty" : ""}" role="radio" aria-checked="${sel}" data-act="method" data-method="${id}" title="${esc(subs[id])}">
         <span class="m-dot" aria-hidden="true"></span>
         <span class="m-text"><b>${t(`m_${id}`)}</b><small>${esc(subs[id])}</small></span>
@@ -632,8 +644,8 @@ function methodRows(method) {
   }).join("");
 }
 
-/* Стрелки у плиток «Способ»: движок у «VPN-сервер», конфиги и ускорение у «AmneziaWG», чем ускорять у «Без VPN». */
-const M_DD = { server: "m_dd_server", awg: "m_dd_awg", off: "m_dd_off" };
+/* Стрелки в списке «Способ»: движок у «VPN-сервер», конфиги AmneziaWG и бесплатный WARP у «AmneziaWG». */
+const M_DD = { server: "m_dd_server", awg: "m_dd_awg" };
 
 function pickEngine(id) {
   const pick = (S.engine && S.engine.pick) || "auto";
@@ -667,13 +679,8 @@ function pickDpiCombo(id, thenOff) {
 function methodDropdown(anchor, id) {
   const pick = (S.engine && S.engine.pick) || "auto";
   const counts = (S.engine || {}).counts || {};
-  const offDpi = !(S.dpi && S.dpi.supported);
-  const combo = S.dpi ? dpiCombo() : "off";
   const engItem = e => ({ id: "eng:" + e, info: `eng_${e}`, sel: pick === e,
     label: e === "auto" ? t("i_eng_auto_name") : `${t(`i_eng_${e}_name`)} (${counts[e] || 0})` });
-  const dpiItem = (c, label) => ({ id: "dpi:" + c, info: `dpi_${c}`, off: offDpi, quietOff: true, sel: S.method === "off" && combo === c,
-    label: label || t(`i_dpi_${c}_name`) });
-  const novpnHead = t("dd_novpn_head") + (offDpi ? ` (${t("dpi_st_win").toLowerCase()})` : "");
   let groups;
   if (id === "server") {
     groups = [{ head: t("dd_engine_head"), first: true, items: ["auto", "xray", "hy2", "singbox"].map(engItem) },
@@ -683,11 +690,8 @@ function methodDropdown(anchor, id) {
     const awgs = S.servers.filter(x => x.kind === "awg");
     groups = [{ head: t("dd_awg_head"), first: true, items: awgs.length
         ? awgs.map(x => ({ id: "awg:" + x.key, label: x.name, sel: S.method === "awg" && x.key === cur }))
-        : [{ id: "awg:new", label: t("dd_awg_new") }] },
-      { head: novpnHead, items: [dpiItem("z", "zapret"), dpiItem("b", "ByeDPI")] }];
+        : [{ id: "awg:new", label: t("dd_awg_new") }] }];
     if (awgs.length) groups[0].items.push({ id: "awg:new", label: t("dd_awg_more") });
-  } else {
-    groups = [{ head: novpnHead, first: true, items: ["zb", "bz", "z", "b"].map(c => dpiItem(c)) }];
   }
   openDropdown(anchor, groups, v => {
     const [kind, arg] = v.split(/:(.*)/s);
@@ -727,10 +731,34 @@ function toggleRows() {
   const row = (name, sub, control) => `<div class="tg-row"><span class="tg-text"><b>${esc(name)}</b><small>${esc(sub)}</small></span>${control}</div>`;
   const accelCtl = `<span class="tg-ctl"><button type="button" class="tg-dd" data-dd="dpi" aria-haspopup="listbox" aria-expanded="false"
       aria-label="${esc(t("accel_dd"))}" title="${esc(t("accel_dd"))}" ${d.supported ? "" : "disabled"}>${icon("down")}</button>${sw(accelOn, `data-act="accel" aria-label="${esc(t("accel_name"))}"`, !d.supported)}</span>`;
+  // «Автопереход» — то же, что способ «Авто» (сам меняет сервер при сбое); выключить — способ «VPN-сервер»
+  const autoOn = (S.method || "auto") === "auto";
+  const autoSub = !autoOn ? t("off") : S.backup ? t("tile_backup", { name: S.backup.name }) : t("on");
+  const multi = S.multi || { map: [] };
+  const multiSub = !st.multi_enabled ? t("off") : (multi.map || []).length ? t("multi_n", { n: multi.map.length }) : t("multi_none");
   return row(t("accel_name"), accelSub, accelCtl)
     + row(t("i_ads_name"), adsSide(), sw(st.block_ads, `data-act="tile_ads" aria-label="${esc(t("i_ads_name"))}"`))
     + row(t("i_dns_name"), st.dns_encrypted ? t("dns_on_sub") : t("off"),
-      sw(st.dns_encrypted, `data-act="tile_set" data-key="dns_encrypted" aria-label="${esc(t("i_dns_name"))}"`));
+      sw(st.dns_encrypted, `data-act="tile_set" data-key="dns_encrypted" aria-label="${esc(t("i_dns_name"))}"`))
+    + row(t("i_autopilot_name"), autoSub, sw(autoOn, `data-act="home_autopilot" aria-label="${esc(t("i_autopilot_name"))}"`))
+    + row(t("i_multi_name"), multiSub,
+      sw(st.multi_enabled, `data-act="tile_set" data-key="multi_enabled" aria-label="${esc(t("i_multi_name"))}"`));
+}
+
+/* Маршрут, подключение (прокси или TUN) и движок — три выпадающих списка: на главном и в «Ещё → Подключение». */
+function connSelects(p) {
+  const pick = (S.engine && S.engine.pick) || "auto";
+  const conn = connLabel();
+  return `
+    <div class="sel-wrap"><span class="sel-label" id="${p}Route">${t("sel_route")}</span>
+      <button type="button" class="dd-btn" data-dd="route" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${p}Route">
+        <b>${S.mode === "vpn" ? t("i_global_name") : t("i_smart_name")}</b><span>— ${S.mode === "vpn" ? t(S.ru_direct ? "rt_global_sub" : "rt_global_all") : t("rt_smart_sub")}</span>${icon("down")}</button></div>
+    <div class="sel-wrap"><span class="sel-label" id="${p}Conn">${t("sel_conn")}</span>
+      <button type="button" class="dd-btn" data-dd="conn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${p}Conn">
+        <b>${esc(conn.name)}</b><span>— ${esc(conn.sub)}</span>${icon("down")}</button></div>
+    <div class="sel-wrap"><span class="sel-label" id="${p}Engine">${t("sel_engine")}</span>
+      <button type="button" class="dd-btn" data-dd="engine" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="${p}Engine">
+        <b>${esc(t(`i_eng_${pick}_name`))}</b><span>— ${esc(engineSub(pick))}</span>${icon("down")}</button></div>`;
 }
 
 /* Лестница не нашла ни одного рабочего способа: что открывается напрямую и когда следующая попытка. */
@@ -1065,16 +1093,7 @@ function renderMore() {
       ${row("errors", "alert", t("nav_errors"), t("more_errors"), S.errors_count ? esc(t("errors_n", { n: S.errors_count })) : "")}
     </section>
     <section class="list-card"><h2>${t("more_conn")}</h2>
-      <div class="more-selects">
-        <div class="sel-wrap"><span class="sel-label" id="lblRoute">${t("sel_route")}</span>
-          <button type="button" class="dd-btn" data-dd="route" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblRoute">
-            <b>${S.mode === "vpn" ? t("i_global_name") : t("i_smart_name")}</b><span>— ${S.mode === "vpn" ? t(S.ru_direct ? "rt_global_sub" : "rt_global_all") : t("rt_smart_sub")}</span>${icon("down")}</button></div>
-        <div class="sel-wrap"><span class="sel-label" id="lblConn">${t("sel_conn")}</span>
-          <button type="button" class="dd-btn" data-dd="conn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblConn">
-            <b>${esc(connLabel().name)}</b><span>— ${esc(connLabel().sub)}</span>${icon("down")}</button></div>
-        <div class="sel-wrap"><span class="sel-label" id="lblEngine">${t("sel_engine")}</span>
-          <button type="button" class="dd-btn" data-dd="engine" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="lblEngine">
-            <b>${esc(t(`i_eng_${(S.engine && S.engine.pick) || "auto"}_name`))}</b><span>— ${esc(engineSub((S.engine && S.engine.pick) || "auto"))}</span>${icon("down")}</button></div>
+      <div class="more-selects">${connSelects("lbl")}
       </div>
     </section>
     <section class="list-card"><h2>${t("more_dpi")}</h2>
@@ -3631,6 +3650,11 @@ const ACTIONS = {
   vps_modal: () => modalVps(),
   method: el => {
     const m = el.dataset.method;
+    if (DPI_METHOD[m]) {  // Zapret или ByeDPI — «Без VPN» с этим главным
+      if (!(S.dpi && S.dpi.supported)) return toast(t("dpi_st_win"), "info", 4000);
+      if (S.method === "off" && methodRow("off") === m) return;
+      return pickDpiCombo(DPI_METHOD[m], true);
+    }
     if (!m || m === S.method) return;
     if (m === "awg" && !(S.awg && S.awg.count)) return modalAwgStart();
     S.method = m;
@@ -3664,6 +3688,18 @@ const ACTIONS = {
     S.settings[key] = v;
     renderHero();
     act("save_settings", { [key]: v }).then(r => r.ok && toast(t(`${key}_${v ? "on" : "off"}`), "ok", 3500));
+  },
+  home_autopilot: () => {
+    // переключатель на главном = способ «Авто» (вкл) или «VPN-сервер» (выкл)
+    const m = (S.method || "auto") === "auto" ? "server" : "auto";
+    if (m === "server" && !S.servers.some(s => s.supported && s.kind !== "awg")) return toast(t("add_sub_hint"), "info", 4000);
+    S.method = m;
+    S.settings.autopilot = m === "auto";
+    renderHero();
+    act("method", { method: m }).then(r => {
+      if (r.ok) toast(m === "auto" ? t("autopilot_on") : t("autopilot_off"), "ok", 3000);
+      scheduleRefresh(50);
+    });
   },
   tile_autopilot: () => {
     const v = !S.settings.autopilot;

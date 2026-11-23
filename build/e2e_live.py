@@ -2,7 +2,7 @@
 же машине. Ловит то, чего не видно в проверке настроек (xray -test) и в самопроверке на заглушках: ядро или движок
 TUN падают через несколько секунд после подключения, «подключено», а сайты не открываются.
 
-Серверы — настоящий Xray на 127.0.0.1: VLESS + REALITY + Vision (как у большинства подписок) и VLESS без шифрования
+Серверы — настоящий Xray на 127.0.0.2: VLESS + REALITY + Vision (как у большинства подписок) и VLESS без шифрования
 (запасной для «мгновенного переключения»). Ключи создаются на месте, наружу ничего не уходит.
 
 Настройки — как у человека из отчёта: «всё через VPN», российские напрямую, системный прокси, маскировка сама,
@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,9 @@ IS_WINDOWS = sys.platform == "win32"
 EXE = "xray.exe" if IS_WINDOWS else "xray"
 OLD_CORE = "v26.10.31"
 PROBE = "http://www.gstatic.com/generate_204"
+# 127.0.0.1 и localhost программа считает «заглушкой провайдера» (так помечают сообщения в подписках) — свои серверы
+# слушают на другом адресе той же петли
+HOST = "127.0.0.2"
 REPORT: list[str] = []
 FAILS: list[str] = []
 
@@ -98,8 +102,16 @@ def x25519(folder: str) -> tuple[str, str]:
     return priv.group(1), pub.group(1)
 
 
+def _open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 class Servers:
-    """Два настоящих сервера Xray на 127.0.0.1 (REALITY + Vision и простой VLESS) — для одного ядра."""
+    """Два настоящих сервера Xray на 127.0.0.2 (REALITY + Vision и простой VLESS) — для одного ядра."""
 
     def __init__(self, folder: str, work: str):
         self.folder, self.work = folder, work
@@ -114,10 +126,10 @@ class Servers:
                    "privateKey": self.priv, "shortIds": [self.sid]}
         return {"log": {"loglevel": "warning"},
                 "inbounds": [
-                    {"listen": "127.0.0.1", "port": self.p1, "protocol": "vless",
+                    {"listen": HOST, "port": self.p1, "protocol": "vless",
                      "settings": {"clients": [{"id": self.uid, "flow": "xtls-rprx-vision"}], "decryption": "none"},
                      "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": reality}},
-                    {"listen": "127.0.0.1", "port": self.p2, "protocol": "vless",
+                    {"listen": HOST, "port": self.p2, "protocol": "vless",
                      "settings": {"clients": [{"id": self.uid}], "decryption": "none"},
                      "streamSettings": {"network": "tcp", "security": "none"}}],
                 "outbounds": [{"protocol": "freedom", "tag": "out"}]}
@@ -133,8 +145,11 @@ class Servers:
         log = open(os.path.join(self.work, "server.log"), "wb")
         self.procs.append(subprocess.Popen([exe, "run", "-c", path], stdout=log, stderr=subprocess.STDOUT,
                                            stdin=subprocess.DEVNULL))
-        if not netutil.wait_ports([self.p1, self.p2], timeout=15):
-            raise RuntimeError("серверы Xray не запустились: " + self.tail())
+        deadline = time.monotonic() + 15
+        while not all(_open(HOST, p) for p in (self.p1, self.p2)):
+            if time.monotonic() > deadline:
+                raise RuntimeError("серверы Xray не запустились: " + self.tail())
+            time.sleep(0.3)
 
     def tail(self, n: int = 15) -> str:
         try:
@@ -144,9 +159,9 @@ class Servers:
             return ""
 
     def links(self) -> list[str]:
-        return [f"vless://{self.uid}@127.0.0.1:{self.p1}?type=tcp&security=reality&pbk={self.pub}&fp=chrome"
+        return [f"vless://{self.uid}@{HOST}:{self.p1}?type=tcp&security=reality&pbk={self.pub}&fp=chrome"
                 f"&sni=www.microsoft.com&sid={self.sid}&flow=xtls-rprx-vision#E2E-Reality",
-                f"vless://{self.uid}@127.0.0.1:{self.p2}?type=tcp&security=none#E2E-Plain"]
+                f"vless://{self.uid}@{HOST}:{self.p2}?type=tcp&security=none#E2E-Plain"]
 
     def stop(self) -> None:
         for p in self.procs:
@@ -319,7 +334,7 @@ def main() -> None:
     latest = core_dir("latest")
     srv = Servers(latest, work)
     srv.start()
-    say(f"Серверы: REALITY + Vision и простой VLESS на 127.0.0.1, ядро {core_version(latest)}")
+    say(f"Серверы: REALITY + Vision и простой VLESS на {HOST}, ядро {core_version(latest)}")
     results: dict[str, bool] = {}
     try:
         for name in rounds:

@@ -923,3 +923,21 @@ textarea.input { height: auto; }
 .monster-card .list-text { flex: 1 1 auto; min-width: 0; }
 .feat-row.sub-head { background: var(--panel-2); }
 .dns-ip { display: inline-flex; align-items: center; gap: 8px; margin-top: 4px; color: var(--text); font-weight: 600; }
+
+/* 1.26.1: «Способ» — ровный список сверху вниз (Авто / VPN-сервер / AmneziaWG / Zapret / ByeDPI): у всех строк
+   одна высота, название и пояснение в одну строку, стрелка выбора — только у «VPN-сервер» и «AmneziaWG» */
+.methods.m-list { display: flex; flex-direction: column; gap: 4px; grid-template-columns: none; }
+.m-list .m-wrap { border-color: transparent; background: transparent; }
+.m-list .m-wrap:not(.sel):hover { background: var(--panel-2); }
+.m-list .m-wrap.sel { border-color: var(--accent-line); background: var(--accent-soft); }
+.m-list .m-opt { min-height: 42px; padding: 6px 12px; }
+.m-list .m-text { flex-direction: row; align-items: baseline; gap: 10px; flex: 1 1 auto; }
+.m-list .m-text b { flex: none; width: 92px; }
+.m-list .m-text small, .m-list .m-opt .m-text small { display: block; flex: 1 1 auto; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; -webkit-line-clamp: unset; }
+.m-list .m-dd { width: 36px; border-left-color: transparent; }
+.m-list .m-wrap.sel .m-dd { border-left-color: transparent; }
+/* главный экран: маршрут, подключение и движок — под цифрами */
+.home-selects .dd-btn { height: 36px; padding: 0 10px 0 12px; gap: 6px; }
+.home-selects .dd-btn > span { display: none; }   /* на главном — только выбранное, пояснение — в списке и в «Дополнительно» */
+.home-selects .dd-btn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

@@ -1057,6 +1057,9 @@ class UIServer:
                     "mask_auto", "multi_enabled", "whitelist_auto", "background", "block_quic"):
             if key in a:
                 s[key] = bool(a[key])
+        if "autopilot" in a and e.method() in ("auto", "server"):
+            # «Автопереход» и способ — одно и то же: включён — «Авто», выключен — «VPN-сервер»
+            s["conn_method"] = "auto" if s["autopilot"] else "server"
         if a.get("tun_engine") in ("auto", "xray", "singbox", "tun2proxy"):
             s["tun_engine"] = a["tun_engine"]
         if "autostart" in a:
