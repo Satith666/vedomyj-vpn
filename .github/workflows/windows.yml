@@ -41,6 +41,7 @@ jobs:
       # дальше — даже если самопроверка нашла ошибку: за один запуск видно всё
       - name: Клиент AmneziaWG (официальный, из его выпусков на GitHub)
         if: success() || failure()
+        timeout-minutes: 8
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,7 +53,9 @@ jobs:
             exit 0
           }
           Invoke-WebRequest -Uri $asset.browser_download_url -OutFile awg.msi
-          $p = Start-Process msiexec.exe -ArgumentList '/i', 'awg.msi', '/qn', '/norestart' -Wait -PassThru
+          # -Wait ждал бы и программу, которую установщик запускает после установки, — ждём только сам msiexec
+          $p = Start-Process msiexec.exe -ArgumentList '/i', 'awg.msi', '/qn', '/norestart' -PassThru
+          if (-not $p.WaitForExit(300000)) { Write-Host "::warning::Установщик AmneziaWG не закончил за 5 минут" }
           Write-Host "Установка $($asset.name): код $($p.ExitCode)"
           Get-ChildItem -Path $env:ProgramFiles -Filter amneziawg.exe -Recurse -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Host "Клиент: $($_.FullName)" }
