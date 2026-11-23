@@ -265,6 +265,24 @@ const ok = (cond, name, detail = "") => { console.log(`${cond ? "[OK]  " : "[FAI
     "DNS-туннель: выключен по умолчанию; включён — кнопка у своего сервера, записи для регистратора с адресом сервера",
     `${xSw0} ${xBtn0} ${xBtn1} ${recs.slice(0, 90)}`);
 
+  // 5з. свой протокол (эксперимент): выключен по умолчанию; включили — кнопка у своего сервера
+  await page.evaluate(() => go("pro"));
+  await page.waitForTimeout(300);
+  const pSw0 = await page.$eval('[data-pset="exp_proto"]', (el) => el.getAttribute("aria-checked")).catch(() => "");
+  await page.click('[data-pset="exp_proto"]');
+  await page.waitForTimeout(800);
+  await page.evaluate(() => go("share"));
+  await page.waitForSelector("[data-vproto]", { timeout: 10000 }).catch(() => null);
+  const pBtn = await page.locator("[data-vproto]").count();
+  const pTxt = pBtn ? (await page.textContent("[data-vproto]")).trim() : "";
+  await page.evaluate(() => go("pro"));
+  await page.waitForTimeout(300);
+  await page.click('[data-pset="exp_proto"]');
+  await page.waitForTimeout(500);
+  await page.evaluate(() => go("home"));
+  ok(pSw0 === "false" && pBtn >= 1 && /Свой протокол/.test(pTxt),
+    "Свой протокол: выключен по умолчанию; включён — кнопка у своего сервера", `${pSw0} ${pBtn} ${pTxt}`);
+
   // 6. отступы: все экраны и главные окна на трёх ширинах окна
   const audit = fs.readFileSync(path.join(__dirname, "layout_audit.js"), "utf8");
   const PAGES = ["home", "status", "more", "features", "zapret", "byedpi", "services", "routes", "traffic", "updates", "settings",

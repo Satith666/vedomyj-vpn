@@ -3690,6 +3690,136 @@ def t_vps_awg():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@case("Свой протокол VEDOMYJ (эксперимент): шифрование VLESS + свой диалект у сервера, новый диалект одной кнопкой")
+def t_vps_proto():
+    import subprocess as sp
+    from pult import dialect, engine as engmod, protect, settings as settings_mod
+    seen = set()
+    for _ in range(30):
+        d = dialect.make()
+        check(dialect.check(d) == d, f"диалект проходит проверку: {d}")
+        seen.add(dialect.request(d))
+        req, resp = dialect.request(d), dialect.response(d)
+        check(req.startswith("GET /") and req.endswith("\r\n\r\n") and f"Host: {d['host']}" in req
+              and resp.startswith("HTTP/1.1 200 OK\r\n"), "приветствие — обычный HTTP-запрос и ответ")
+    check(len(seen) >= 25, f"диалекты разные у разных серверов: {len(seen)} из 30")
+    good = dialect.make()
+    for key, bad in (("host", "a.b.c;reboot"), ("path", "/x y"), ("ua", "x\r\nEvil: 1"), ("query", "a=$(id)"),
+                     ("server", "nginx\r\n"), ("ctype", "text/html\n"), ("padMin", 50), ("padMax", -1)):
+        try:
+            dialect.check(dict(good, **{key: bad}))
+            check(False, f"опасный диалект принят: {key}={bad!r}")
+        except ValueError:
+            pass
+    uid, pw = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", vps.xdns_password()
+    body = vps.proto_script(good, uid, pw)
+    cfg = json.loads(body.split("<<'JSON'\n", 1)[1].split("\nJSON\n", 1)[0])
+    ib = cfg["inbounds"][0]
+    tcp = ib["streamSettings"]["finalmask"]["tcp"]
+    check(ib["port"] == "__PORT__" and ib["settings"]["decryption"] == "__DEC__" and ib["streamSettings"]["network"] == "raw"
+          and [x["type"] for x in tcp] == ["sudoku", "header-custom"] and tcp[0]["settings"]["password"] == pw
+          and tcp[0]["settings"]["ascii"] == "prefer_ascii",
+          "сервер: шифрование VLESS (ключ создаёт сервер), внутри sudoku «текст», снаружи HTTP-приветствие")
+    check("vedomyj-proto" in body and "/usr/local/etc/xray/config.json" not in body and "CAP_NET_BIND_SERVICE" in body
+          and "for p in 80 8080 8880 2052 2082 2086 2095" in body and "chmod 640" in body,
+          "отдельная служба (основной Xray не трогается), первый свободный порт HTTP, пароль закрыт")
+    check({"type": "field", "ip": ["geoip:private"], "outboundTag": "block"} in cfg["routing"]["rules"],
+          "через протокол не попасть во внутреннюю сеть сервера")
+    codes = set(re.findall(r"fail (\w+)", vps.PROTO_SCRIPT))
+    check(codes and all(c in vps.ERRORS for c in codes), f"у каждой ошибки скрипта есть понятный текст: {codes - set(vps.ERRORS)}")
+    if sys.platform != "win32" and shutil.which("bash"):
+        r = sp.run(["bash", "-n"], input=body, capture_output=True, text=True)
+        check(r.returncode == 0, f"скрипт без ошибок синтаксиса bash: {r.stderr[:200]}")
+    for args in ((good, "x;reboot", pw), (good, uid, "$(reboot)aaaaaaaaaaaa"), (dict(good, host="x;y"), uid, pw)):
+        try:
+            vps.proto_script(*args)
+            check(False, f"опасные параметры приняты: {args[1:]}")
+        except vps.VpsError:
+            pass
+    enc = "mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf"
+    check(vps.parse_proto_result(f"80|26.11.9|{enc}") == (80, "26.11.9", enc), "ответ сервера")
+    for bad in ("80|26.11.9", f"22|26.11.9|{enc}", f"80|x|{enc}", f"80|26.11.9|{enc};id"):
+        try:
+            vps.parse_proto_result(bad)
+            check(False, f"непонятный ответ принят: {bad}")
+        except vps.VpsError:
+            pass
+    link = vps.make_proto_link("203.0.113.10", 80, uid, enc, good, pw, "VPS · Свой протокол")
+    srv = links.parse_link(link)
+    ss = srv.outbound["streamSettings"]
+    check(srv.outbound["settings"]["vnext"][0]["users"][0]["encryption"] == enc and ss["network"] == "tcp"
+          and not srv.insecure and srv.supported and dialect.is_vproto(srv) and ss["finalmask"] == dialect.mask(good, pw),
+          "ссылка: шифрование VLESS, диалект целиком в маскировке — QR на телефон переносит всё")
+    check(xray.needs_new_core(srv, "26.9.30") and not xray.needs_new_core(srv, "26.11.9")
+          and xray.proxy_outbounds(srv, "proxy", False, "26.9.30") == [{"tag": "proxy", "protocol": "blackhole"}],
+          "у старого ядра — заглушка и подсказка обновить")
+    obs = xray.proxy_outbounds(srv, "proxy", False, "26.11.9")
+    check(xray.mask_outbounds([dict(o) for o in obs], "26.11.9")[0]["streamSettings"]["finalmask"] == dialect.mask(good, pw),
+          "дробление первого пакета не трогает свой диалект сервера")
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    orig_start = vps.start
+    scenario = {"lines": [], "bodies": []}
+
+    def fake_start(host, port, user, script_path, out_path, hint="", body=None):
+        scenario["bodies"].append(body)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(scenario["lines"]) + "\n")
+        return sp.Popen([sys.executable, "-c", "import time; time.sleep(0.3)"])
+
+    try:
+        engmod.vps.start = fake_start
+        e = make_engine(tmp)
+        e.startup()
+        scenario["lines"] = ["PULT_RESULT:3f1c2a9e-1b2c-4d5e-8f90-1234567890ab|cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4"
+                             "|0123456789abcdef|a1b2c3d4e5f6"]
+        e.vps_setup("203.0.113.10", 22, "root", "Germany")
+        vid = e.vps_view()[0]["id"]
+        try:
+            e.vps_proto(vid)
+            check(False, "эксперимент выключен — установка не должна идти")
+        except RuntimeError:
+            pass
+        check(protect.PRO_KEYS.count("exp_proto") == 1 and settings_mod.DEFAULTS["exp_proto"] is False,
+              "эксперимент выключен по умолчанию и есть в профессиональных настройках")
+        e.settings["exp_proto"] = True
+        scenario["lines"] = ["PULT_STEP:proto", f"PULT_RESULT:8080|26.11.9|{enc}"]
+        name = e.vps_proto(vid)
+        srv = next(x for x in e.servers if x.name == name)
+        upw = srv.outbound["streamSettings"]["finalmask"]["tcp"][0]["settings"]["password"]
+        v = srv.outbound["settings"]["vnext"][0]
+        check(dialect.is_vproto(srv) and upw in scenario["bodies"][-1] and v["port"] == 8080 and v["address"] == "203.0.113.10"
+              and e.vps_view()[0]["proto"] == 8080, "сервер добавлен на порту, который выбрал сервер; пароль у них один")
+        check(e.server_info(srv)["protocol"] == dialect.LABEL, "в списке подписан VEDOMYJ")
+        check(srv in e.pool(), "эксперимент включён — «Авто» пробует свой протокол")
+        e.settings["exp_proto"] = False
+        check(srv not in e.pool() and srv in e.servers, "эксперимент выключен — «Авто» его не трогает, сервер в списке")
+        e.settings["exp_proto"] = True
+        req1 = dialect.request(dialect.check({k: v for k, v in _dial_of(srv).items()}))
+        e.vps_proto(vid)
+        same = [x for x in e.servers if x.name == name]
+        check(len(same) == 1 and dialect.request(_dial_of(same[0])) != req1, "«Новый диалект»: одна ссылка, приветствие другое")
+        text = "\n".join(e.logs)
+        check(upw not in text and "vless://" not in text, "пароль и ссылка не попадают в журнал")
+    finally:
+        engmod.vps.start = orig_start
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _dial_of(srv) -> dict:
+    """Диалект обратно из маскировки сервера (для проверки «Новый диалект»)."""
+    tcp = srv.outbound["streamSettings"]["finalmask"]["tcp"]
+    req = tcp[1]["settings"]["clients"][0][0]["packet"]
+    first = req.split("\r\n")[0].split(" ")[1]
+    path, query = first.split("?", 1)
+    hdr = dict(ln.split(": ", 1) for ln in req.split("\r\n")[1:] if ": " in ln)
+    resp = dict(ln.split(": ", 1) for ln in tcp[1]["settings"]["servers"][0][0]["packet"].split("\r\n")[1:] if ": " in ln)
+    return {"path": path, "query": query, "host": hdr["Host"], "ua": hdr["User-Agent"], "server": resp["Server"],
+            "ctype": resp["Content-Type"], "padMin": tcp[0]["settings"]["paddingMin"], "padMax": tcp[0]["settings"]["paddingMax"]}
+
+
 @case("DNS-туннель (эксперимент): свой домен, отдельная служба на сервере, шифрование, «Авто» — только когда включён")
 def t_vps_xdns():
     import subprocess as sp

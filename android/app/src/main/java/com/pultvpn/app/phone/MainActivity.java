@@ -773,6 +773,9 @@ public final class MainActivity extends Activity {
             case "vps_awg":
                 e.vpsAwg(Json.str(a, "id"), Json.str(a, "password"));
                 return true;
+            case "vps_proto":
+                e.vpsProto(Json.str(a, "id"), Json.str(a, "password"));
+                return true;
             case "vps_xdns":
                 e.vpsXdns(Json.str(a, "id"), Json.str(a, "password"), Json.str(a, "domain"));
                 return true;

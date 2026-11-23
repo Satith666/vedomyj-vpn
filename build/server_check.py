@@ -307,6 +307,86 @@ def xdns_check() -> None:
     ok(stop.returncode != 0, "Остановка туннеля убирает перенаправление порта 53")
 
 
+def proto_check() -> None:
+    """1.26: свой протокол VEDOMYJ — скрипт программы ставит службу, клиент по ссылке программы подключается
+    через «прослушку»: провайдер видит HTTP-запрос и дальше текст. Чужой пароль не подходит, новый диалект
+    отключает старую ссылку."""
+    import proto_lab  # рядом, в build/
+    from pult import dialect
+
+    def install(dial, uid, pw):
+        out = subprocess.run(["bash", "-s"], input=vps.proto_script(dial, uid, pw), capture_output=True, text=True,
+                             timeout=600)
+        res = next((ln[12:] for ln in out.stdout.splitlines() if ln.startswith("PULT_RESULT:")), "")
+        err = next((ln[11:] for ln in out.stdout.splitlines() if ln.startswith("PULT_ERROR:")), "")
+        return res, err, out
+
+    uid = subprocess.run([XRAY, "uuid"], capture_output=True, text=True).stdout.strip()
+    dial, pw = dialect.make(), vps.xdns_password()
+    res, err, out = install(dial, uid, pw)
+    ok(bool(res), "Свой протокол установлен скриптом программы", vps.ERRORS.get(err, err) or out.stderr[-300:])
+    if not res:
+        print(sh("cat /tmp/pult-proto-test.log; journalctl -u vedomyj-proto -n 30 --no-pager").stdout[-1500:])
+        return
+    port, have, enc = vps.parse_proto_result(res)
+    ok(port in dialect.PORTS, "Порт — первый свободный обычный порт HTTP", str(port))
+    conf = sh("cat /usr/local/etc/xray-proto/config.json").stdout
+    perm = sh("stat -c '%a %U' /usr/local/etc/xray-proto/config.json").stdout.strip()
+    ok("__DEC__" not in conf and '"__PORT__"' not in conf and enc not in conf and perm == "640 root",
+       "Ключ шифрования — на сервере, настройки закрыты от чужих глаз", perm)
+    procs, taps = [], []
+
+    def client(link, cport, name):
+        srv = links.parse_link(link)
+        v = srv.outbound["settings"]["vnext"][0]
+        tap = proto_lab.Tap(v["port"])
+        taps.append(tap)
+        v["port"] = tap.port
+        cfg = {"log": {"loglevel": "warning"},
+               "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": cport, "protocol": "http", "settings": {}}],
+               "outbounds": [dict(srv.outbound, tag="proxy")]}
+        procs.append(run_xray(cfg, name))
+        return tap
+
+    try:
+        tap = client(vps.make_proto_link("127.0.0.1", port, uid, enc, dial, pw, "CI"), 21900, "Свой протокол")
+        code, n, sec = fetch(21900, URL)
+        ok(code == 204, "Свой протокол: сайт открывается", f"ответ {code}, {sec:.1f} с")
+        if code == 204:
+            for url in BIG_URLS:
+                code2, n2, sec2 = fetch(21900, url, timeout=120, limit=1000000)
+                if code2 == 200:
+                    break
+            ok(code2 == 200 and n2 > 0, "Свой протокол: скачивание 1 МБ",
+               f"{n2} байт за {sec2:.1f} с ≈ {n2 * 8 / max(sec2, 0.01) / 1e6:.1f} Мбит/с")
+        up, down = bytes(tap.up), bytes(tap.down)
+        text = lambda b: sum(1 for x in b if 32 <= x < 127 or x in (9, 10, 13)) * 100 // max(len(b), 1)  # noqa: E731
+        ok(up.startswith(dialect.request(dial).encode()) and down.startswith(dialect.response(dial).encode())
+           and text(up) >= 95 and text(down) >= 95,
+           "Провайдер видит HTTP-запрос и ответ, дальше — текст",
+           f"клиент→сервер: {proto_lab.stats(up)}; сервер→клиент: {proto_lab.stats(down)}")
+        client(vps.make_proto_link("127.0.0.1", port, uid, enc, dial, vps.xdns_password(), "CI"), 21901, "Свой протокол с чужим паролем")
+        code, n, sec = fetch(21901, URL, timeout=15)
+        ok(code != 204, "Свой протокол с чужим паролем не работает", f"ответ {code}")
+        # «Новый диалект»: переустановка — старая ссылка больше не подходит, новая работает
+        dial2, pw2 = dialect.make(), vps.xdns_password()
+        res2, err2, out2 = install(dial2, uid, pw2)
+        ok(bool(res2), "Новый диалект установлен", vps.ERRORS.get(err2, err2))
+        if res2:
+            port2, _, enc2 = vps.parse_proto_result(res2)
+            client(vps.make_proto_link("127.0.0.1", port2, uid, enc2, dial2, pw2, "CI"), 21902, "Свой протокол, новый диалект")
+            code_new = fetch(21902, URL)[0]
+            code_old = fetch(21900, URL, timeout=15)[0]
+            ok(code_new == 204 and code_old != 204, "Новый диалект работает, старая ссылка — нет",
+               f"новая {code_new}, старая {code_old}")
+    finally:
+        for p in procs:
+            p.terminate()
+        for t in taps:
+            t.close()
+    sh("systemctl stop vedomyj-proto")
+
+
 def main() -> int:
     if os.geteuid() != 0:
         print("Нужен root: sudo python3 build/server_check.py")
@@ -352,6 +432,7 @@ def main() -> int:
         for p in procs:
             p.terminate()
     xdns_check()
+    proto_check()
     awg_check()
     print(f"\nОшибок: {len(fails)}")
     return 1 if fails else 0

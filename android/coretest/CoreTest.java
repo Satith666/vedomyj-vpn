@@ -388,6 +388,11 @@ public class CoreTest {
                 out.line("PULT_RESULT:" + AWG_SPUB + "|45123");
                 return;
             }
+            if (script.contains("own protocol (VLESS Encryption + per-server dialect)")) { // свой протокол
+                out.line("PULT_STEP:proto");
+                out.line("PULT_RESULT:8080|26.11.9|mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf");
+                return;
+            }
             if (script.contains("DNS tunnel (Xray XDNS)")) { // DNS-туннель на своём сервере
                 out.line("PULT_STEP:xdns");
                 out.line("PULT_RESULT:5300|26.11.9|mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf");
@@ -1209,6 +1214,71 @@ public class CoreTest {
             String dconf = e.vpsAwgConf(Json.str(Json.map(devs.get(0)), "id"));
             check(dconf.contains("Address = 10.66.66.3/32") && fake.lastScript.contains("awg set awg0 peer"), "устройство для роутера — свой ключ и адрес");
             check(!String.join("\n", e.logLines()).contains("PrivateKey") && !Json.write(e.settings).contains("secret"), "ключи и пароль не в журнале");
+            e.vpsForget(id);
+        });
+
+        test("Свой протокол VEDOMYJ (эксперимент): шифрование VLESS + диалект, «Авто» — только при включённом, новый диалект", () -> {
+            e.vpsSetup("vps5.example.net", "22", "root", "secret", "Fifth");
+            waitIdle(e);
+            String id = "";
+            for (Object o : Json.list(e.state(), "vps")) {
+                if ("vps5.example.net".equals(Json.str(Json.map(o), "host"))) id = Json.str(Json.map(o), "id");
+            }
+            check(!Json.bool(e.settings, "exp_proto", true), "эксперимент выключен по умолчанию");
+            boolean refused = false;
+            try {
+                e.vpsProto(id, "secret");
+            } catch (Vps.VpsError err) {
+                refused = true;
+            }
+            check(refused, "без включённого эксперимента установка не идёт");
+            Map<String, Object> in = new HashMap<String, Object>();
+            in.put("exp_proto", true);
+            e.setSettings(in);
+            waitIdle(e);
+            e.vpsProto(id, "secret");
+            waitIdle(e);
+            String sent = fake.lastScript;
+            check(sent.contains("vedomyj-proto") && !sent.contains("/usr/local/etc/xray/config.json") && sent.contains("CAP_NET_BIND_SERVICE"),
+                    "на сервер уходит отдельная служба, основной Xray не трогается");
+            String name = "Fifth · Свой протокол";
+            Map<String, Object> srv = serverByName(e, name);
+            check(srv != null && "VEDOMYJ".equals(Json.str(srv, "protocol")), "протокол — в своих серверах, подписан VEDOMYJ");
+            Server full = e.find(Json.str(srv, "key"));
+            List<Object> tcp = Json.list(Json.map(Json.map(full.outbound, "streamSettings"), "finalmask"), "tcp");
+            String pw = Json.str(Json.map(Json.map(tcp.get(0)), "settings"), "password");
+            check(!pw.isEmpty() && sent.contains(pw) && Dialect.isVproto(full) && !full.insecure && full.usable(),
+                    "пароль у сервера и телефона один, шифрование VLESS — ядро телефона запустит");
+            check(Json.num(Json.map(Json.list(Json.map(full.outbound, "settings"), "vnext").get(0)), "port", 0) == 8080,
+                    "порт — тот, что выбрал сервер");
+            check(e.inPool(full), "эксперимент включён — «Авто» пробует свой протокол");
+            in.put("exp_proto", false);
+            e.setSettings(in);
+            waitIdle(e);
+            check(!e.inPool(full) && serverByName(e, name) != null, "эксперимент выключен — «Авто» не трогает, сервер в списке");
+            in.put("exp_proto", true);
+            e.setSettings(in);
+            waitIdle(e);
+            e.vpsProto(id, "secret");
+            waitIdle(e);
+            int n = 0;
+            Server again = null;
+            for (Object o : Json.list(e.state(), "servers")) {
+                if (name.equals(Json.str(Json.map(o), "name"))) {
+                    n++;
+                    again = e.find(Json.str(Json.map(o), "key"));
+                }
+            }
+            List<Object> tcp2 = Json.list(Json.map(Json.map(again.outbound, "streamSettings"), "finalmask"), "tcp");
+            String pw2 = Json.str(Json.map(Json.map(tcp2.get(0)), "settings"), "password");
+            check(n == 1 && !pw2.equals(pw), "«Новый диалект»: одна ссылка, ключи новые");
+            String logs = String.join("\n", e.logLines());
+            check(!logs.contains(pw) && !logs.contains("vless://"), "пароль и ссылка не в журнале");
+            check(XrayConfig.needsNewCore(full, "26.7.31") && !XrayConfig.needsNewCore(full, "26.11.9"), "старое ядро — подсказка");
+            in.put("exp_proto", false);
+            e.setSettings(in);
+            waitIdle(e);
+            e.removeServer(Json.str(serverByName(e, name), "key"));
             e.vpsForget(id);
         });
 

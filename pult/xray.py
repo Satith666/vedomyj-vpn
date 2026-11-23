@@ -15,7 +15,7 @@ import threading
 import time
 import zipfile
 
-from . import links, netutil, routing
+from . import dialect, links, netutil, routing
 from .links import Server
 
 IS_WINDOWS = sys.platform == "win32"
@@ -391,6 +391,9 @@ def fm_for_core(obs: list[dict], version: str) -> list[dict]:
     if version and _ver(version) < links.XDNS_MIN:
         obs = [{"tag": ob.get("tag", ""), "protocol": "blackhole"}
                if links.xdns_domain_of(ob.get("streamSettings") or {}) else ob for ob in obs]
+    if version and _ver(version) < dialect.PROTO_MIN:  # свой протокол — тоже только новое ядро
+        obs = [{"tag": ob.get("tag", ""), "protocol": "blackhole"}
+               if dialect.is_vproto_ss(ob.get("streamSettings") or {}) else ob for ob in obs]
     if not version or _ver(version) >= FM_MIN:
         return obs
     for ob in obs:
@@ -409,6 +412,8 @@ def fm_for_core(obs: list[dict], version: str) -> list[dict]:
 def needs_new_core(server: Server, version: str) -> bool:
     """Ссылка просит то, чего старое ядро не умеет (fm, перебор портов, DNS-туннель): подсказать обновить ядро."""
     if version and links.is_xdns(server) and _ver(version) < links.XDNS_MIN:
+        return True
+    if version and dialect.is_vproto(server) and _ver(version) < dialect.PROTO_MIN:
         return True
     if not version or _ver(version) >= FM_MIN:
         return False

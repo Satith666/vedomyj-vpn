@@ -565,7 +565,7 @@ public final class Engine {
             "fp_auto", "engine_pick", "wl_priority"};
     /** Профессиональные настройки и их значения по умолчанию («Вернуть как было»). */
     static final String[] PRO_KEYS = {"fuses_enabled", "guard_rollback", "safe_start", "net_memory", "autopilot", "fp_auto",
-            "mask_auto", "data_watch", "whitelist_auto", "stall_check", "warp_fallback", "exp_xdns"};
+            "mask_auto", "data_watch", "whitelist_auto", "stall_check", "warp_fallback", "exp_xdns", "exp_proto"};
     private final Object fuseLock = new Object();
     private Map<String, Boolean> ladderKinds;
     private volatile Map<String, Object> guard;
@@ -3472,7 +3472,10 @@ public final class Engine {
             return false;
         }
         if (Links.isXdns(s) && !Json.bool(settings, "exp_xdns", false)) {
-            return false; // DNS-туннель — только когда эксперимент включён (как pool в engine.py)
+            return false; // DNS-туннель — только когда эксперимент включён (как _exp_ok в engine.py)
+        }
+        if (Dialect.isVproto(s) && !Json.bool(settings, "exp_proto", false)) {
+            return false; // свой протокол — тоже
         }
         String pick = Json.str(settings, "engine_pick", "auto");
         return !(pick.equals("xray") || pick.equals("hy2")) || Links.kindOf(s).equals(pick);
@@ -5569,7 +5572,7 @@ public final class Engine {
 
     static final String[] BOOL_KEYS = {"ru_direct", "autopilot", "dns_encrypted", "block_ads", "mask_auto",
             "whitelist_auto", "ads_ask_sites", "sub_alerts", "encrypt_data", "app_lock", "net_profiles", "app_update", "block_quic", "cert_watch", "fp_auto",
-            "data_watch", "net_memory", "fuses_enabled", "guard_rollback", "safe_start", "stall_check", "warp_fallback", "exp_xdns"};
+            "data_watch", "net_memory", "fuses_enabled", "guard_rollback", "safe_start", "stall_check", "warp_fallback", "exp_xdns", "exp_proto"};
     static final String[] RESTART_KEYS = {"mode", "ru_direct", "block_quic", "dns_encrypted", "block_ads", "proxy_list",
             "direct_list", "block_list", "excluded_apps"};
 
@@ -6010,7 +6013,8 @@ public final class Engine {
                 out.add(Json.obj("id", Json.str(h, "id"), "name", Json.str(h, "name"), "host", Json.str(h, "host"),
                         "status", st == null ? new LinkedHashMap<String, Object>() : st, "friends", fr, "bridge_of", Json.str(h, "bridge_of"),
                         "awg", Json.map(h, "awg") != null, "awg_devices", awgDevs(h),
-                        "xdns", Json.str(Json.map(h, "xdns"), "domain")));
+                        "xdns", Json.str(Json.map(h, "xdns"), "domain"),
+                        "proto", Json.map(h, "proto") == null ? 0L : Json.num(Json.map(h, "proto"), "port", 0)));
             }
         }
         return out;
@@ -6225,6 +6229,53 @@ public final class Engine {
                 log("Свой сервер «" + srv + "»: AmneziaWG 2.0 установлен, конфиг этого телефона добавлен в свои серверы.",
                         "Own server “" + srv + "”: AmneziaWG 2.0 is installed, this phone's config is added to your servers.");
                 say(Text.t("AmneziaWG 2.0 на своём сервере готов.", "AmneziaWG 2.0 on your server is ready."), "ok");
+            }
+        });
+    }
+
+    /** 1.26, эксперимент: свой протокол VEDOMYJ — как vps_proto. Повторный вызов — новый диалект. */
+    public void vpsProto(final String id, final String password) throws Vps.VpsError {
+        if (!Json.bool(settings, "exp_proto", false)) {
+            throw new Vps.VpsError(Text.t("Сначала включи эксперимент «Свой протокол» в профессиональных настройках.",
+                    "First turn on the “Own protocol” experiment in the advanced settings."));
+        }
+        final Map<String, Object> h = vpsFind(id);
+        needPassword(password);
+        final Map<String, Object> dial = Dialect.make(null);
+        final String uid = java.util.UUID.randomUUID().toString();
+        final String pw = Vps.xdnsPassword();
+        final String body = Vps.protoScript(dial, uid, pw);
+        vpsTask("Свой сервер: свой протокол", "Own server: own protocol", new Runnable() {
+            @Override
+            public void run() {
+                String result = vpsRun(h, password, body, "Свой протокол не установился", "The own protocol was not installed");
+                String srv = Json.str(h, "name");
+                final String name = (srv.isEmpty() ? "VPS" : srv) + " · " + Text.t(Dialect.NAME, "Own protocol");
+                Object[] r;
+                String link;
+                try {
+                    r = Vps.parseProtoResult(result);
+                    link = Vps.makeProtoLink(Json.str(h, "host"), (Integer) r[0], uid, (String) r[2], dial, pw, name);
+                } catch (Vps.VpsError e) {
+                    throw new UserError(Text.t("Свой протокол не установился: ", "The own protocol was not installed: ") + e.getMessage());
+                }
+                List<String> old = new ArrayList<String>(); // новый диалект: прежняя ссылка больше не подходит
+                synchronized (lock) {
+                    for (Server x : servers) {
+                        if (x.subId.isEmpty() && x.name.equals(name) && Dialect.isVproto(x)) {
+                            old.add(x.key());
+                        }
+                    }
+                }
+                for (String k : old) {
+                    removeServer(k);
+                }
+                vpsAwgSave(h, "proto", Json.obj("port", (long) (Integer) r[0], "ts", System.currentTimeMillis() / 1000));
+                saveSettings();
+                addServers(link);
+                log("Свой сервер «" + srv + "»: свой протокол установлен, он добавлен в свои серверы.",
+                        "Own server “" + srv + "”: the own protocol is installed and added to your servers.");
+                say(Text.t("Свой протокол на своём сервере готов.", "The own protocol on your server is ready."), "ok");
             }
         });
     }
@@ -6624,7 +6675,7 @@ public final class Engine {
     }
 
     private Map<String, Object> brief(Server s) {
-        return Json.obj("key", s.key(), "name", s.name, "protocol", Links.isXdns(s) ? "DNS" : s.protocol, "ping", s.pingMs, "ok", s.ok,
+        return Json.obj("key", s.key(), "name", s.name, "protocol", Links.isXdns(s) ? "DNS" : Dialect.isVproto(s) ? Dialect.LABEL : s.protocol, "ping", s.pingMs, "ok", s.ok,
                 "usable", s.usable(), "note", s.note, "mask", s.mask, "wl", s.isWl(), "cut", s.cut, "manual", s.subId.isEmpty(),
                 "tested", s.testedAt, "kind", Links.kindOf(s));
     }

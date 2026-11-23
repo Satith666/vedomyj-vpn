@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit, quote
 
-from . import (APP_VERSION, adblock, adscheck, amneziawg, dnsmode, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, notworking, warpauto, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
+from . import (APP_VERSION, adblock, adscheck, amneziawg, dialect, dnsmode, apps, certcheck, certpin, collect, countries, dispatcher, errorlog, family, journal, ladder, notworking, warpauto, protect, leaks, netprofile, netwatch, secure, update, dpi, elevated, happ, hotspot, i18n, netutil, proxies, routing,
                services, share, singbox, subscription, sysproxy, tester, tun, vps, xray)
 from . import links
 from .links import Server, is_private_host, parse_link
@@ -1016,10 +1016,17 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
     def pool(self) -> list[Server]:
         """Серверы выбранного движка («Движок» на главной): Авто — все, кроме AmneziaWG (его включают отдельно)."""
         pick = self.settings.get("engine_pick", "auto")
-        exp = bool(self.settings.get("exp_xdns"))  # DNS-туннель — только когда эксперимент включён
         if pick not in self.ENGINE_PICKS or pick == "auto":
-            return [s for s in self.servers if s.engine != "awg" and (exp or not links.is_xdns(s))]
-        return [s for s in self.servers if links.kind_of(s) == pick and (exp or not links.is_xdns(s))]
+            return [s for s in self.servers if s.engine != "awg" and self._exp_ok(s)]
+        return [s for s in self.servers if links.kind_of(s) == pick and self._exp_ok(s)]
+
+    def _exp_ok(self, s: Server) -> bool:
+        """Эксперименты (DNS-туннель, свой протокол) попадают в «Авто», только когда включены."""
+        if links.is_xdns(s):
+            return bool(self.settings.get("exp_xdns"))
+        if dialect.is_vproto(s):
+            return bool(self.settings.get("exp_proto"))
+        return True
 
     ENGINE_NAMES = {"auto": "Авто", "xray": "Xray", "hy2": "Hysteria2", "singbox": "sing-box", "awg": "AmneziaWG"}
 
@@ -4142,6 +4149,7 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         return [{"id": h["id"], "name": h.get("name", ""), "host": h["host"], "port": h.get("port", 22),
                  "user": h.get("user", "root"), "status": h.get("status") or {}, "bridge_of": h.get("bridge_of", ""),
                  "awg": bool((h.get("awg") or {}).get("pub")), "xdns": (h.get("xdns") or {}).get("domain", ""),
+                 "proto": int((h.get("proto") or {}).get("port") or 0),
                  "awg_devices": [{"id": d["id"], "name": d.get("name", ""), "ts": d.get("ts", 0)} for d in h.get("awg_peers") or []],
                  "friends": [{"id": f["id"], "name": f.get("name", ""), "ts": f.get("ts", 0)}
                              for f in h.get("friends") or []]}
@@ -4280,6 +4288,32 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         self.save()
         self.add_servers(vps.make_xdns_link(domain, uid, pw, enc, name))
         self.log(f"Свой сервер «{h.get('name', '')}»: DNS-туннель установлен, он добавлен в свои серверы.")
+        self.notify("vps")
+        self.notify("servers")
+        return name
+
+    def vps_proto(self, vps_id: str) -> str:
+        """1.26, эксперимент: свой протокол VEDOMYJ — шифрование VLESS + случайный диалект (pult/dialect.py) на
+        отдельной службе своего сервера. Повторный вызов — новый диалект (старая ссылка заменяется)."""
+        if not self.settings.get("exp_proto"):
+            raise RuntimeError("Сначала включи эксперимент «Свой протокол» в профессиональных настройках.")
+        h = self._vps_find(vps_id)
+        dial, uid, pw = dialect.make(), str(__import__("uuid").uuid4()), vps.xdns_password()
+        result = self._vps_run(h, vps.proto_script(dial, uid, pw), "Свой протокол не установился", timeout=600.0)
+        try:
+            port, _ver, enc = vps.parse_proto_result(result)
+            name = f"{h.get('name') or 'VPS'} · {i18n.tr(dialect.NAME)}"
+            link = vps.make_proto_link(h["host"], port, uid, enc, dial, pw, name)
+        except vps.VpsError as exc:
+            raise RuntimeError(f"Свой протокол не установился: {exc}") from exc
+        old = [x for x in self.settings.get("manual_links", []) if x.startswith("vless://")
+               and (links.parse_link(x) or Server(name="", protocol="")).name == name]
+        if old:  # новый диалект: прежняя ссылка больше не подходит
+            self.settings["manual_links"] = [x for x in self.settings["manual_links"] if x not in old]
+        h["proto"] = {"port": port, "ts": int(time.time())}
+        self.save()
+        self.add_servers(link)
+        self.log(f"Свой сервер «{h.get('name', '')}»: свой протокол установлен, он добавлен в свои серверы.")
         self.notify("vps")
         self.notify("servers")
         return name
@@ -5547,7 +5581,8 @@ class Engine(ladder.LadderMixin, amneziawg.AwgMixin, dispatcher.DispatcherMixin,
         return {
             "code": self.status_code(s, r), "testing": bool(r.get("testing")),
             "key": s.key, "sub": s.sub_id, "name": clean, "cc": cc,
-            "protocol": "DNS" if links.is_xdns(s) else self.PROTO_LABELS.get(s.protocol, s.protocol.upper()),
+            "protocol": "DNS" if links.is_xdns(s) else dialect.LABEL if dialect.is_vproto(s)
+            else self.PROTO_LABELS.get(s.protocol, s.protocol.upper()),
             "supported": s.supported, "note": i18n.tr(s.note), "has_link": bool(s.link), "endpoint": s.endpoint,
             "mask": bool(r.get("mask")), "wl": self.is_wl_server(s), "fp": r.get("fp") or "", "cut": bool(r.get("cut")),
             "ok": r.get("ok"), "delay": r.get("delay_ms"), "ping": r.get("ping_ms"), "jitter": r.get("jitter_ms"),

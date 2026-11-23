@@ -90,6 +90,64 @@ public class Dump {
         if (mode.equals("vps")) {
             out.print(Vps.script());
         }
+        if (mode.equals("vproto")) {
+            final int[] c = {0};
+            Warp.Rnd rnd = n -> {
+                c[0]++;
+                return (int) ((c[0] * 7919L) % n);
+            };
+            String uid = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", pw = "kAbcdefghijklmnopqrstuvwx_-1";
+            String enc = "mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf";
+            for (int i = 0; i < 6; i++) {
+                Map<String, Object> d = Dialect.make(rnd);
+                out.println(Json.canonical(d));
+                out.print(Dialect.request(d) + Dialect.response(d));
+            }
+            Map<String, Object> d = Dialect.make(rnd);
+            out.println(Json.canonical(Dialect.mask(d, pw)));
+            Object[][] bads = {{"host", "a.b.c;reboot"}, {"path", "/x y"}, {"ua", "x\r\nEvil: 1"}, {"query", "a=$(id)"},
+                    {"server", "nginx\r\n"}, {"ctype", "text/html\n"}, {"padMin", 50L}, {"padMax", -1L}};
+            for (Object[] kb : bads) {
+                Map<String, Object> dd = new java.util.LinkedHashMap<String, Object>(d);
+                dd.put((String) kb[0], kb[1]);
+                try {
+                    Dialect.check(dd);
+                    out.println("accepted");
+                } catch (IllegalArgumentException e) {
+                    out.println("bad");
+                }
+            }
+            out.println(Json.canonical(Vps.protoServerConfig(d, uid, pw)));
+            out.print(Vps.protoScript(d, uid, pw));
+            Map<String, Object> badHost = new java.util.LinkedHashMap<String, Object>(d);
+            badHost.put("host", "x;y");
+            Object[][] args = {{d, "x;reboot", pw}, {d, uid, "$(reboot)aaaaaaaaaaaa"}, {badHost, uid, pw}};
+            for (Object[] pa : args) {
+                try {
+                    @SuppressWarnings("unchecked") Map<String, Object> m = (Map<String, Object>) pa[0];
+                    Vps.protoScript(m, (String) pa[1], (String) pa[2]);
+                    out.println("accepted");
+                } catch (Vps.VpsError e) {
+                    out.println("bad");
+                }
+            }
+            for (String rr : new String[]{"80|26.11.9|" + enc, "80|26.11.9", "22|26.11.9|" + enc, "8080|x|" + enc, "8080|26.11.9|" + enc + ";id"}) {
+                try {
+                    Object[] x = Vps.parseProtoResult(rr);
+                    out.println(x[0] + " " + x[1] + " " + x[2]);
+                } catch (Vps.VpsError e) {
+                    out.println("bad");
+                }
+            }
+            String link = Vps.makeProtoLink("203.0.113.10", 8080, uid, enc, d, pw, "Germany · Свой протокол");
+            out.println(link);
+            Server srv = Links.parseLink(link);
+            out.println(Json.canonical(srv.outbound));
+            out.println((Dialect.isVproto(srv) ? "True" : "False") + " " + (srv.insecure ? "True" : "False"));
+            for (String ver : new String[]{"26.9.30", "26.11.9"}) {
+                out.println(Json.canonical(XrayConfig.proxyOutbounds(srv, "proxy", false, ver)));
+            }
+        }
         if (mode.equals("vpsxdns")) {
             String uid = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", pw = "kAbcdefghijklmnopqrstuvwx_-1";
             String a70 = new String(new char[70]).replace('\0', 'a');

@@ -30,6 +30,8 @@ a=$($J Dump updateverify < "$OUT/vec.json")
 if [ "$a" = "ok 99.0.0 Тест <b>&</b> «кавычки» | forged rejected" ]; then echo "[OK]   Сверка с Windows: подпись выпуска"; else echo "[FAIL] подпись выпуска: $a"; fail=1; fi
 $J Dump vpsawg < /dev/null > "$OUT/j_vpsa.sh"; python3 dump.py vpsawg < /dev/null > "$OUT/p_vpsa.sh"
 if cmp -s "$OUT/j_vpsa.sh" "$OUT/p_vpsa.sh"; then echo "[OK]   Сверка с Windows: AmneziaWG 2.0 на своём сервере"; else echo "[FAIL] AmneziaWG 2.0 на своём сервере"; diff "$OUT/p_vpsa.sh" "$OUT/j_vpsa.sh" | head; fail=1; fi
+$J Dump vproto < /dev/null > "$OUT/j_vpro.sh"; python3 dump.py vproto < /dev/null > "$OUT/p_vpro.sh"
+if cmp -s "$OUT/j_vpro.sh" "$OUT/p_vpro.sh"; then echo "[OK]   Сверка с Windows: свой протокол (диалект, скрипт, ссылка, старое ядро)"; else echo "[FAIL] свой протокол"; diff "$OUT/p_vpro.sh" "$OUT/j_vpro.sh" | head; fail=1; fi
 $J Dump vpsxdns < /dev/null > "$OUT/j_vpsd.sh"; python3 dump.py vpsxdns < /dev/null > "$OUT/p_vpsd.sh"
 if cmp -s "$OUT/j_vpsd.sh" "$OUT/p_vpsd.sh"; then echo "[OK]   Сверка с Windows: DNS-туннель (домен, скрипт, ссылка, старое ядро)"; else echo "[FAIL] DNS-туннель"; diff "$OUT/p_vpsd.sh" "$OUT/j_vpsd.sh" | head; fail=1; fi
 $J Dump vpsbridge < /dev/null > "$OUT/j_vpsb.sh"; python3 dump.py vpsbridge < /dev/null > "$OUT/p_vpsb.sh"

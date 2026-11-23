@@ -21,7 +21,7 @@ def lang() -> str:
     return _lang
 
 
-_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'проверка «16 КБ»': '“16 KB” check', 'запасной WARP': 'backup WARP', 'DNS-туннель (эксперимент)': 'DNS tunnel (experiment)', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
+_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'проверка «16 КБ»': '“16 KB” check', 'запасной WARP': 'backup WARP', 'DNS-туннель (эксперимент)': 'DNS tunnel (experiment)', 'свой протокол (эксперимент)': 'own protocol (experiment)', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
 
 
 def _names(text: str) -> str:
@@ -33,6 +33,19 @@ def _names(text: str) -> str:
 RULES: list[tuple[str, str]] = [
 
     # свой сервер: AmneziaWG 2.0 и устройства (vps.py, 1.24)
+    (r"^Свой протокол не установился(: .*)?$", lambda m: "The own protocol was not installed" + (": " + tr(m.group(1)[2:]) if m.group(1) else "")),
+    (r"^Свой протокол$", "Own protocol"),
+    (r"^Свой сервер «(.+?)»: свой протокол установлен, он добавлен в свои серверы\.$",
+     r"Own server “\1”: the own protocol is installed and added to your servers."),
+    (r"^Сначала включи эксперимент «Свой протокол» в профессиональных настройках\.$",
+     "First turn on the “Own protocol” experiment in the advanced settings."),
+    (r"^на сервере заняты все обычные порты HTTP \((.+)\)$", r"all usual HTTP ports on the server are busy (\1)"),
+    (r"^Xray на сервере не создал ключ шифрования протокола$", "Xray on the server did not create the protocol encryption key"),
+    (r"^Xray не принял настройки своего протокола$", "Xray did not accept the own protocol settings"),
+    (r"^свой протокол на сервере не запустился$", "the own protocol did not start on the server"),
+    (r"^Ставлю свой протокол на сервер$", "Installing the own protocol on the server"),
+    (r"^неверные параметры своего протокола$", "wrong own protocol parameters"),
+    (r"^Свой сервер: свой протокол$", "Own server: own protocol"),
     (r"^DNS-туннель не установился(: .*)?$", lambda m: "The DNS tunnel was not installed" + (": " + tr(m.group(1)[2:]) if m.group(1) else "")),
     (r"^DNS-туннель: (.+)$", lambda m: "DNS tunnel: " + tr(m.group(1))),
     (r"^DNS-туннель$", "DNS tunnel"),

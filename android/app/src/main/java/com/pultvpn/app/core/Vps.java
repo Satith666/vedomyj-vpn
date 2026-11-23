@@ -33,6 +33,7 @@ public final class Vps {
             case "awg": return Text.t("Ставлю AmneziaWG на сервер", "Installing AmneziaWG on the server");
             case "peer": return Text.t("Добавляю устройство на сервер", "Adding a device to the server");
             case "xdns": return Text.t("Ставлю DNS-туннель на сервер", "Installing the DNS tunnel on the server");
+            case "proto": return Text.t("Ставлю свой протокол на сервер", "Installing the own protocol on the server");
             default: return key;
         }
     }
@@ -75,6 +76,14 @@ public final class Vps {
                     "the server has no iptables, and it could not be installed");
             case "xdns_keys": return Text.t("Xray на сервере не создал ключ шифрования туннеля",
                     "Xray on the server did not create the tunnel encryption key");
+            case "proto_xray": return Text.t("на сервере старое ядро Xray, а обновить его не вышло — у сервера нет доступа к GitHub",
+                    "the server has an old Xray core and it could not be updated — the server has no access to GitHub");
+            case "proto_port": return Text.t("на сервере заняты все обычные порты HTTP (80, 8080, 8880, 2052, 2082, 2086, 2095)",
+                    "all usual HTTP ports on the server are busy (80, 8080, 8880, 2052, 2082, 2086, 2095)");
+            case "proto_keys": return Text.t("Xray на сервере не создал ключ шифрования протокола",
+                    "Xray on the server did not create the protocol encryption key");
+            case "proto_config": return Text.t("Xray не принял настройки своего протокола", "Xray did not accept the own protocol settings");
+            case "proto_service": return Text.t("свой протокол на сервере не запустился", "the own protocol did not start on the server");
             case "service": return Text.t("Xray на сервере не запустился", "Xray did not start on the server");
             case "noxray": return Text.t("на сервере нет Xray, установленного программой — сначала настрой сервер мастером",
                     "the server has no Xray installed by the program — set up the server with the wizard first");
@@ -587,6 +596,15 @@ public final class Vps {
             + "[ \"$ID\" = \"ubuntu\" ] || fail awg_os\n"
             + "export DEBIAN_FRONTEND=noninteractive\n"
             + "APT=\"apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5\"\n"
+            + "# the Amnezia repository (Launchpad) sometimes answers 503 for a minute: retry the download, not a failed build\n"
+            + "apt_try() {\n"
+            + "  for i in 1 2 3; do\n"
+            + "    $APT install \"$@\" >> \"$LOG\" 2>&1 && return 0\n"
+            + "    tail -n 20 \"$LOG\" | grep -qE 'Failed to fetch|Unable to fetch|Temporary failure|Could not connect|50[0-9] ' || return 1\n"
+            + "    sleep 20\n"
+            + "  done\n"
+            + "  return 1\n"
+            + "}\n"
             + "say packages\n"
             + "$APT update >> \"$LOG\" 2>&1\n"
             + "$APT install software-properties-common gnupg iptables >> \"$LOG\" 2>&1 || fail awg_install\n"
@@ -603,9 +621,9 @@ public final class Vps {
             + "  done\n"
             + "  $APT update >> \"$LOG\" 2>&1\n"
             + "fi\n"
-            + "$APT install amneziawg-tools >> \"$LOG\" 2>&1 || fail awg_install\n"
+            + "apt_try amneziawg-tools || fail awg_install\n"
             + "command -v awg >/dev/null 2>&1 || fail awg_install\n"
-            + "$APT install amneziawg >> \"$LOG\" 2>&1 || fail awg_build\n"
+            + "apt_try amneziawg || { tail -n 20 \"$LOG\" | grep -qE 'Failed to fetch|Unable to fetch|50[0-9] ' && fail awg_install; fail awg_build; }\n"
             + "modprobe amneziawg >> \"$LOG\" 2>&1 || fail awg_module\n"
             + "say keys\n"
             + "umask 077\n"
@@ -909,6 +927,152 @@ public final class Vps {
         String fm = Json.write(Links.xdnsMask(domain, password, resolvers));
         String hp = host.contains(":") ? "[" + host + "]" : host;
         return "vless://" + uuid + "@" + hp + ":" + port + "?encryption=" + enc + "&type=kcp&security=none&fm=" + Text.quote(fm)
+                + "#" + Text.quote(name);
+    }
+
+    // ---------- Свой протокол VEDOMYJ (1.26, эксперимент) — как proto_* в pult/vps.py ----------
+
+    /** Настройки службы своего протокола; в скрипте порт и ключ — метки "__PORT__" и __DEC__ (выбирает сервер). */
+    public static java.util.Map<String, Object> protoServerConfig(java.util.Map<String, Object> dial, String uuid, String password) {
+        return Json.obj(
+                "log", Json.obj("loglevel", "warning"),
+                "inbounds", Json.arr(Json.obj("tag", "vproto", "listen", "0.0.0.0", "port", "__PORT__", "protocol", "vless",
+                        "settings", Json.obj("clients", Json.arr(Json.obj("id", uuid)), "decryption", "__DEC__"),
+                        "streamSettings", Json.obj("network", "raw", "finalmask", Dialect.mask(dial, password)))),
+                "outbounds", Json.arr(Json.obj("tag", "direct", "protocol", "freedom"), Json.obj("tag", "block", "protocol", "blackhole")),
+                "routing", Json.obj("rules", Json.arr(Json.obj("type", "field", "ip", Json.arr("geoip:private"), "outboundTag", "block"))));
+    }
+
+    static final String PROTO_SCRIPT = "#!/bin/bash\n"
+            + "# VEDOMYJ VPN: own protocol (VLESS Encryption + per-server dialect) as a separate small Xray service.\n"
+            + "say()  { echo \"PULT_STEP:$1\"; }\n"
+            + "fail() { echo \"PULT_ERROR:$1\"; exit 1; }\n"
+            + "[ \"$(id -u)\" = \"0\" ] || fail root\n"
+            + "X=/usr/local/bin/xray\n"
+            + "NEED=__MIN__\n"
+            + "newer() { [ -n \"$1\" ] && [ \"$(printf '%s\\n%s\\n' \"$NEED\" \"$1\" | sort -V | head -n1)\" = \"$NEED\" ]; }\n"
+            + "say proto\n"
+            + "export DEBIAN_FRONTEND=noninteractive\n"
+            + "HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')\n"
+            + "if ! newer \"$HAVE\"; then\n"
+            + "  command -v curl >/dev/null 2>&1 || fail proto_xray\n"
+            + "  XI=https://github.com/XTLS/Xray-install/raw/main/install-release.sh\n"
+            + "  bash -c \"$(curl -fsSL --retry 3 $XI)\" @ install >/tmp/pult-xray-install.log 2>&1 \\\n"
+            + "    || bash -c \"$(curl -fsSL --retry 3 $XI)\" @ install --version v26.11.9 >>/tmp/pult-xray-install.log 2>&1 || fail proto_xray\n"
+            + "  HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')\n"
+            + "  newer \"$HAVE\" || fail proto_xray\n"
+            + "fi\n"
+            + "systemctl stop vedomyj-proto >/dev/null 2>&1 || true\n"
+            + "PORT=\"\"\n"
+            + "for p in __PORTS__; do\n"
+            + "  ss -Hltn 2>/dev/null | awk '{print $4}' | grep -qE \":$p\\$\" || { PORT=$p; break; }\n"
+            + "done\n"
+            + "[ -n \"$PORT\" ] || fail proto_port\n"
+            + "G=nogroup; getent group nogroup >/dev/null 2>&1 || G=nobody\n"
+            + "# VLESS Encryption key (X25519 authentication, the short one): the private part stays here\n"
+            + "VE=$($X vlessenc 2>/dev/null)\n"
+            + "ENCS=$(printf '%s\\n' \"$VE\" | grep -o '\"encryption\": *\"[^\"]*\"' | sed 's/.*\"\\([^\"]*\\)\"$/\\1/')\n"
+            + "DECS=$(printf '%s\\n' \"$VE\" | grep -o '\"decryption\": *\"[^\"]*\"' | sed 's/.*\"\\([^\"]*\\)\"$/\\1/')\n"
+            + "ENC=\"\"; DEC=\"\"; i=0\n"
+            + "for e in $ENCS; do\n"
+            + "  i=$((i+1))\n"
+            + "  if [ ${#e} -lt 300 ]; then ENC=$e; DEC=$(printf '%s\\n' \"$DECS\" | sed -n \"${i}p\"); break; fi\n"
+            + "done\n"
+            + "RX='^mlkem768x25519plus\\.[A-Za-z0-9_.-]{20,300}$'\n"
+            + "printf '%s' \"$ENC\" | grep -qE \"$RX\" || fail proto_keys\n"
+            + "printf '%s' \"$DEC\" | grep -qE \"$RX\" || fail proto_keys\n"
+            + "mkdir -p /usr/local/etc/xray-proto\n"
+            + "cat > /usr/local/etc/xray-proto/config.json <<'JSON'\n"
+            + "__CONFIG__\n"
+            + "JSON\n"
+            + "sed -i \"s|__DEC__|$DEC|; s|\\\"__PORT__\\\"|$PORT|\" /usr/local/etc/xray-proto/config.json\n"
+            + "chown root:$G /usr/local/etc/xray-proto/config.json; chmod 640 /usr/local/etc/xray-proto/config.json\n"
+            + "XRAY_LOCATION_ASSET=/usr/local/share/xray $X run -test -c /usr/local/etc/xray-proto/config.json >/tmp/pult-proto-test.log 2>&1 || fail proto_config\n"
+            + "cat > /etc/systemd/system/vedomyj-proto.service <<UNIT\n"
+            + "[Unit]\n"
+            + "Description=VEDOMYJ VPN own protocol (Xray)\n"
+            + "After=network-online.target\n"
+            + "Wants=network-online.target\n"
+            + "\n"
+            + "[Service]\n"
+            + "User=nobody\n"
+            + "Group=$G\n"
+            + "Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray\n"
+            + "AmbientCapabilities=CAP_NET_BIND_SERVICE\n"
+            + "CapabilityBoundingSet=CAP_NET_BIND_SERVICE\n"
+            + "ExecStart=$X run -c /usr/local/etc/xray-proto/config.json\n"
+            + "Restart=on-failure\n"
+            + "RestartSec=3\n"
+            + "NoNewPrivileges=yes\n"
+            + "LimitNOFILE=65535\n"
+            + "\n"
+            + "[Install]\n"
+            + "WantedBy=multi-user.target\n"
+            + "UNIT\n"
+            + "if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then\n"
+            + "  ufw allow $PORT/tcp >/dev/null 2>&1\n"
+            + "fi\n"
+            + "if command -v firewall-cmd >/dev/null 2>&1; then\n"
+            + "  firewall-cmd --permanent --add-port=$PORT/tcp >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 || true\n"
+            + "fi\n"
+            + "systemctl daemon-reload\n"
+            + "systemctl enable vedomyj-proto >/dev/null 2>&1 || true\n"
+            + "systemctl restart vedomyj-proto >/dev/null 2>&1\n"
+            + "sleep 2\n"
+            + "systemctl is-active --quiet vedomyj-proto || fail proto_service\n"
+            + "echo \"PULT_RESULT:$PORT|$HAVE|$ENC\"\n";
+
+    public static String protoScript(java.util.Map<String, Object> dial, String uuid, String password) throws VpsError {
+        java.util.Map<String, Object> d;
+        try {
+            d = Dialect.check(dial);
+        } catch (IllegalArgumentException e) {
+            throw new VpsError(Text.t("неверные параметры своего протокола", "wrong own protocol parameters"));
+        }
+        if (uuid == null || !uuid.matches(RX_UUID) || password == null || !password.matches(RX_SECRET)) {
+            throw new VpsError(Text.t("неверные параметры своего протокола", "wrong own protocol parameters"));
+        }
+        StringBuilder ports = new StringBuilder();
+        for (int p : Dialect.PORTS) {
+            ports.append(ports.length() == 0 ? "" : " ").append(p);
+        }
+        return PROTO_SCRIPT.replace("__CONFIG__", Json.write(protoServerConfig(d, uuid, password)))
+                .replace("__MIN__", Dialect.PROTO_MIN[0] + "." + Dialect.PROTO_MIN[1] + "." + Dialect.PROTO_MIN[2])
+                .replace("__PORTS__", ports.toString());
+    }
+
+    /** Ответ скрипта «порт|версия Xray|открытая часть ключа VLESS Encryption» → {порт, версия, ключ}. */
+    public static Object[] parseProtoResult(String result) throws VpsError {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d{2,5})\\|([0-9][0-9.]{2,20})\\|(" + RX_VLESSENC + ")")
+                .matcher(result == null ? "" : result.trim());
+        boolean known = false;
+        if (m.matches()) {
+            for (int p : Dialect.PORTS) {
+                known |= p == Integer.parseInt(m.group(1));
+            }
+        }
+        if (!known) {
+            throw new VpsError(Text.t("сервер прислал непонятный ответ", "the server sent an unclear answer"));
+        }
+        return new Object[]{Integer.parseInt(m.group(1)), m.group(2), m.group(3)};
+    }
+
+    /** Ссылка на свой протокол: VLESS с шифрованием поверх голого TCP, диалект — в маскировке fm. */
+    public static String makeProtoLink(String host, int port, String uuid, String enc, java.util.Map<String, Object> dial,
+                                       String password, String name) throws VpsError {
+        java.util.Map<String, Object> d;
+        try {
+            d = Dialect.check(dial);
+        } catch (IllegalArgumentException e) {
+            throw new VpsError(Text.t("неверные параметры своего протокола", "wrong own protocol parameters"));
+        }
+        if (uuid == null || !uuid.matches(RX_UUID) || password == null || !password.matches(RX_SECRET)
+                || enc == null || !enc.matches(RX_VLESSENC) || port <= 0 || port >= 65536) {
+            throw new VpsError(Text.t("неверные параметры своего протокола", "wrong own protocol parameters"));
+        }
+        String fm = Json.write(Dialect.mask(d, password));
+        String hp = host.contains(":") ? "[" + host + "]" : host;
+        return "vless://" + uuid + "@" + hp + ":" + port + "?encryption=" + enc + "&type=raw&security=none&fm=" + Text.quote(fm)
                 + "#" + Text.quote(name);
     }
 }

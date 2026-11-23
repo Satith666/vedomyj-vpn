@@ -47,6 +47,7 @@ public final class Store {
                 "fuses_enabled", true, "fuses", new LinkedHashMap<String, Object>(), "guard_rollback", true, "safe_start", true,
                 "stall_check", true, // «16 КБ»: лучшие серверы качают 64 КБ, обрывающиеся — ниже
                 "family_dht", true, // «Семья»: посылки сами — через сеть торрентов (BEP 44)
+                "exp_proto", false, // эксперимент: свой протокол VEDOMYJ (шифрование VLESS + свой диалект) — кнопка у своего сервера и «Авто»
                 "exp_xdns", false, // эксперимент: DNS-туннель через свой домен (Xray XDNS) — кнопка у своего сервера и место в «Авто»
                 "warp_fallback", true, // «Авто»: серверы не работают — временно свой WARP во встроенном ядре
                 // галочка «Белые списки» на главном; wl_muted — сняли в этой сети, когда списки заметились сами

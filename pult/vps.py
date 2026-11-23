@@ -493,6 +493,15 @@ fail() { tail -n 25 "$LOG" 2>/dev/null | sed 's/^/PULT_LOG:/'; echo "PULT_ERROR:
 [ "$ID" = "ubuntu" ] || fail awg_os
 export DEBIAN_FRONTEND=noninteractive
 APT="apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5"
+# the Amnezia repository (Launchpad) sometimes answers 503 for a minute: retry the download, not a failed build
+apt_try() {
+  for i in 1 2 3; do
+    $APT install "$@" >> "$LOG" 2>&1 && return 0
+    tail -n 20 "$LOG" | grep -qE 'Failed to fetch|Unable to fetch|Temporary failure|Could not connect|50[0-9] ' || return 1
+    sleep 20
+  done
+  return 1
+}
 say packages
 $APT update >> "$LOG" 2>&1
 $APT install software-properties-common gnupg iptables >> "$LOG" 2>&1 || fail awg_install
@@ -509,9 +518,9 @@ if ! apt-cache policy amneziawg-tools 2>/dev/null | grep -q 'Candidate: [0-9]'; 
   done
   $APT update >> "$LOG" 2>&1
 fi
-$APT install amneziawg-tools >> "$LOG" 2>&1 || fail awg_install
+apt_try amneziawg-tools || fail awg_install
 command -v awg >/dev/null 2>&1 || fail awg_install
-$APT install amneziawg >> "$LOG" 2>&1 || fail awg_build
+apt_try amneziawg || { tail -n 20 "$LOG" | grep -qE 'Failed to fetch|Unable to fetch|50[0-9] ' && fail awg_install; fail awg_build; }
 modprobe amneziawg >> "$LOG" 2>&1 || fail awg_module
 say keys
 umask 077
@@ -812,4 +821,154 @@ def make_xdns_link(domain: str, uuid: str, password: str, enc: str, name: str, r
     fm = json.dumps(links.xdns_mask(domain, password, list(resolvers)), separators=(",", ":"), ensure_ascii=True)
     hp = f"[{host}]" if ":" in host else host
     return (f"vless://{uuid}@{hp}:{int(port)}?encryption={enc}&type=kcp&security=none&fm={quote(fm, safe='')}"
+            f"#{quote(name)}")
+
+
+# ---------- Свой протокол VEDOMYJ (1.26, эксперимент): шифрование VLESS + свой диалект (pult/dialect.py) ----------
+# Отдельная служба Xray на первом свободном обычном порту HTTP (80, 8080…); основной Xray не трогается.
+
+PROTO_ERRORS = {
+    "proto_xray": "на сервере старое ядро Xray, а обновить его не вышло — у сервера нет доступа к GitHub",
+    "proto_port": "на сервере заняты все обычные порты HTTP (80, 8080, 8880, 2052, 2082, 2086, 2095)",
+    "proto_keys": "Xray на сервере не создал ключ шифрования протокола",
+    "proto_config": "Xray не принял настройки своего протокола",
+    "proto_service": "свой протокол на сервере не запустился",
+}
+ERRORS.update(PROTO_ERRORS)
+STEPS.update({"proto": "Ставлю свой протокол на сервер"})
+
+
+def proto_server_config(dial: dict, uuid: str, password: str, decryption: str = "__DEC__", port=None,
+                        listen: str = "0.0.0.0") -> dict:
+    """Настройки службы своего протокола. В скрипте порт и ключ — метки "__PORT__" и __DEC__ (выбирает сервер)."""
+    from . import dialect
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{"tag": "vproto", "listen": listen, "port": port if port is not None else "__PORT__",
+                      "protocol": "vless", "settings": {"clients": [{"id": uuid}], "decryption": decryption},
+                      "streamSettings": {"network": "raw", "finalmask": dialect.mask(dial, password)}}],
+        "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+        "routing": {"rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "block"}]},
+    }
+
+
+PROTO_SCRIPT = r"""#!/bin/bash
+# VEDOMYJ VPN: own protocol (VLESS Encryption + per-server dialect) as a separate small Xray service.
+say()  { echo "PULT_STEP:$1"; }
+fail() { echo "PULT_ERROR:$1"; exit 1; }
+[ "$(id -u)" = "0" ] || fail root
+X=/usr/local/bin/xray
+NEED=__MIN__
+newer() { [ -n "$1" ] && [ "$(printf '%s\n%s\n' "$NEED" "$1" | sort -V | head -n1)" = "$NEED" ]; }
+say proto
+export DEBIAN_FRONTEND=noninteractive
+HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')
+if ! newer "$HAVE"; then
+  command -v curl >/dev/null 2>&1 || fail proto_xray
+  XI=https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+  bash -c "$(curl -fsSL --retry 3 $XI)" @ install >/tmp/pult-xray-install.log 2>&1 \
+    || bash -c "$(curl -fsSL --retry 3 $XI)" @ install --version v26.11.9 >>/tmp/pult-xray-install.log 2>&1 || fail proto_xray
+  HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')
+  newer "$HAVE" || fail proto_xray
+fi
+systemctl stop vedomyj-proto >/dev/null 2>&1 || true
+PORT=""
+for p in __PORTS__; do
+  ss -Hltn 2>/dev/null | awk '{print $4}' | grep -qE ":$p\$" || { PORT=$p; break; }
+done
+[ -n "$PORT" ] || fail proto_port
+G=nogroup; getent group nogroup >/dev/null 2>&1 || G=nobody
+# VLESS Encryption key (X25519 authentication, the short one): the private part stays here
+VE=$($X vlessenc 2>/dev/null)
+ENCS=$(printf '%s\n' "$VE" | grep -o '"encryption": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
+DECS=$(printf '%s\n' "$VE" | grep -o '"decryption": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
+ENC=""; DEC=""; i=0
+for e in $ENCS; do
+  i=$((i+1))
+  if [ ${#e} -lt 300 ]; then ENC=$e; DEC=$(printf '%s\n' "$DECS" | sed -n "${i}p"); break; fi
+done
+RX='^mlkem768x25519plus\.[A-Za-z0-9_.-]{20,300}$'
+printf '%s' "$ENC" | grep -qE "$RX" || fail proto_keys
+printf '%s' "$DEC" | grep -qE "$RX" || fail proto_keys
+mkdir -p /usr/local/etc/xray-proto
+cat > /usr/local/etc/xray-proto/config.json <<'JSON'
+__CONFIG__
+JSON
+sed -i "s|__DEC__|$DEC|; s|\"__PORT__\"|$PORT|" /usr/local/etc/xray-proto/config.json
+chown root:$G /usr/local/etc/xray-proto/config.json; chmod 640 /usr/local/etc/xray-proto/config.json
+XRAY_LOCATION_ASSET=/usr/local/share/xray $X run -test -c /usr/local/etc/xray-proto/config.json >/tmp/pult-proto-test.log 2>&1 || fail proto_config
+cat > /etc/systemd/system/vedomyj-proto.service <<UNIT
+[Unit]
+Description=VEDOMYJ VPN own protocol (Xray)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=nobody
+Group=$G
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ExecStart=$X run -c /usr/local/etc/xray-proto/config.json
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+  ufw allow $PORT/tcp >/dev/null 2>&1
+fi
+if command -v firewall-cmd >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port=$PORT/tcp >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+systemctl daemon-reload
+systemctl enable vedomyj-proto >/dev/null 2>&1 || true
+systemctl restart vedomyj-proto >/dev/null 2>&1
+sleep 2
+systemctl is-active --quiet vedomyj-proto || fail proto_service
+echo "PULT_RESULT:$PORT|$HAVE|$ENC"
+"""
+
+
+def proto_script(dial: dict, uuid: str, password: str) -> str:
+    """Скрипт своего протокола. Диалект, UUID и пароль проверяются строго — они попадают в настройки ядра."""
+    import json
+    from . import dialect
+    try:
+        dial = dialect.check(dial)
+    except ValueError as exc:
+        raise VpsError("неверные параметры своего протокола") from exc
+    if not re.fullmatch(_RX_UUID, uuid or "") or not _RX_SECRET.fullmatch(password or ""):
+        raise VpsError("неверные параметры своего протокола")
+    cfg = json.dumps(proto_server_config(dial, uuid, password), separators=(",", ":"), ensure_ascii=True)
+    return (PROTO_SCRIPT.replace("__CONFIG__", cfg).replace("__MIN__", ".".join(str(x) for x in dialect.PROTO_MIN))
+            .replace("__PORTS__", " ".join(str(p) for p in dialect.PORTS)))
+
+
+def parse_proto_result(result: str) -> tuple[int, str, str]:
+    """Ответ скрипта: «порт|версия Xray|открытая часть ключа VLESS Encryption»."""
+    from . import dialect
+    m = re.fullmatch(r"(\d{2,5})\|([0-9][0-9.]{2,20})\|(" + _RX_VLESSENC.pattern + ")", (result or "").strip())
+    if not m or int(m.group(1)) not in dialect.PORTS:
+        raise VpsError("сервер прислал непонятный ответ")
+    return int(m.group(1)), m.group(2), m.group(3)
+
+
+def make_proto_link(host: str, port: int, uuid: str, enc: str, dial: dict, password: str, name: str) -> str:
+    """Ссылка на свой протокол: VLESS с шифрованием поверх голого TCP, диалект — в маскировке fm."""
+    import json
+    from . import dialect
+    try:
+        dial = dialect.check(dial)
+    except ValueError as exc:
+        raise VpsError("неверные параметры своего протокола") from exc
+    if not re.fullmatch(_RX_UUID, uuid or "") or not _RX_SECRET.fullmatch(password or "") \
+            or not _RX_VLESSENC.fullmatch(enc or "") or not (0 < int(port) < 65536):
+        raise VpsError("неверные параметры своего протокола")
+    fm = json.dumps(dialect.mask(dial, password), separators=(",", ":"), ensure_ascii=True)
+    hp = f"[{host}]" if ":" in host else host
+    return (f"vless://{uuid}@{hp}:{int(port)}?encryption={enc}&type=raw&security=none&fm={quote(fm, safe='')}"
             f"#{quote(name)}")

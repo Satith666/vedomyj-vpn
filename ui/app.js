@@ -1228,7 +1228,7 @@ const PRO_GROUPS = [
     { id: "warp_fb", key: "warp_fallback", extra: () => warpFbExtra() }, { id: "whitelist", key: "whitelist_auto" },
     { id: "auto_routes", key: "auto_routes" }, { id: "auto_stall", key: "auto_stall" }, { id: "multi", key: "multi_enabled" },
   ] },
-  { title: "pg_exp", items: [{ id: "xdns", key: "exp_xdns" }] },
+  { title: "pg_exp", items: [{ id: "proto", key: "exp_proto" }, { id: "xdns", key: "exp_xdns" }] },
 ];
 
 function warpFbExtra() {
@@ -1726,8 +1726,10 @@ function renderVpsBox() {
         ${h.bridge_of ? `<span class="hint">${esc(t("vps_is_bridge"))}</span>` : `<button class="btn btn-small" data-vbridge="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("routes")}${t("vps_bridge_btn")}</button>`}
         ${h.awg ? `<button class="btn btn-small" data-vawgdev="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("plus")}${t("vps_awg_dev_btn")}</button>`
           : `<button class="btn btn-small" data-vawg="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("shield")}${t("vps_awg_btn")}</button>`}
+        ${protoOn() && !h.bridge_of ? `<button class="btn btn-small" data-vproto="${esc(h.id)}" data-again="${h.proto ? 1 : ""}" ${busyNow ? "disabled" : ""}>${icon(h.proto ? "refresh" : "shield")}${t(h.proto ? "vps_proto_again" : "vps_proto_btn")}</button>` : ""}
         ${xdnsOn() && !h.bridge_of ? `<button class="btn btn-small" data-vxdns="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("globe")}${t("vps_xdns_btn")}</button>` : ""}
       </div>
+      ${h.proto && protoOn() ? `<p class="hint" style="margin:0">${esc(t("vps_proto_have", { p: h.proto }))}</p>` : ""}
       ${h.xdns && xdnsOn() ? `<p class="hint" style="margin:0">${esc(t("vps_xdns_have", { d: h.xdns }))}</p>` : ""}
       ${(h.awg_devices || []).length ? `<div class="vps-friends">${h.awg_devices.map(d => `<div class="vps-friend">
         <span class="list-text"><b>${esc(d.name)}</b><span>${esc(t("vps_awg_dev_made", { d: dateStr(d.ts) }))}</span></span>
@@ -1748,6 +1750,13 @@ function renderVpsBox() {
   }));
   box.querySelectorAll("[data-vawgdev]").forEach(b => b.addEventListener("click", () => vpsAwgDeviceModal(b.dataset.vawgdev)));
   box.querySelectorAll("[data-vxdns]").forEach(b => b.addEventListener("click", () => vpsXdnsModal(vpsList.find(h => h.id === b.dataset.vxdns))));
+  box.querySelectorAll("[data-vproto]").forEach(b => b.addEventListener("click", async () => {
+    const again = !!b.dataset.again;
+    if (!await confirmModal(t(again ? "vps_proto_again" : "vps_proto_btn"), t(again ? "vps_proto_again_text" : "vps_proto_text"),
+      t(again ? "vps_proto_again_go" : "vps_proto_go"), false)) return;
+    const r = await act("vps_proto", { id: b.dataset.vproto });
+    if (r.ok) toast(t("vw_started"), "info", 12000);
+  }));
   box.querySelectorAll("[data-vawgconf]").forEach(b => b.addEventListener("click", () => awgRouterModal(b.dataset.vawgconf, b.dataset.vname)));
   box.querySelectorAll("[data-vqr]").forEach(b => b.addEventListener("click", () =>
     qrModal("friend:" + b.dataset.vqr, t("qr_friend", { name: b.dataset.vname }), "friend")));
@@ -1825,6 +1834,7 @@ async function awgRouterModal(devId, name) {
 
 /* Мост через российский сервер: адрес российского VPS — на него ставится Xray, который ведёт на этот сервер. */
 const xdnsOn = () => !!(S && S.pro && S.pro.keys && S.pro.keys.exp_xdns);
+const protoOn = () => !!(S && S.pro && S.pro.keys && S.pro.keys.exp_proto);
 
 /* DNS-туннель (эксперимент): свой домен → две записи у регистратора → установка на сервер */
 function vpsXdnsModal(h) {

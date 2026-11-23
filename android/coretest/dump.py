@@ -65,6 +65,49 @@ elif mode == "services":
     print(canon([[[s["name"], s["domains"], bool(s.get("russian"))] for s in services.SERVICES], dpi.YOUTUBE_DOMAINS, dpi.DISCORD_DOMAINS]))
 elif mode == "vps":
     sys.stdout.write(vps.script())
+elif mode == "vproto":
+    from pult import dialect, xray
+    c = [0]
+
+    def rnd(n):
+        c[0] += 1
+        return (c[0] * 7919) % n
+    uid, pw = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", "kAbcdefghijklmnopqrstuvwx_-1"
+    enc = "mlkem768x25519plus.native.0rtt.zYxW_vUtS-0987654321zyxwvutsrqponmlkjihgf"
+    for _ in range(6):
+        d = dialect.make(rnd)
+        print(canon(d))
+        sys.stdout.write(dialect.request(d) + dialect.response(d))
+    d = dialect.make(rnd)
+    print(canon(dialect.mask(d, pw)))
+    for key, bad in (("host", "a.b.c;reboot"), ("path", "/x y"), ("ua", "x\r\nEvil: 1"), ("query", "a=$(id)"),
+                     ("server", "nginx\r\n"), ("ctype", "text/html\n"), ("padMin", 50), ("padMax", -1)):
+        try:
+            dialect.check(dict(d, **{key: bad}))
+            print("accepted")
+        except ValueError:
+            print("bad")
+    print(canon(vps.proto_server_config(d, uid, pw)))
+    sys.stdout.write(vps.proto_script(d, uid, pw))
+    for args in ((d, "x;reboot", pw), (d, uid, "$(reboot)aaaaaaaaaaaa"), (dict(d, host="x;y"), uid, pw)):
+        try:
+            vps.proto_script(*args)
+            print("accepted")
+        except vps.VpsError:
+            print("bad")
+    for r in ("80|26.11.9|" + enc, "80|26.11.9", "22|26.11.9|" + enc, "8080|x|" + enc, "8080|26.11.9|" + enc + ";id"):
+        try:
+            x = vps.parse_proto_result(r)
+            print(f"{x[0]} {x[1]} {x[2]}")
+        except vps.VpsError:
+            print("bad")
+    link = vps.make_proto_link("203.0.113.10", 8080, uid, enc, d, pw, "Germany · Свой протокол")
+    print(link)
+    srv = links.parse_link(link)
+    print(canon(srv.outbound))
+    print(dialect.is_vproto(srv), srv.insecure)
+    for ver in ("26.9.30", "26.11.9"):
+        print(canon(xray.proxy_outbounds(srv, "proxy", False, ver)))
 elif mode == "vpsxdns":
     from pult import xray
     uid, pw = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", "kAbcdefghijklmnopqrstuvwx_-1"

@@ -841,6 +841,8 @@
         ${h.bridge_of ? `<p class="hint">${esc(t("vps_is_bridge"))}</p>` : `<button class="btn wide" data-act="vps-bridge" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("server")}${esc(t("vps_bridge_short"))}</button>`}
         ${h.awg ? `<button class="btn wide" data-act="vps-awgdev" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("plus")}${esc(t("vps_awg_dev_btn"))}</button>`
           : `<button class="btn wide" data-act="vps-awg" data-id="${esc(h.id)}" ${busy ? "disabled" : ""}>${icon("shield")}${esc(t("vps_awg_btn"))}</button>`}
+        ${S.settings.exp_proto && !h.bridge_of ? `<button class="btn wide" data-act="vps-proto" data-id="${esc(h.id)}" data-again="${h.proto ? 1 : ""}" ${busy ? "disabled" : ""}>${icon(h.proto ? "refresh" : "shield")}${esc(t(h.proto ? "vps_proto_again" : "vps_proto_btn"))}</button>` : ""}
+        ${h.proto && S.settings.exp_proto ? `<p class="hint">${esc(t("vps_proto_have", { p: h.proto }))}</p>` : ""}
         ${S.settings.exp_xdns && !h.bridge_of ? `<button class="btn wide" data-act="vps-xdns" data-id="${esc(h.id)}" data-host="${esc(h.host)}" data-d="${esc(h.xdns || "")}" ${busy ? "disabled" : ""}>${icon("globe")}${esc(t("vps_xdns_btn"))}</button>` : ""}
         ${h.xdns && S.settings.exp_xdns ? `<p class="hint">${esc(t("vps_xdns_have", { d: h.xdns }))}</p>` : ""}
         ${(h.awg_devices || []).map((d) => `<button class="row" data-act="awgdev-open" data-id="${esc(d.id)}" data-n="${esc(d.name)}">${icon("qr")}<span class="main"><span class="title"><span>${esc(d.name)}</span></span>
@@ -1053,7 +1055,7 @@
     ["pg_memory", [["net_memory", "s_netmem"]]],
     ["pg_auto", [["autopilot", "s_auto"], ["fp_auto", "s_fp"], ["mask_auto", "s_mask"], ["data_watch", "s_dwatch"],
       ["stall_check", "s_stall16"], ["warp_fallback", "s_warpfb"], ["whitelist_auto", "s_wl"]]],
-    ["pg_exp", [["exp_xdns", "s_xdns"]]],
+    ["pg_exp", [["exp_proto", "s_proto"], ["exp_xdns", "s_xdns"]]],
   ];
   function leftText(sec) {
     const h = Math.floor(sec / 3600), m = Math.ceil((sec % 3600) / 60);
@@ -1868,6 +1870,11 @@
       vpsPassSheet(t("vps_awg_dev_btn"), t("vps_awg_dev_text"),
         `<label class="field">${esc(t("vps_friend_name"))}<input id="vdName" maxlength="30" placeholder="${esc(t("vps_awg_dev_ph"))}"></label>`,
         (pw, sh) => act("vps_awg_device", { id, password: pw, name: $("#vdName", sh).value }));
+    },
+    "vps-proto"(el) {
+      const id = el.dataset.id, again = !!el.dataset.again;
+      vpsPassSheet(t(again ? "vps_proto_again" : "vps_proto_btn"), t(again ? "vps_proto_again_text" : "vps_proto_text"), "",
+        (pw) => act("vps_proto", { id, password: pw }));
     },
     "vps-xdns"(el) {
       const id = el.dataset.id, host = el.dataset.host;

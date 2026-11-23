@@ -73,7 +73,7 @@ public final class XrayConfig {
     /** Ссылка просит то, чего это ядро не умеет (DNS-туннель — с 26.10.21): подсказать обновить приложение. */
     public static boolean needsNewCore(Server s, String coreVersion) {
         int[] v = version(coreVersion);
-        return v.length > 0 && Links.isXdns(s) && !atLeast(v, Links.XDNS_MIN);
+        return v.length > 0 && (Links.isXdns(s) && !atLeast(v, Links.XDNS_MIN) || Dialect.isVproto(s) && !atLeast(v, Dialect.PROTO_MIN));
     }
 
     static boolean atLeast(int[] v, int[] min) {
@@ -313,6 +313,13 @@ public final class XrayConfig {
             // DNS-туннель у ядра до 26.10.21 не заработает — «заглушка», чтобы не отказался весь конфиг (как fm_for_core)
             for (int i = 0; i < obs.size(); i++) {
                 if (!Links.xdnsDomainOf(Json.map(obs.get(i), "streamSettings")).isEmpty()) {
+                    obs.set(i, Json.obj("tag", Json.str(obs.get(i), "tag"), "protocol", "blackhole"));
+                }
+            }
+        }
+        if (v.length > 0 && !atLeast(v, Dialect.PROTO_MIN)) { // свой протокол — тоже только новое ядро
+            for (int i = 0; i < obs.size(); i++) {
+                if (Dialect.isVprotoSs(Json.map(obs.get(i), "streamSettings"))) {
                     obs.set(i, Json.obj("tag", Json.str(obs.get(i), "tag"), "protocol", "blackhole"));
                 }
             }
