@@ -303,6 +303,11 @@ def xdns_domain_of(ss: dict) -> str:
     return ""
 
 
+def is_xdns(srv) -> bool:
+    """Сервер — DNS-туннель (медленный запасной путь, эксперимент)."""
+    return bool(xdns_domain_of(((getattr(srv, "outbound", None) or {}).get("streamSettings")) or {}))
+
+
 def parse_fm(value: str) -> dict:
     if not value or len(value) > FM_MAX:
         return {}

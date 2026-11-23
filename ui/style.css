@@ -496,6 +496,11 @@ button.list-row:hover { background: var(--panel-2); }
 .qr-img.empty { background: var(--panel-2); }
 .qr-img.qr-modal { width: 260px; height: 260px; align-self: center; }
 .qr-warn { margin: 0; display: flex; gap: 6px; font-size: 12.5px; color: var(--soft); }
+.dns-recs { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.dns-recs th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.dns-recs td { padding: 6px; border-bottom: 1px solid var(--line); color: var(--text); overflow-wrap: anywhere; }
+.dns-recs th:first-child, .dns-recs td:first-child { width: 44px; }
+.dns-recs code { font-size: 12.5px; user-select: all; }
 @media (max-width: 640px) { .qr-wrap { grid-template-columns: 1fr; } .qr-view { order: -1; } }
 
 /* свой сервер */

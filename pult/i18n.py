@@ -21,7 +21,7 @@ def lang() -> str:
     return _lang
 
 
-_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'проверка «16 КБ»': '“16 KB” check', 'запасной WARP': 'backup WARP', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
+_NAMES = {'предохранители': 'fuses', 'автооткат': 'auto rollback', 'безопасный запуск': 'safe start', 'память сетей': 'network memory', 'автопереход': 'auto switch', 'подбор отпечатка': 'fingerprint picking', 'маскировка': 'masking', 'мгновенное переключение': 'instant switching', 'сторож данных': 'data watch', 'обход белых списков': 'whitelist bypass', 'автоподбор для сайтов': 'auto routing for sites', 'сайты, которые не догружаются': "sites that don't finish loading", 'мультисервер': 'multi-server', 'режим маршрутизации': 'routing mode', 'режим TUN': 'TUN mode', 'движок TUN': 'TUN engine', 'шифрование DNS': 'DNS encryption', 'блокировка QUIC': 'QUIC blocking', 'режим для игр': 'game mode', 'защита от утечек': 'leak protection', 'kill switch': 'kill switch', 'российские сайты напрямую': 'Russian sites direct', 'без рекламы': 'no ads', 'системный прокси': 'system proxy', 'способ подключения': 'connection method', 'белые списки': 'whitelists', 'проверка «16 КБ»': '“16 KB” check', 'запасной WARP': 'backup WARP', 'DNS-туннель (эксперимент)': 'DNS tunnel (experiment)', 'профессиональные настройки': 'advanced settings', '«Вернуть как было»': '“Reset to defaults”'}
 
 
 def _names(text: str) -> str:
@@ -33,6 +33,26 @@ def _names(text: str) -> str:
 RULES: list[tuple[str, str]] = [
 
     # свой сервер: AmneziaWG 2.0 и устройства (vps.py, 1.24)
+    (r"^DNS-туннель не установился(: .*)?$", lambda m: "The DNS tunnel was not installed" + (": " + tr(m.group(1)[2:]) if m.group(1) else "")),
+    (r"^DNS-туннель: (.+)$", lambda m: "DNS tunnel: " + tr(m.group(1))),
+    (r"^DNS-туннель$", "DNS tunnel"),
+    (r"^Свой сервер «(.+?)»: DNS-туннель установлен, он добавлен в свои серверы\.$",
+     r"Own server “\1”: the DNS tunnel is installed and added to your servers."),
+    (r"^Сначала включи эксперимент «DNS-туннель» в профессиональных настройках\.$",
+     "First turn on the “DNS tunnel” experiment in the advanced settings."),
+    (r"^на сервере старое ядро Xray, а обновить его не вышло — у сервера нет доступа к GitHub$",
+     "the server has an old Xray core and it could not be updated — the server has no access to GitHub"),
+    (r"^на сервере уже работает свой DNS-сервер на порту 53 — DNS-туннель с ним не уживётся$",
+     "the server already runs its own DNS server on port 53 — the DNS tunnel can't share it"),
+    (r"^порт (\d+) на сервере занят другой программой$", r"port \1 on the server is used by another program"),
+    (r"^Xray не принял настройки DNS-туннеля$", "Xray did not accept the DNS tunnel settings"),
+    (r"^DNS-туннель на сервере не запустился$", "The DNS tunnel did not start on the server"),
+    (r"^на сервере нет iptables, и его не удалось установить$", "the server has no iptables, and it could not be installed"),
+    (r"^Ставлю DNS-туннель на сервер$", "Installing the DNS tunnel on the server"),
+    (r"^нужен поддомен своего домена, например t\.example\.ru$", "a subdomain of your domain is needed, for example t.example.com"),
+    (r"^в имени домена недопустимые знаки$", "the domain name has characters that aren't allowed"),
+    (r"^неверные параметры DNS-туннеля$", "wrong DNS tunnel parameters"),
+    (r"^Свой сервер: DNS-туннель$", "Own server: DNS tunnel"),
     (r"^AmneziaWG не установился(: .*)?$", lambda m: "AmneziaWG was not installed" + (": " + tr(m.group(1)[2:]) if m.group(1) else "")),
     (r"^Устройство не добавлено(: .*)?$", lambda m: "The device was not added" + (": " + tr(m.group(1)[2:]) if m.group(1) else "")),
     (r"^Свой сервер «(.+?)»: AmneziaWG 2\.0 установлен, конфиг этого компьютера добавлен в свои серверы\.$",

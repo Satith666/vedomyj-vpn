@@ -15,7 +15,7 @@ import threading
 import time
 import zipfile
 
-from . import netutil, routing
+from . import links, netutil, routing
 from .links import Server
 
 IS_WINDOWS = sys.platform == "win32"
@@ -385,7 +385,12 @@ def mask_outbounds(obs: list[dict], version: str, variant: int = 1) -> list[dict
 
 def fm_for_core(obs: list[dict], version: str) -> list[dict]:
     """Старое ядро (до 26.3.27) не знает Finalmask целиком: оставляем только Salamander (он есть с 26.2),
-    без шума, перебора портов и своей маскировки из ссылки — сервер работает на основном порту."""
+    без шума, перебора портов и своей маскировки из ссылки — сервер работает на основном порту.
+    DNS-туннель (xdns) у ядра до 26.10.21 не заработает вовсе (другие настройки) — вместо него «заглушка»,
+    чтобы из-за одного сервера не отказался запускаться весь конфиг."""
+    if version and _ver(version) < links.XDNS_MIN:
+        obs = [{"tag": ob.get("tag", ""), "protocol": "blackhole"}
+               if links.xdns_domain_of(ob.get("streamSettings") or {}) else ob for ob in obs]
     if not version or _ver(version) >= FM_MIN:
         return obs
     for ob in obs:
@@ -402,7 +407,9 @@ def fm_for_core(obs: list[dict], version: str) -> list[dict]:
 
 
 def needs_new_core(server: Server, version: str) -> bool:
-    """Ссылка просит то, чего старое ядро не умеет (fm, перебор портов): подсказать обновить ядро."""
+    """Ссылка просит то, чего старое ядро не умеет (fm, перебор портов, DNS-туннель): подсказать обновить ядро."""
+    if version and links.is_xdns(server) and _ver(version) < links.XDNS_MIN:
+        return True
     if not version or _ver(version) >= FM_MIN:
         return False
     fm = (server.outbound.get("streamSettings") or {}).get("finalmask") or {}

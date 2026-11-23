@@ -762,6 +762,8 @@ class UIServer:
                         str(a.get("user", "root")), str(a.get("via", "")), str(a.get("name", "")))
         if action == "vps_awg":
             return task("Свой сервер: AmneziaWG 2.0", e.vps_awg, str(a.get("id", "")))
+        if action == "vps_xdns":
+            return task("Свой сервер: DNS-туннель", e.vps_xdns, str(a.get("id", "")), str(a.get("domain", "")))
         if action == "vps_awg_device":
             return task("Свой сервер: устройство AmneziaWG", e.vps_awg_device, str(a.get("id", "")), str(a.get("name", "")))
         if action == "vps_awg_conf":

@@ -1228,6 +1228,7 @@ const PRO_GROUPS = [
     { id: "warp_fb", key: "warp_fallback", extra: () => warpFbExtra() }, { id: "whitelist", key: "whitelist_auto" },
     { id: "auto_routes", key: "auto_routes" }, { id: "auto_stall", key: "auto_stall" }, { id: "multi", key: "multi_enabled" },
   ] },
+  { title: "pg_exp", items: [{ id: "xdns", key: "exp_xdns" }] },
 ];
 
 function warpFbExtra() {
@@ -1725,7 +1726,9 @@ function renderVpsBox() {
         ${h.bridge_of ? `<span class="hint">${esc(t("vps_is_bridge"))}</span>` : `<button class="btn btn-small" data-vbridge="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("routes")}${t("vps_bridge_btn")}</button>`}
         ${h.awg ? `<button class="btn btn-small" data-vawgdev="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("plus")}${t("vps_awg_dev_btn")}</button>`
           : `<button class="btn btn-small" data-vawg="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("shield")}${t("vps_awg_btn")}</button>`}
+        ${xdnsOn() && !h.bridge_of ? `<button class="btn btn-small" data-vxdns="${esc(h.id)}" ${busyNow ? "disabled" : ""}>${icon("globe")}${t("vps_xdns_btn")}</button>` : ""}
       </div>
+      ${h.xdns && xdnsOn() ? `<p class="hint" style="margin:0">${esc(t("vps_xdns_have", { d: h.xdns }))}</p>` : ""}
       ${(h.awg_devices || []).length ? `<div class="vps-friends">${h.awg_devices.map(d => `<div class="vps-friend">
         <span class="list-text"><b>${esc(d.name)}</b><span>${esc(t("vps_awg_dev_made", { d: dateStr(d.ts) }))}</span></span>
         <button class="btn btn-small" data-vawgconf="${esc(d.id)}" data-vname="${esc(d.name)}">${icon("qr")}${t("vps_awg_dev_conf")}</button></div>`).join("")}</div>` : ""}
@@ -1744,6 +1747,7 @@ function renderVpsBox() {
     if (r.ok) toast(t("vw_started"), "info", 12000);
   }));
   box.querySelectorAll("[data-vawgdev]").forEach(b => b.addEventListener("click", () => vpsAwgDeviceModal(b.dataset.vawgdev)));
+  box.querySelectorAll("[data-vxdns]").forEach(b => b.addEventListener("click", () => vpsXdnsModal(vpsList.find(h => h.id === b.dataset.vxdns))));
   box.querySelectorAll("[data-vawgconf]").forEach(b => b.addEventListener("click", () => awgRouterModal(b.dataset.vawgconf, b.dataset.vname)));
   box.querySelectorAll("[data-vqr]").forEach(b => b.addEventListener("click", () =>
     qrModal("friend:" + b.dataset.vqr, t("qr_friend", { name: b.dataset.vname }), "friend")));
@@ -1820,6 +1824,40 @@ async function awgRouterModal(devId, name) {
 }
 
 /* Мост через российский сервер: адрес российского VPS — на него ставится Xray, который ведёт на этот сервер. */
+const xdnsOn = () => !!(S && S.pro && S.pro.keys && S.pro.keys.exp_xdns);
+
+/* DNS-туннель (эксперимент): свой домен → две записи у регистратора → установка на сервер */
+function vpsXdnsModal(h) {
+  if (!h) return;
+  const base = (h.xdns || "").replace(/^t\./, "");
+  const recs = d => {
+    const dom = d || t("vps_xdns_dom_ph");
+    return `<table class="dns-recs"><tr><th>${t("vps_xdns_type")}</th><th>${t("vps_xdns_name")}</th><th>${t("vps_xdns_value")}</th></tr>
+      <tr><td>A</td><td><code>tns.${esc(dom)}</code></td><td><code>${esc(h.host)}</code></td></tr>
+      <tr><td>NS</td><td><code>t.${esc(dom)}</code></td><td><code>tns.${esc(dom)}</code></td></tr></table>`;
+  };
+  openModal(`<h2>${t("vps_xdns_title")}</h2><p class="modal-text">${t("vps_xdns_text")}</p>
+    <label class="field"><span>${t("vps_xdns_domain")}</span><input class="input" id="xDom" value="${esc(base)}" placeholder="example.ru" autocomplete="off" spellcheck="false"></label>
+    <p class="modal-text" style="margin:0">${t("vps_xdns_rec")}</p><div id="xRecs">${recs(base)}</div>
+    <p class="qr-warn">${icon("alert", "inline-ico")}<span>${esc(t("vps_xdns_warn"))}</span></p>
+    <p class="hint" style="margin:0">${icon("lock", "inline-ico soft")}${t("vps_pass_note")}</p>
+    <div class="modal-error" id="mErr" hidden></div>
+    <div class="modal-actions"><button class="btn btn-ghost" data-close>${t("cancel")}</button>
+      <button class="btn btn-primary" id="mOk">${t("vps_xdns_go")}</button></div>`, m => {
+    m.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", closeModal));
+    const dom = () => $("#xDom").value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/\.$/, "");
+    $("#xDom").addEventListener("input", () => { $("#xRecs").innerHTML = recs(dom()); });
+    m.querySelector("#mOk").addEventListener("click", async () => {
+      const d = dom();
+      if (!/^[^.\s]+\.[^.\s]+/.test(d)) return showModalError(t("vps_xdns_need"));
+      const r = await act("vps_xdns", { id: h.id, domain: "t." + d }, { quiet: true });
+      if (!r.ok) return showModalError(r.error);
+      closeModal();
+      toast(t("vw_started"), "info", 12000);
+    });
+  });
+}
+
 function vpsBridgeModal(via) {
   openModal(`<h2>${t("vps_bridge_btn")}</h2><p class="modal-text">${t("vps_bridge_text")}</p>
     <div class="form-grid" style="padding:0">

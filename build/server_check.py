@@ -135,7 +135,7 @@ UNBOUND_CONF = """server:
   directory: "/tmp"
   pidfile: ""
   use-syslog: no
-  verbosity: 1
+  verbosity: 2
   local-zone: "test." nodefault
   domain-insecure: "vedomyj.test"
 stub-zone:
@@ -164,6 +164,23 @@ def xdns_client_cfg(link: str, port: int) -> dict:
             "inbounds": [{"tag": "in", "listen": "127.0.0.1", "port": port, "protocol": "http", "settings": {}}],
             "outbounds": [dict(srv.outbound, tag="proxy"), {"tag": "direct", "protocol": "freedom"}],
             "routing": {"rules": [{"type": "field", "inboundTag": ["in"], "outboundTag": "proxy"}]}}
+
+
+def xdns_diag(port: int, ub: subprocess.Popen) -> None:
+    """Почему не прошло через посредника: прямой запрос к службе туннеля и через unbound (флаги, время)."""
+    sh("command -v dig >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsutils >/dev/null 2>&1")
+    for where in (f"@127.0.0.1 -p {port}", "@127.0.0.1 -p 5454"):
+        r = sh(f"dig +tries=1 +time=6 {where} TXT aaaaaaaaaaaaaaaa.{XDNS_DOMAIN}")
+        keep = [ln for ln in r.stdout.splitlines() if "status:" in ln or "flags:" in ln or "Query time" in ln
+                or "timed out" in ln or "WARNING" in ln]
+        print(f"       dig {where}: " + (" / ".join(keep) or r.stdout[-200:] or r.stderr[-200:]))
+    try:
+        ub.terminate()
+        err = ub.communicate(timeout=5)[1] or ""
+    except Exception:  # noqa: BLE001
+        err = ""
+    for ln in err.splitlines()[-15:]:
+        print("       | " + ln[:220])
 
 
 def xdns_check() -> None:
@@ -210,10 +227,28 @@ def xdns_check() -> None:
         link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=("127.0.0.1:5454",))
         procs.append(run_xray(xdns_client_cfg(link, 21801), "DNS-туннель через DNS-посредник"))
         code, n, sec = fetch(21801, URL)
-        ok(code == 204, "DNS-туннель: сайт открывается через DNS-сервер-посредник", f"ответ {code}, {sec:.1f} с")
-        code, n, sec = fetch(21801, "https://speed.cloudflare.com/__down?bytes=200000", timeout=240)
-        ok(code == 200 and n == 200000, "DNS-туннель: скачивание 200 КБ через посредник",
-           f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с")
+        ok(code == 204, "DNS-туннель: сайт открывается через DNS-сервер-посредник (unbound)", f"ответ {code}, {sec:.1f} с")
+        if code == 204:
+            code, n, sec = fetch(21801, "https://speed.cloudflare.com/__down?bytes=200000", timeout=240)
+            ok(code == 200 and n == 200000, "DNS-туннель: скачивание 200 КБ через посредник",
+               f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с")
+        else:
+            xdns_diag(port, ub)
+        # б2) посредник-пересыльщик (dnsmasq): так устроен DNS многих провайдеров и роутеров
+        sh("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq-base >/dev/null 2>&1")
+        dm = subprocess.Popen(["dnsmasq", "-k", "-p", "5455", "--listen-address=127.0.0.1", "--bind-interfaces",
+                               "--no-resolv", "--no-hosts", f"--server=/{XDNS_DOMAIN}/127.0.0.1#{port}", "--cache-size=0"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        procs.append(dm)
+        time.sleep(1)
+        link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=("127.0.0.1:5455",))
+        procs.append(run_xray(xdns_client_cfg(link, 21804), "DNS-туннель через dnsmasq"))
+        code, n, sec = fetch(21804, URL)
+        ok(code == 204, "DNS-туннель: сайт открывается через DNS-пересыльщик (dnsmasq)", f"ответ {code}, {sec:.1f} с")
+        if code == 204:
+            code, n, sec = fetch(21804, "https://speed.cloudflare.com/__down?bytes=200000", timeout=240)
+            ok(code == 200 and n == 200000, "DNS-туннель: скачивание 200 КБ через пересыльщик",
+               f"ответ {code}, {n} байт за {sec:.1f} с ≈ {n * 8 / max(sec, 0.01) / 1000:.0f} кбит/с")
         # в) «другой компьютер»: запросы на порт 53 сервера (перенаправление iptables на службу)
         link = vps.make_xdns_link(XDNS_DOMAIN, uuid, pw, "CI", resolvers=("10.210.0.1:53",))
         path = os.path.join(tempfile.gettempdir(), "server-check-xdns-ns.json")

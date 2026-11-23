@@ -566,7 +566,7 @@ public final class Vps {
             + ". /etc/os-release 2>/dev/null\n"
             + "[ \"$ID\" = \"ubuntu\" ] || fail awg_os\n"
             + "export DEBIAN_FRONTEND=noninteractive\n"
-            + "APT=\"apt-get -y -q -o DPkg::Lock::Timeout=300\"\n"
+            + "APT=\"apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5\"\n"
             + "say packages\n"
             + "$APT update >> \"$LOG\" 2>&1\n"
             + "$APT install software-properties-common gnupg iptables >> \"$LOG\" 2>&1 || fail awg_install\n"

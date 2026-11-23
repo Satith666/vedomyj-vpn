@@ -3690,6 +3690,131 @@ def t_vps_awg():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@case("DNS-туннель (эксперимент): свой домен, отдельная служба на сервере, шифрование, «Авто» — только когда включён")
+def t_vps_xdns():
+    import subprocess as sp
+    from pult import engine as engmod, protect, settings as settings_mod
+    from pult.webui import UIServer
+    for good, want in (("T.Example.RU.", "t.example.ru"), ("t.my-site.ru", "t.my-site.ru"), ("т.пример.рф", "xn--r1a.xn--e1afmkfd.xn--p1ai")):
+        check(vps.check_domain(good) == want, f"домен {good} → {want}")
+    for bad in ("example.ru", "t.example.ru;reboot", "t.$(id).ru", "t..ru", "-t.example.ru", "t.example.ru\nx", "a" * 70 + ".ru.ru", ""):
+        try:
+            vps.check_domain(bad)
+            check(False, f"плохой домен принят: {bad!r}")
+        except vps.VpsError:
+            pass
+    uid, pw = "3f1c2a9e-1b2c-4d5e-8f90-1234567890ab", vps.xdns_password()
+    check(re.fullmatch(r"[A-Za-z0-9_-]{20,40}", pw) is not None and pw != vps.xdns_password(), "пароль шифрования случайный")
+    body = vps.xdns_script("t.example.ru", uid, pw)
+    cfg = json.loads(body.split("<<'JSON'\n", 1)[1].split("\nJSON\n", 1)[0])
+    ib = cfg["inbounds"][0]
+    udp = ib["streamSettings"]["finalmask"]["udp"]
+    check(ib["port"] == vps.XDNS_PORT and ib["streamSettings"]["network"] == "kcp"
+          and [x["type"] for x in udp] == ["mkcp-legacy", "xdns"] and udp[0]["settings"]["value"] == pw
+          and udp[1]["settings"]["domains"][0]["names"] == ["t.example.ru"] and "resolvers" not in udp[1]["settings"],
+          "сервер: mKCP, внутри шифрование AES с паролем, снаружи DNS-запросы к своему домену")
+    check({"type": "field", "ip": ["geoip:private"], "outboundTag": "block"} in cfg["routing"]["rules"],
+          "через туннель не попасть во внутреннюю сеть сервера")
+    check("vedomyj-xdns" in body and "/usr/local/etc/xray/config.json" not in body and "--dport 53" in body
+          and "REDIRECT --to-ports 5300" in body and "xdns_dns53" in body and "chmod 640" in body,
+          "отдельная служба (основной Xray не трогается), порт 53 → 5300, чужой DNS-сервер не ломаем, пароль закрыт")
+    check("NEED=26.10.21" in body and "install-release.sh" in body, "старое ядро на сервере обновляется (XDNS — с 26.10.21)")
+    codes = set(re.findall(r"fail (\w+)", vps.XDNS_SCRIPT))
+    check(codes and all(c in vps.ERRORS for c in codes), f"у каждой ошибки скрипта есть понятный текст: {codes - set(vps.ERRORS)}")
+    for args in (("t.example.ru", "x;reboot", pw), ("t.example.ru", uid, "$(reboot)aaaaaaaaaaaa"), ("t.example.ru", uid, "short")):
+        try:
+            vps.xdns_script(*args)
+            check(False, f"опасные параметры приняты: {args}")
+        except vps.VpsError:
+            pass
+    try:
+        vps.xdns_script("t.example.ru", uid, pw, iface="eth0;reboot")
+        check(False, "опасное имя интерфейса принято")
+    except vps.VpsError:
+        pass
+    if sys.platform != "win32" and shutil.which("bash"):
+        r = sp.run(["bash", "-n"], input=body, capture_output=True, text=True)
+        check(r.returncode == 0, f"скрипт без ошибок синтаксиса bash: {r.stderr[:200]}")
+    check(vps.parse_xdns_result("5300|26.10.31") == (5300, "26.10.31"), "ответ сервера")
+    for bad in ("5300", "x|26.10.31", "5300|26.10.31|x", "5300|$(id)"):
+        try:
+            vps.parse_xdns_result(bad)
+            check(False, f"непонятный ответ принят: {bad}")
+        except vps.VpsError:
+            pass
+    link = vps.make_xdns_link("t.example.ru", uid, pw, "VPS · DNS-туннель")
+    srv = links.parse_link(link)
+    ss = srv.outbound["streamSettings"]
+    v = srv.outbound["settings"]["vnext"][0]
+    xd = ss["finalmask"]["udp"][1]["settings"]
+    check(v["address"] == "77.88.8.8" and v["port"] == 53 and ss["network"] == "kcp"
+          and xd["resolvers"] == [{"addrs": ["udp://77.88.8.8:53", "udp://77.88.8.1:53"]}]
+          and ss["finalmask"]["udp"][0]["settings"]["value"] == pw and links.is_xdns(srv),
+          "ссылка: запросы идут через DNS Яндекса, а не на адрес сервера (при белых списках он закрыт)")
+    check(ss["kcpSettings"]["mtu"] == links.xdns_mtu("t.example.ru") and ss["kcpSettings"]["tti"] == 200
+          and links.xdns_mtu("t.a.ru") > links.xdns_mtu("t." + "x" * 40 + ".ru"), "пакеты mKCP — по длине домена")
+    check(xray.needs_new_core(srv, "26.10.10") and not xray.needs_new_core(srv, "26.10.21"), "старое ядро — подсказка обновить")
+    check(xray.proxy_outbounds(srv, "proxy", False, "26.9.30") == [{"tag": "proxy", "protocol": "blackhole"}]
+          and xray.proxy_outbounds(srv, "proxy", False, "26.10.31")[0]["streamSettings"]["network"] == "kcp",
+          "у старого ядра — заглушка: из-за одного сервера не ломается весь конфиг")
+    tmp = tempfile.mkdtemp(prefix="pult-selftest-")
+    e = None
+    orig_start = vps.start
+    scenario = {"lines": [], "bodies": []}
+
+    def fake_start(host, port, user, script_path, out_path, hint="", body=None):
+        scenario["bodies"].append(body)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(scenario["lines"]) + "\n")
+        return sp.Popen([sys.executable, "-c", "import time; time.sleep(0.3)"])
+
+    try:
+        engmod.vps.start = fake_start
+        e = make_engine(tmp)
+        e.startup()
+        scenario["lines"] = ["PULT_RESULT:3f1c2a9e-1b2c-4d5e-8f90-1234567890ab|cHVibGljLWtleS1mb3ItdGVzdGluZy1yZWFsaXR5LXh4"
+                             "|0123456789abcdef|a1b2c3d4e5f6"]
+        e.vps_setup("203.0.113.10", 22, "root", "Germany")
+        vid = e.vps_view()[0]["id"]
+        try:
+            e.vps_xdns(vid, "t.example.ru")
+            check(False, "эксперимент выключен — установка не должна идти")
+        except RuntimeError:
+            pass
+        check(protect.PRO_KEYS.count("exp_xdns") == 1 and settings_mod.DEFAULTS["exp_xdns"] is False,
+              "эксперимент выключен по умолчанию и есть в профессиональных настройках")
+        e.settings["exp_xdns"] = True
+        scenario["lines"] = ["PULT_STEP:xdns", "PULT_RESULT:5300|26.10.31"]
+        name = e.vps_xdns(vid, "T.Example.RU")
+        srv = next(x for x in e.servers if x.name == name)
+        sent = scenario["bodies"][-1]
+        upw = srv.outbound["streamSettings"]["finalmask"]["udp"][0]["settings"]["value"]
+        check(links.is_xdns(srv) and upw in sent and "t.example.ru" in sent and e.vps_view()[0]["xdns"] == "t.example.ru",
+              "сервер добавлен в свои серверы, пароль у сервера и программы один")
+        check(e.server_info(srv)["protocol"] == "DNS", "в списке подписан как DNS")
+        check(srv in e.pool(), "эксперимент включён — «Авто» пробует DNS-туннель")
+        e.settings["exp_xdns"] = False
+        check(srv not in e.pool() and srv in e.servers, "эксперимент выключен — «Авто» его не трогает, сервер остаётся в списке")
+        e.settings["exp_xdns"] = True
+        name2 = e.vps_xdns(vid, "t.example.ru")
+        check(name2 == name and sum(1 for x in e.servers if x.name == name) == 1, "переустановка заменяет прежнюю ссылку")
+        text = "\n".join(e.logs)
+        check(upw not in text and "vless://" not in text, "пароль и ссылка не попадают в журнал")
+        ui = UIServer(os.path.join(APP_DIR, "ui"), "tok")
+        ui.engine = e
+        scenario["lines"] = ["PULT_ERROR:xdns_dns53"]
+        try:
+            e.vps_xdns(vid, "t.example.ru")
+            check(False, "ошибка на сервере должна дойти до человека")
+        except RuntimeError as exc:
+            check("порту 53" in str(exc), f"понятная причина: {exc}")
+    finally:
+        engmod.vps.start = orig_start
+        if e:
+            e.shutdown()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 @case("Мастер своего сервера: скрипт, ход установки, ссылки и проверка")
 def t_vps():
     import subprocess as sp

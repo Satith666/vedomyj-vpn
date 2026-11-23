@@ -485,7 +485,7 @@ fail() { tail -n 25 "$LOG" 2>/dev/null | sed 's/^/PULT_LOG:/'; echo "PULT_ERROR:
 . /etc/os-release 2>/dev/null
 [ "$ID" = "ubuntu" ] || fail awg_os
 export DEBIAN_FRONTEND=noninteractive
-APT="apt-get -y -q -o DPkg::Lock::Timeout=300"
+APT="apt-get -y -q -o DPkg::Lock::Timeout=300 -o Acquire::Retries=5"
 say packages
 $APT update >> "$LOG" 2>&1
 $APT install software-properties-common gnupg iptables >> "$LOG" 2>&1 || fail awg_install
