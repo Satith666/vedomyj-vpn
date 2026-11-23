@@ -62,9 +62,16 @@ fi
 command -v curl >/dev/null 2>&1 || fail os
 if command -v ss >/dev/null 2>&1 && ss -ltnp 2>/dev/null | grep -E ':__PORT_TCP__\b' | grep -vq xray; then fail port; fi
 say xray
-bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/tmp/pult-xray-install.log 2>&1 || fail install
+# official installer; it asks the GitHub API for the latest version, which sometimes refuses (rate limit) -
+# retry, then install a known good version without asking the API
+XI=https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+for a in 1 2; do
+  bash -c "$(curl -fsSL --retry 3 $XI)" @ install >/tmp/pult-xray-install.log 2>&1 && break
+  sleep 5
+done
+[ -x /usr/local/bin/xray ] || bash -c "$(curl -fsSL --retry 3 $XI)" @ install --version v26.11.9 >>/tmp/pult-xray-install.log 2>&1
 XRAY=/usr/local/bin/xray
-[ -x "$XRAY" ] || fail install
+[ -x "$XRAY" ] || { tail -n 15 /tmp/pult-xray-install.log 2>/dev/null | sed 's/^/PULT_LOG:/'; fail install; }
 say keys
 UUID=$($XRAY uuid | tr -d ' \r\n')
 KEYS=$($XRAY x25519)
@@ -678,7 +685,9 @@ export DEBIAN_FRONTEND=noninteractive
 HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')
 if ! newer "$HAVE"; then
   command -v curl >/dev/null 2>&1 || fail xdns_xray
-  bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/tmp/pult-xray-install.log 2>&1 || fail xdns_xray
+  XI=https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+  bash -c "$(curl -fsSL --retry 3 $XI)" @ install >/tmp/pult-xray-install.log 2>&1 \
+    || bash -c "$(curl -fsSL --retry 3 $XI)" @ install --version v26.11.9 >>/tmp/pult-xray-install.log 2>&1 || fail xdns_xray
   HAVE=$($X version 2>/dev/null | head -n1 | awk '{print $2}')
   newer "$HAVE" || fail xdns_xray
 fi

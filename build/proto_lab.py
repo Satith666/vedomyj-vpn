@@ -27,6 +27,7 @@ URL204 = "https://www.gstatic.com/generate_204"
 BIG = ("https://proof.ovh.net/files/1Mb.dat", "https://speed.cloudflare.com/__down?bytes=1000000")
 UA = "Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0 Safari/537.36"
 HTTP_REQ = "GET /api/v2/feed?lang=ru HTTP/1.1\r\nHost: static.example.ru\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\n\r\n"
+HTTP_400 = "HTTP/1.1 400 Bad Request\r\nServer: nginx\r\nContent-Type: text/html\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 HTTP_RESP = "HTTP/1.1 200 OK\r\nServer: nginx\r\nContent-Type: application/octet-stream\r\nConnection: keep-alive\r\n\r\n"
 
 
@@ -173,6 +174,9 @@ def variants(pw: str) -> list[tuple[str, list]]:
         ("sudoku, своя таблица xpxvvpvv", [{"type": "sudoku", "settings": {"password": pw, "customTable": "xpxvvpvv"}}]),
         ("поддельное HTTP-приветствие", [hc]),
         ("sudoku «текст» + HTTP-приветствие", [{"type": "sudoku", "settings": {"password": pw, "ascii": "prefer_ascii"}}, hc]),
+        ("sudoku «текст» + HTTP-приветствие + ответ чужим (errors)",
+         [{"type": "sudoku", "settings": {"password": pw, "ascii": "prefer_ascii", "paddingMin": 3, "paddingMax": 12}},
+          {"type": "header-custom", "settings": dict(hc["settings"], errors=[[{"delay": 0, "type": "str", "packet": HTTP_400}]])}]),
     ]
 
 

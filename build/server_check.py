@@ -319,6 +319,10 @@ def main() -> int:
     err = next((ln[11:] for ln in out.stdout.splitlines() if ln.startswith("PULT_ERROR:")), "")
     ok(bool(res), "Скрипт мастера поставил Xray и прислал ключи", err or out.stderr[-300:])
     if not res:
+        for ln in out.stdout.splitlines():
+            if ln.startswith("PULT_LOG:"):
+                print("       | " + ln[9:][:200])
+    if not res:
         return 1
     main_links = vps.make_links("127.0.0.1", res, "CI")
     procs = []
